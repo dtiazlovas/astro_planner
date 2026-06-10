@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "concurrently": "^9.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0"
   }
 }

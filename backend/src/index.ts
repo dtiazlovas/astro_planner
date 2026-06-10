@@ -34,26 +34,26 @@ app.use('/api/plans', apPlansRouter)
 app.use('/api/plan-details', apPlanDetailsRouter)
 app.use('/api/plan-sessions', apPlanSessionsRouter)
 
-const startServer = async (): Promise<void> => {
+const startServer = (): void => {
   try {
-    await connectToDatabase()
-    console.log('Connected to MSSQL')
+    connectToDatabase()
+    console.log('Connected to SQLite')
 
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`)
     })
   } catch (error) {
-    console.error('Failed to connect to MSSQL', error)
+    console.error('Failed to open SQLite database', error)
     process.exit(1)
   }
 }
 
-const shutdown = async (): Promise<void> => {
-  await closeDatabaseConnection()
+const shutdown = (): void => {
+  closeDatabaseConnection()
   process.exit(0)
 }
 
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
-void startServer()
+startServer()

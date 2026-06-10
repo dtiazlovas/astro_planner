@@ -1,58 +1,97 @@
-import sql from 'mssql'
+import Database from 'better-sqlite3'
+import path from 'node:path'
 
-const toBool = (value: string | undefined, fallback: boolean): boolean => {
-  if (value === undefined) return fallback
-  return value.toLowerCase() === 'true'
+let db: Database.Database | null = null
+
+function initSchema(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS ap_object_types (
+      id   INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_filter (
+      id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      name    TEXT,
+      aliases TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_exposure (
+      id       INTEGER PRIMARY KEY AUTOINCREMENT,
+      duration INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_object (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      name          TEXT    NOT NULL,
+      type          INTEGER NOT NULL REFERENCES ap_object_types(id),
+      position_json TEXT    NOT NULL,
+      comment       TEXT,
+      active        INTEGER NOT NULL DEFAULT 1,
+      aliases       TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_session (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      name         TEXT    NOT NULL,
+      start        TEXT    NOT NULL,
+      duration     TEXT,
+      duration_set INTEGER NOT NULL DEFAULT 0,
+      comment      TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_object_session (
+      id       INTEGER PRIMARY KEY AUTOINCREMENT,
+      object   INTEGER NOT NULL REFERENCES ap_object(id),
+      session  INTEGER NOT NULL REFERENCES ap_session(id),
+      frames   INTEGER NOT NULL,
+      exposure INTEGER NOT NULL REFERENCES ap_exposure(id),
+      filter   INTEGER NOT NULL REFERENCES ap_filter(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_plan (
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      object INTEGER NOT NULL REFERENCES ap_object(id),
+      name   TEXT    NOT NULL,
+      active INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_plan_details (
+      id       INTEGER PRIMARY KEY AUTOINCREMENT,
+      planid   INTEGER NOT NULL REFERENCES ap_plan(id),
+      filter   INTEGER NOT NULL REFERENCES ap_filter(id),
+      duration INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_plan_session (
+      id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      session INTEGER NOT NULL REFERENCES ap_object_session(id),
+      planid  INTEGER NOT NULL REFERENCES ap_plan(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_settings (
+      name  TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS ap_imported (
+      filename TEXT NOT NULL
+    );
+  `)
 }
 
-const toNumber = (value: string | undefined, fallback: number): number => {
-  const parsed = Number(value)
-  return Number.isNaN(parsed) ? fallback : parsed
-}
-
-const buildConfig = (): sql.config => {
-  const shared: sql.config = {
-    server: process.env.MSSQL_SERVER ?? 'localhost',
-    port: toNumber(process.env.MSSQL_PORT, 1433),
-    database: process.env.MSSQL_DATABASE ?? 'master',
-    options: {
-      encrypt: toBool(process.env.MSSQL_ENCRYPT, false),
-      trustServerCertificate: toBool(process.env.MSSQL_TRUST_SERVER_CERTIFICATE, true)
-    }
+export const connectToDatabase = (): Database.Database => {
+  if (!db) {
+    const dbPath = process.env.SQLITE_PATH ?? path.join(process.cwd(), 'astro-planner.db')
+    db = new Database(dbPath)
+    db.pragma('journal_mode = WAL')
+    db.pragma('foreign_keys = ON')
+    initSchema(db)
   }
-
-  if (process.env.MSSQL_DOMAIN) {
-    return {
-      ...shared,
-      authentication: {
-        type: 'ntlm',
-        options: {
-          domain: process.env.MSSQL_DOMAIN,
-          userName: process.env.MSSQL_USER ?? '',
-          password: process.env.MSSQL_PASSWORD ?? ''
-        }
-      }
-    }
-  }
-
-  return { ...shared, user: process.env.MSSQL_USER, password: process.env.MSSQL_PASSWORD }
+  return db
 }
 
-let poolPromise: Promise<sql.ConnectionPool> | null = null
-
-export const connectToDatabase = async (): Promise<sql.ConnectionPool> => {
-  if (!poolPromise) {
-    const pool = new sql.ConnectionPool(buildConfig())
-    poolPromise = pool.connect()
-  }
-
-  return poolPromise
-}
-
-export const closeDatabaseConnection = async (): Promise<void> => {
-  if (!poolPromise) return
-
-  const pool = await poolPromise
-  await pool.close()
-  poolPromise = null
+export const closeDatabaseConnection = (): void => {
+  db?.close()
+  db = null
 }

@@ -1,27 +1,16 @@
-import sql from 'mssql'
 import { connectToDatabase } from '../db.js'
 
 export const checkImported = async (names: string[]): Promise<string[]> => {
   if (!names.length) return []
-  const pool = await connectToDatabase()
-  const req = pool.request()
-  names.forEach((n, i) => req.input(`n${i}`, sql.NVarChar(500), n))
-  const inClause = names.map((_, i) => `@n${i}`).join(', ')
-  const result = await req.query<{ filename: string }>(
-    `SELECT [filename] FROM ap_imported WHERE [filename] IN (${inClause})`
-  )
-  return result.recordset.map(r => r.filename)
+  const db = connectToDatabase()
+  const placeholders = names.map((_, i) => `@n${i}`).join(', ')
+  const params = Object.fromEntries(names.map((n, i) => [`n${i}`, n]))
+  return (db.prepare(`SELECT filename FROM ap_imported WHERE filename IN (${placeholders})`).all(params) as { filename: string }[]).map(r => r.filename)
 }
 
 export const recordImported = async (names: string[]): Promise<void> => {
   if (!names.length) return
-  const pool = await connectToDatabase()
-  for (const name of names) {
-    await pool.request()
-      .input('filename', sql.NVarChar(500), name)
-      .query(`
-        IF NOT EXISTS (SELECT 1 FROM ap_imported WHERE [filename] = @filename)
-          INSERT INTO ap_imported ([filename]) VALUES (@filename)
-      `)
-  }
+  const db = connectToDatabase()
+  const stmt = db.prepare('INSERT OR IGNORE INTO ap_imported (filename) VALUES (@filename)')
+  db.transaction((ns: string[]) => { for (const filename of ns) stmt.run({ filename }) })(names)
 }

@@ -1,4 +1,3 @@
-import sql from 'mssql'
 import { connectToDatabase } from '../db.js'
 import type { ApObjectSession, ApObjectSessionRow, CreateApObjectSessionDto } from '../models/ApObjectSession.js'
 
@@ -22,61 +21,37 @@ const SELECT_JOINED = `
 `
 
 export const getBySession = async (sessionId: number): Promise<ApObjectSessionRow[]> => {
-  const pool = await connectToDatabase()
-  const result = await pool.request()
-    .input('session', sql.Int, sessionId)
-    .query<ApObjectSessionRow>(`${SELECT_JOINED} WHERE os.session = @session ORDER BY os.id`)
-  return result.recordset
+  return connectToDatabase().prepare(`${SELECT_JOINED} WHERE os.session = @session ORDER BY os.id`).all({ session: sessionId }) as ApObjectSessionRow[]
 }
 
 export const createApObjectSession = async (data: CreateApObjectSessionDto): Promise<ApObjectSessionRow> => {
-  const pool = await connectToDatabase()
-  const insert = await pool.request()
-    .input('object',   sql.Int, data.object)
-    .input('session',  sql.Int, data.session)
-    .input('frames',   sql.Int, data.frames)
-    .input('exposure', sql.Int, data.exposure)
-    .input('filter',   sql.Int, data.filter)
-    .query<{ id: number }>(`
-      INSERT INTO ap_object_session (object, session, frames, exposure, filter)
-      OUTPUT INSERTED.id
-      VALUES (@object, @session, @frames, @exposure, @filter)
-    `)
-  const newId = insert.recordset[0].id
-  const result = await pool.request()
-    .input('id', sql.Int, newId)
-    .query<ApObjectSessionRow>(`${SELECT_JOINED} WHERE os.id = @id`)
-  return result.recordset[0]
+  const db = connectToDatabase()
+  const { lastInsertRowid } = db.prepare(`
+    INSERT INTO ap_object_session (object, session, frames, exposure, filter)
+    VALUES (@object, @session, @frames, @exposure, @filter)
+  `).run(data)
+  return db.prepare(`${SELECT_JOINED} WHERE os.id = @id`).get({ id: Number(lastInsertRowid) }) as ApObjectSessionRow
 }
 
 export const updateApObjectSession = async (id: number, data: UpdateApObjectSessionDto): Promise<ApObjectSessionRow | null> => {
   const setClauses: string[] = []
-  const pool = await connectToDatabase()
-  const req = pool.request().input('id', sql.Int, id)
+  const params: Record<string, unknown> = { id }
 
-  if (data.object   !== undefined) { setClauses.push('object = @object');     req.input('object',   sql.Int, data.object) }
-  if (data.frames   !== undefined) { setClauses.push('frames = @frames');     req.input('frames',   sql.Int, data.frames) }
-  if (data.exposure !== undefined) { setClauses.push('exposure = @exposure'); req.input('exposure', sql.Int, data.exposure) }
-  if (data.filter   !== undefined) { setClauses.push('filter = @filter');     req.input('filter',   sql.Int, data.filter) }
+  if (data.object   !== undefined) { setClauses.push('object = @object');     params.object = data.object }
+  if (data.frames   !== undefined) { setClauses.push('frames = @frames');     params.frames = data.frames }
+  if (data.exposure !== undefined) { setClauses.push('exposure = @exposure'); params.exposure = data.exposure }
+  if (data.filter   !== undefined) { setClauses.push('filter = @filter');     params.filter = data.filter }
 
-  if (setClauses.length === 0) {
-    const result = await pool.request().input('id', sql.Int, id)
-      .query<ApObjectSessionRow>(`${SELECT_JOINED} WHERE os.id = @id`)
-    return result.recordset[0] ?? null
+  const db = connectToDatabase()
+  if (setClauses.length > 0) {
+    db.prepare(`UPDATE ap_object_session SET ${setClauses.join(', ')} WHERE id = @id`).run(params)
   }
-
-  await req.query(`UPDATE ap_object_session SET ${setClauses.join(', ')} WHERE id = @id`)
-  const result = await pool.request().input('id', sql.Int, id)
-    .query<ApObjectSessionRow>(`${SELECT_JOINED} WHERE os.id = @id`)
-  return result.recordset[0] ?? null
+  return (db.prepare(`${SELECT_JOINED} WHERE os.id = @id`).get({ id }) as ApObjectSessionRow) ?? null
 }
 
 export const deleteApObjectSession = async (id: number): Promise<boolean> => {
-  const pool = await connectToDatabase()
-  await pool.request().input('id', sql.Int, id)
-    .query('DELETE FROM ap_plan_session WHERE session = @id')
-  const result = await pool.request()
-    .input('id', sql.Int, id)
-    .query('DELETE FROM ap_object_session OUTPUT DELETED.id WHERE id = @id')
-  return result.recordset.length > 0
+  const db = connectToDatabase()
+  db.prepare('DELETE FROM ap_plan_session WHERE session = @id').run({ id })
+  const { changes } = db.prepare('DELETE FROM ap_object_session WHERE id = @id').run({ id })
+  return changes > 0
 }
