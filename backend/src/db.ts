@@ -78,6 +78,50 @@ function initSchema(database: Database.Database): void {
       filename TEXT NOT NULL
     );
   `)
+
+  const empty = (database.prepare('SELECT COUNT(*) as c FROM ap_object_types').get() as { c: number }).c === 0
+  if (empty) {
+    const insert = database.prepare('INSERT INTO ap_object_types (name) VALUES (@name)')
+    database.transaction(() => {
+      for (const name of ['Star', 'Star cluster', 'Emission nebula', 'Reflection nebula', 'Galaxy']) {
+        insert.run({ name })
+      }
+    })()
+  }
+
+  const settingsEmpty = (database.prepare('SELECT COUNT(*) as c FROM ap_settings').get() as { c: number }).c === 0
+  if (settingsEmpty) {
+    database.prepare('INSERT INTO ap_settings (name, value) VALUES (@name, @value)')
+      .run({ name: 'file_pattern', value: 'Light_{target}_*_{duration}.0s_Bin1_{filter}_{short_datetime}_{filenumber}.fit' })
+  }
+
+  const exposuresEmpty = (database.prepare('SELECT COUNT(*) as c FROM ap_exposure').get() as { c: number }).c === 0
+  if (exposuresEmpty) {
+    const insert = database.prepare('INSERT INTO ap_exposure (duration) VALUES (@duration)')
+    database.transaction(() => {
+      for (const duration of [30, 60, 120, 180, 240, 300, 600]) {
+        insert.run({ duration })
+      }
+    })()
+  }
+
+  const filtersEmpty = (database.prepare('SELECT COUNT(*) as c FROM ap_filter').get() as { c: number }).c === 0
+  if (filtersEmpty) {
+    const insert = database.prepare('INSERT INTO ap_filter (name, aliases) VALUES (@name, @aliases)')
+    database.transaction(() => {
+      for (const { name, aliases } of [
+        { name: 'Luminance', aliases: 'L;Lum' },
+        { name: 'Red',       aliases: 'R' },
+        { name: 'Green',     aliases: 'G' },
+        { name: 'Blue',      aliases: 'B' },
+        { name: 'H-alpha',   aliases: 'H;Ha' },
+        { name: 'Oxygen',    aliases: 'O;Oiii;OIII' },
+        { name: 'Sulphur',   aliases: 'S;Sii;Siii' },
+      ]) {
+        insert.run({ name, aliases })
+      }
+    })()
+  }
 }
 
 export const connectToDatabase = (): Database.Database => {
