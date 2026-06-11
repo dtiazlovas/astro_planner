@@ -75,7 +75,7 @@ export default function ObjectsPage() {
 
   const typeMap = new Map(types.map(t => [t.id, t.name]))
 
-  type ObjSortField = 'name' | 'type' | 'total_seconds' | 'comment'
+  type ObjSortField = 'name' | 'type' | 'total_seconds'
   const [sortField, setSortField] = useState<ObjSortField>('name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
 
@@ -91,7 +91,6 @@ export default function ObjectsPage() {
       case 'name': cmp = a.name.localeCompare(b.name); break
       case 'type': cmp = (typeMap.get(a.type) ?? '').localeCompare(typeMap.get(b.type) ?? ''); break
       case 'total_seconds': cmp = a.total_seconds - b.total_seconds; break
-      case 'comment': cmp = (a.comment ?? '').localeCompare(b.comment ?? ''); break
     }
     return sortDir === 'asc' ? cmp : -cmp
   })
@@ -250,11 +249,9 @@ export default function ObjectsPage() {
                 <th className="th-sort" onClick={() => handleSort('name')}>Name{sortInd('name')}</th>
                 <th className="th-sort" onClick={() => handleSort('type')}>Type{sortInd('type')}</th>
                 <th>Aliases</th>
-                <th>Position</th>
                 <th>Active</th>
-                <th className="th-sort" onClick={() => handleSort('comment')}>Comment{sortInd('comment')}</th>
                 <th className="th-sort" onClick={() => handleSort('total_seconds')}>Total{sortInd('total_seconds')}</th>
-                <th></th>
+                <th>Progress</th>
               </tr>
             </thead>
             <tbody>
@@ -263,23 +260,7 @@ export default function ObjectsPage() {
                 return (
                   <Fragment key={obj.id}>
                     <tr className={editingId === obj.id ? 'row--editing' : ''}>
-                      <td className="cell-name">{obj.name}</td>
-                      <td><span className="type-badge">{typeMap.get(obj.type) ?? obj.type}</span></td>
-                      <td className="cell-muted">{obj.aliases ?? '—'}</td>
-                      <td className="cell-mono">{obj.position_json}</td>
-                      <td>
-                        <button className={`toggle ${obj.active ? 'toggle--on' : ''}`} onClick={() => handleToggleActive(obj)} disabled={togglingId === obj.id} title={obj.active ? 'Active' : 'Inactive'} />
-                      </td>
-                      <td className="cell-muted">{obj.comment ?? '—'}</td>
-                      <td
-                        className={`cell-time ${obj.total_seconds > 0 ? 'cell-total--clickable' : ''}`}
-                        onClick={() => handleToggleExpand(obj)}
-                        title={obj.total_seconds > 0 ? 'Click to see filter breakdown' : undefined}
-                      >
-                        {fmtDuration(Number(obj.total_seconds))}
-                        {obj.total_seconds > 0 && <span className="expand-caret">{expandedIds.has(obj.id) ? ' ▾' : ' ▸'}</span>}
-                      </td>
-                      <td className="cell-action">
+                      <td className="cell-name-actions" style={{ verticalAlign: 'top' }}>
                         {confirmingId === obj.id ? (
                           <div className="row-actions">
                             <button className="btn-icon btn-danger" onClick={() => handleDelete(obj.id)} disabled={deletingId === obj.id}>{deletingId === obj.id ? '…' : 'Yes'}</button>
@@ -297,35 +278,45 @@ export default function ObjectsPage() {
                             <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
                           </div>
                         )}
+                        <div className="cell-name">{obj.name}</div>
+                      </td>
+                      <td><span className="type-badge">{typeMap.get(obj.type) ?? obj.type}</span></td>
+                      <td className="cell-muted">{obj.aliases ?? '—'}</td>
+                      <td>
+                        <button className={`toggle ${obj.active ? 'toggle--on' : ''}`} onClick={() => handleToggleActive(obj)} disabled={togglingId === obj.id} title={obj.active ? 'Active' : 'Inactive'} />
+                      </td>
+                      <td
+                        className={`cell-time ${obj.total_seconds > 0 ? 'cell-total--clickable' : ''}`}
+                        onClick={() => handleToggleExpand(obj)}
+                        title={obj.total_seconds > 0 ? 'Click to see filter breakdown' : undefined}
+                      >
+                        {fmtDuration(Number(obj.total_seconds))}
+                        {obj.total_seconds > 0 && <span className="expand-caret">{expandedIds.has(obj.id) ? ' ▾' : ' ▸'}</span>}
+                      </td>
+                      <td className="cell-progress">
+                        {progress && progress.length > 0 && (
+                          <div className="plan-progress-list">
+                            {progress.map(p => {
+                              const capturedMins = p.captured_seconds / 60
+                              const pct = p.target_minutes > 0 ? Math.min(100, Math.round(capturedMins / p.target_minutes * 100)) : 0
+                              return (
+                                <div key={p.filter_id} className="plan-progress-item">
+                                  <FilterBadge name={p.filter_name} />
+                                  <div className="plan-progress-bar">
+                                    <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
+                                  </div>
+                                  <span className="cell-time">{fmtMinsH(capturedMins)} / {fmtMinsH(p.target_minutes)}</span>
+                                  <span className="plan-progress-pct">{pct}%</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
                       </td>
                     </tr>
-                    {progress && progress.length > 0 && (
-                      <tr className="plan-progress-row">
-                        <td colSpan={8} style={{ padding: 0 }}>
-                          <div className="filter-stats-panel">
-                            <div className="plan-progress-list">
-                              {progress.map(p => {
-                                const capturedMins = p.captured_seconds / 60
-                                const pct = p.target_minutes > 0 ? Math.min(100, Math.round(capturedMins / p.target_minutes * 100)) : 0
-                                return (
-                                  <div key={p.filter_id} className="plan-progress-item">
-                                    <FilterBadge name={p.filter_name} />
-                                    <div className="plan-progress-bar">
-                                      <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
-                                    </div>
-                                    <span className="cell-time">{fmtMinsH(capturedMins)} / {fmtMinsH(p.target_minutes)}</span>
-                                    <span className="plan-progress-pct">{pct}%</span>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
                     {expandedIds.has(obj.id) && (
                       <tr>
-                        <td colSpan={8} style={{ padding: 0 }}>
+                        <td colSpan={6} style={{ padding: 0 }}>
                           <div className="filter-stats-panel">
                             <span className="filter-stats-panel__title">{obj.name} — by filter</span>
                             {loadingIds.has(obj.id) ? (
@@ -348,7 +339,7 @@ export default function ObjectsPage() {
                     )}
                     {planExpandedIds.has(obj.id) && (
                       <tr>
-                        <td colSpan={8} style={{ padding: 0 }}>
+                        <td colSpan={6} style={{ padding: 0 }}>
                           <PlansPanel
                             objectId={obj.id}
                             objectName={obj.name}

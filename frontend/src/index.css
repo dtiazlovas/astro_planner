@@ -311,7 +311,7 @@ body {
 .th-sort:hover { color: #94a3b8; }
 
 .data-table td {
-  padding: 0.75rem 1rem;
+  padding: 1rem 1rem;
   border-bottom: 1px solid #17172e;
   vertical-align: middle;
 }
@@ -320,12 +320,16 @@ body {
   border-bottom: none;
 }
 
-.data-table tbody tr {
+.data-table tbody tr:nth-child(odd) {
   background: #1c1c2e;
 }
 
+.data-table tbody tr:nth-child(even) {
+  background: #1a1a2a;
+}
+
 .data-table tbody tr:hover {
-  background: #22223a;
+  background: #24243c;
 }
 
 .cell-name {
@@ -348,15 +352,25 @@ body {
 }
 
 .cell-action {
-  text-align: right;
-  width: 100px;
+  width: 36px;
+  padding-right: 0.25rem;
+}
+
+.cell-name-actions {
+  min-width: 180px;
+}
+
+.cell-progress {
+  min-width: 200px;
 }
 
 .delete-confirm,
 .row-actions {
   display: flex;
+  flex-direction: row;
   gap: 4px;
-  justify-content: flex-end;
+  align-items: center;
+  margin-bottom: 0.4rem;
 }
 
 .btn-edit {

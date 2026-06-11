@@ -27,7 +27,7 @@ export async function fetchPattern(): Promise<string> {
     const res = await fetch(`${BASE}/settings/${SETTING_KEY}`)
     if (res.ok) {
       const data = await res.json() as { value: string | null }
-      return data.value ?? DEFAULT_PATTERN
+      return data.value?.split('\n')[0]?.trim() ?? DEFAULT_PATTERN
     }
   } catch {}
   return DEFAULT_PATTERN
@@ -39,6 +39,43 @@ export async function savePattern(value: string): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ value }),
   })
+}
+
+export async function fetchPatterns(): Promise<string[]> {
+  try {
+    const res = await fetch(`${BASE}/settings/${SETTING_KEY}`)
+    if (res.ok) {
+      const data = await res.json() as { value: string | null }
+      if (data.value) {
+        const parts = data.value.split('\n').map(s => s.trim()).filter(Boolean)
+        if (parts.length) return parts
+      }
+    }
+  } catch {}
+  return [DEFAULT_PATTERN]
+}
+
+export async function savePatterns(patterns: string[]): Promise<void> {
+  await fetch(`${BASE}/settings/${SETTING_KEY}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: patterns.join('\n') }),
+  })
+}
+
+export function parseFileMulti(filename: string, patterns: string[]): ParsedFile | null {
+  for (const pattern of patterns) {
+    try {
+      const r = parseFile(filename, patternToRegex(pattern))
+      if (r) return r
+    } catch {}
+  }
+  return null
+}
+
+export function getPatternAcceptMulti(patterns: string[]): string {
+  const exts = [...new Set(patterns.map(getPatternAccept).filter(e => e !== '*'))]
+  return exts.length ? exts.join(',') : '*'
 }
 
 export async function fetchDayStartHour(): Promise<number> {

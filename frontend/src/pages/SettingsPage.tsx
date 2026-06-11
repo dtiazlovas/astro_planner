@@ -1,12 +1,12 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { getFilters, createFilter, updateFilter, deleteFilter } from '../api'
 import type { ApFilter } from '../types'
-import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPattern, savePattern, fetchDayStartHour, saveDayStartHour } from '../utils/filePattern'
+import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour } from '../utils/filePattern'
 
 const emptyFilterForm = { name: '', aliases: '' }
 
 export default function SettingsPage() {
-  const [pattern, setPattern] = useState(DEFAULT_PATTERN)
+  const [patterns, setPatterns] = useState<string[]>([DEFAULT_PATTERN])
   const [saving, setSaving] = useState(false)
   const [test, setTest] = useState('')
   const [dayStartHour, setDayStartHour] = useState(16)
@@ -21,7 +21,7 @@ export default function SettingsPage() {
   const [confirmingFilterId, setConfirmingFilterId] = useState<number | null>(null)
   const [deletingFilterId, setDeletingFilterId] = useState<number | null>(null)
 
-  useEffect(() => { fetchPattern().then(setPattern) }, [])
+  useEffect(() => { fetchPatterns().then(setPatterns) }, [])
   useEffect(() => { fetchDayStartHour().then(setDayStartHour) }, [])
 
   useEffect(() => {
@@ -31,18 +31,35 @@ export default function SettingsPage() {
       .finally(() => setLoadingFilters(false))
   }, [])
 
-  const handlePatternChange = async (v: string) => {
-    setPattern(v)
+  const saveAll = async (next: string[]) => {
+    setPatterns(next)
     setSaving(true)
-    try { await savePattern(v) } finally { setSaving(false) }
+    try { await savePatterns(next) } finally { setSaving(false) }
   }
 
-  const resetPattern = () => handlePatternChange(DEFAULT_PATTERN)
+  const handlePatternChange = (idx: number, v: string) => {
+    const next = patterns.map((p, i) => i === idx ? v : p)
+    saveAll(next)
+  }
+
+  const addPattern = () => saveAll([...patterns, ''])
+
+  const removePattern = (idx: number) => {
+    if (patterns.length <= 1) return
+    saveAll(patterns.filter((_, i) => i !== idx))
+  }
+
+  const resetPatterns = () => saveAll([DEFAULT_PATTERN])
 
   let parsed: ReturnType<typeof parseFile> | 'invalid' = null
   if (test.trim()) {
-    try { parsed = parseFile(test.trim(), patternToRegex(pattern)) }
-    catch { parsed = 'invalid' }
+    for (const p of patterns) {
+      try {
+        const r = parseFile(test.trim(), patternToRegex(p))
+        if (r) { parsed = r; break }
+      } catch { parsed = 'invalid'; break }
+    }
+    if (parsed === null) parsed = null
   }
 
   const openAddFilter = () => {
@@ -179,26 +196,35 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* ── Filename Pattern ── */}
+      {/* ── Filename Patterns ── */}
       <div className="settings-card">
-        <p className="settings-card__title">
-          Filename Pattern {saving && <span className="cell-muted" style={{ fontWeight: 400, fontSize: '0.8rem' }}> saving…</span>}
-        </p>
-        <p className="cell-muted" style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
-          Use <code className="inline-code">{'{placeholder}'}</code> tokens for variable parts and <code className="inline-code">*</code> as a wildcard.
-          Saved to database automatically.
-        </p>
-
-        <div className="form-field" style={{ marginBottom: '1.25rem' }}>
-          <label htmlFor="pat">Pattern</label>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+          <p className="settings-card__title" style={{ margin: 0 }}>
+            Filename Patterns {saving && <span className="cell-muted" style={{ fontWeight: 400, fontSize: '0.8rem' }}> saving…</span>}
+          </p>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <input id="pat" value={pattern} onChange={e => handlePatternChange(e.target.value)}
-              style={{ fontFamily: 'monospace', fontSize: '0.85rem', flex: 1 }} spellCheck={false} />
-            <button className="btn btn-ghost" onClick={resetPattern}>Reset</button>
+            <button className="btn btn-primary" onClick={addPattern}>+ Add Pattern</button>
+            <button className="btn btn-ghost" onClick={resetPatterns}>Reset</button>
           </div>
         </div>
+        <p className="cell-muted" style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
+          A file must match at least one pattern to be imported.
+          Use <code className="inline-code">{'{placeholder}'}</code> tokens and <code className="inline-code">*</code> as a wildcard.
+          Saved automatically.
+        </p>
 
-        <div className="placeholder-grid">
+        {patterns.map((p, idx) => (
+          <div key={idx} className="form-field" style={{ marginBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input value={p} onChange={e => handlePatternChange(idx, e.target.value)}
+                style={{ fontFamily: 'monospace', fontSize: '0.85rem', flex: 1 }} spellCheck={false} />
+              <button className="btn btn-danger" disabled={patterns.length <= 1}
+                onClick={() => removePattern(idx)}>✕</button>
+            </div>
+          </div>
+        ))}
+
+        <div className="placeholder-grid" style={{ marginTop: '1rem' }}>
           {Object.entries(PLACEHOLDER_DOCS).map(([k, v]) => (
             <div key={k} className="placeholder-row">
               <code className="inline-code">{`{${k}}`}</code>

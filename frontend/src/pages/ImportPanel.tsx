@@ -9,8 +9,8 @@ import {
 } from '../api'
 import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } from '../types'
 import {
-  DEFAULT_PATTERN, fetchPattern, patternToRegex, parseFile, dateKey, toDatetimeLocal,
-  matchObject, matchFilter, matchExposure, getPatternAccept,
+  DEFAULT_PATTERN, fetchPatterns, parseFileMulti, dateKey, toDatetimeLocal,
+  matchObject, matchFilter, matchExposure, getPatternAcceptMulti,
   fetchDayStartHour,
 } from '../utils/filePattern'
 
@@ -44,17 +44,15 @@ function buildPreview(
   objects: ApObject[],
   filters: ApFilter[],
   exposures: ApExposure[],
-  pattern: string,
+  patterns: string[],
   overrides: Record<string, number>,
   filterOverrides: Record<string, number>,
   dayStartHour = 0,
 ): { sessions: ImportSession[]; warnings: string[]; parsed: number; skipped: number } {
-  const regex = patternToRegex(pattern)
-
-  const parsed: ReturnType<typeof parseFile>[] = []
+  const parsed: ReturnType<typeof parseFileMulti>[] = []
   let skipped = 0
   for (const f of rawFiles) {
-    const r = parseFile(f.name, regex)
+    const r = parseFileMulti(f.name, patterns)
     if (r) parsed.push(r)
     else skipped++
   }
@@ -130,7 +128,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [filters, setFilters] = useState<ApFilter[]>([])
   const [exposures, setExposures] = useState<ApExposure[]>([])
   const [sessions, setSessions] = useState<ApSession[]>([])
-  const [pattern, setPattern] = useState(DEFAULT_PATTERN)
+  const [patterns, setPatterns] = useState<string[]>([DEFAULT_PATTERN])
   const [dayStartHour, setDayStartHour] = useState(16)
   const [lookupReady, setLookupReady] = useState(false)
 
@@ -162,11 +160,16 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [error, setError] = useState<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    Promise.all([getObjects(), getFilters(), getExposures(), fetchPattern(), getObjectTypes(), getSessions(), getPlans(), fetchDayStartHour()])
+    if (folderInputRef.current) folderInputRef.current.setAttribute('webkitdirectory', '')
+  }, [])
+
+  useEffect(() => {
+    Promise.all([getObjects(), getFilters(), getExposures(), fetchPatterns(), getObjectTypes(), getSessions(), getPlans(), fetchDayStartHour()])
       .then(([o, f, e, p, ot, s, pl, dsh]) => {
-        setObjects(o); setFilters(f); setExposures(e); setPattern(p); setObjectTypes(ot); setSessions(s); setAllPlans(pl); setDayStartHour(dsh)
+        setObjects(o); setFilters(f); setExposures(e); setPatterns(p); setObjectTypes(ot); setSessions(s); setAllPlans(pl); setDayStartHour(dsh)
         setLookupReady(true)
       })
       .catch(() => setError('Failed to load lookup data'))
@@ -180,20 +183,18 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     fovr: Record<string, number>,
     dsh = dayStartHour,
   ) => {
-    const result = buildPreview(files, objs, filts, exposures, pattern, ovr, fovr, dsh)
+    const result = buildPreview(files, objs, filts, exposures, patterns, ovr, fovr, dsh)
     setPreview(result.sessions)
     setWarnings(result.warnings)
     setParsedCount(result.parsed)
     setSkippedCount(result.skipped)
   }
 
-  const handleFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const all = Array.from(e.target.files ?? [])
+  const processFiles = async (all: File[]) => {
     if (!all.length) return
     setError(null); setDone(null)
     setTargetOverrides({}); setTargetAliasTo({}); setTargetNewType({}); setIgnoredTargets([])
     setFilterOverrides({}); setFilterAliasTo({}); setIgnoredFilters([])
-    if (fileInputRef.current) fileInputRef.current.value = ''
 
     let alreadyImported: string[] = []
     try { alreadyImported = await checkImported(all.map(f => f.name)) } catch {}
@@ -202,6 +203,22 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setDuplicateCount(all.length - fresh.length)
     setRawFiles(fresh)
     applyPreview(fresh, objects, filters, {}, {})
+  }
+
+  const handleFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const all = Array.from(e.target.files ?? [])
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    await processFiles(all)
+  }
+
+  const handleFolderFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const accept = getPatternAcceptMulti(patterns)
+    const exts = accept === '*' ? null : accept.split(',').map(e => e.toLowerCase())
+
+    const all = Array.from(e.target.files ?? [])
+      .filter(f => !exts || exts.some(ext => f.name.toLowerCase().endsWith(ext)))
+    if (folderInputRef.current) folderInputRef.current.value = ''
+    await processFiles(all)
   }
 
   // ── target helpers ──────────────────────────────────────────
@@ -404,13 +421,21 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
             <input ref={fileInputRef} type="file" style={{ display: 'none' }}
-              accept={getPatternAccept(pattern)} multiple onChange={handleFiles} />
+              accept={getPatternAcceptMulti(patterns)} multiple onChange={handleFiles} />
+            <input ref={folderInputRef} type="file" style={{ display: 'none' }}
+              accept={getPatternAcceptMulti(patterns)} onChange={handleFolderFiles} />
             <button className="btn btn-primary" disabled={!lookupReady}
               onClick={() => fileInputRef.current?.click()}>
               📁 Select Files
             </button>
+            <button className="btn btn-secondary" disabled={!lookupReady}
+              onClick={() => folderInputRef.current?.click()}>
+              🗂 Select Folder
+            </button>
             <span className="cell-muted" style={{ fontSize: '0.85rem' }}>
-              Pattern: <code className="inline-code">{pattern}</code>
+              {patterns.length === 1
+                ? <>Pattern: <code className="inline-code">{patterns[0]}</code></>
+                : <>{patterns.length} patterns</>}
             </span>
           </div>
 
