@@ -5,7 +5,7 @@ import {
   updateObject, createObject,
   updateFilter, createFilter,
   checkImported, recordImported,
-  getPlans, setPlanSession,
+  getPlans, setPlanSession, createPlan, createPlanDetail,
 } from '../api'
 import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } from '../types'
 import {
@@ -362,6 +362,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       const dk = dateKey(new Date(s.start), dayStartHour)
       if (!sessionByDate.has(dk)) sessionByDate.set(dk, s.id)
     }
+
+    const createdObjSessionsByObject = new Map<number, number[]>()
+    const entriesByObject = new Map<number, ImportEntry[]>()
+
     try {
       for (const s of importableSessions) {
         let sessionId: number
@@ -385,10 +389,33 @@ export default function ImportPanel({ onImported, onClose }: Props) {
           if (planId) {
             try { await setPlanSession({ session: created.id, planid: planId }) } catch {}
           }
+          const objId = entry.objectId!
+          createdObjSessionsByObject.set(objId, [...(createdObjSessionsByObject.get(objId) ?? []), created.id])
+          entriesByObject.set(objId, [...(entriesByObject.get(objId) ?? []), entry])
           importedNames.push(...entry.fileNames)
           entryCount++
         }
       }
+
+      // Auto-create an active plan for any imported object that has no plans at all
+      for (const [objectId, objSessionIds] of createdObjSessionsByObject.entries()) {
+        if (allPlans.some(p => p.object === objectId)) continue
+        const entries = entriesByObject.get(objectId)!
+        const newPlan = await createPlan({ object: objectId, name: entries[0].objectName ?? String(objectId), active: true })
+        const byFilter = new Map<number, number>()
+        for (const e of entries) {
+          if (e.filterId) byFilter.set(e.filterId, (byFilter.get(e.filterId) ?? 0) + e.frames * e.duration)
+        }
+        for (const [filterId, totalSeconds] of byFilter.entries()) {
+          // round up to nearest 10 hours, expressed in minutes
+          const durationMinutes = Math.ceil(totalSeconds / 36000) * 600
+          await createPlanDetail({ planid: newPlan.id, filter: filterId, duration: durationMinutes })
+        }
+        for (const osId of objSessionIds) {
+          try { await setPlanSession({ session: osId, planid: newPlan.id }) } catch {}
+        }
+      }
+
       try { await recordImported(importedNames) } catch {}
       setDone({ sessions: createdCount, entries: entryCount })
       setPreview(null)

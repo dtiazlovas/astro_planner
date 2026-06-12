@@ -360,6 +360,38 @@ body {
   min-width: 180px;
 }
 
+.cell-type {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.type-icon {
+  display: block;
+  font-size: 1.75rem;
+  line-height: 1;
+  margin-bottom: 0.25rem;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+.type-icon-svg {
+  display: block;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0 auto;
+}
+
+.type-icon-img {
+  display: block;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0 auto;
+  filter: drop-shadow(0 0 4px #f87171);
+}
+
+.type-icon-img--reflection {
+  filter: drop-shadow(0 0 4px #67e8f9);
+}
+
 .cell-progress {
   min-width: 200px;
 }
@@ -367,10 +399,10 @@ body {
 .delete-confirm,
 .row-actions {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   gap: 4px;
   align-items: center;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0;
 }
 
 .btn-edit {

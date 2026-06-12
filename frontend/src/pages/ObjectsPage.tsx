@@ -1,8 +1,11 @@
-import { useState, useEffect, Fragment } from 'react'
+import React, { useState, useEffect, Fragment } from 'react'
 import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
+import GalaxyIcon from '../components/GalaxyIcon'
+import nebulaImg from '../assets/nebula.png'
+import nebulaReflectionImg from '../assets/nebula-reflection.png'
 
 const emptyForm = { name: '', typeId: '', position_json: '', comment: '', aliases: '', active: true }
 
@@ -74,6 +77,16 @@ export default function ObjectsPage() {
   }
 
   const typeMap = new Map(types.map(t => [t.id, t.name]))
+
+  const getTypeIcon = (name: string): { icon: React.ReactNode; color: string } => {
+    const n = name.toLowerCase()
+    if (n.includes('star cluster') || n.includes('cluster')) return { icon: '⁂', color: '#93c5fd' }
+    if (n.includes('star'))    return { icon: '★',  color: '#fde68a' }
+    if (n.includes('emission')) return { icon: <img src={nebulaImg} className="type-icon-img" alt="emission nebula" />, color: '#f87171' }
+    if (n.includes('reflection')) return { icon: <img src={nebulaReflectionImg} className="type-icon-img type-icon-img--reflection" alt="reflection nebula" />, color: '#67e8f9' }
+    if (n.includes('galaxy'))  return { icon: <GalaxyIcon className="type-icon-svg" />, color: '#c4b5fd' }
+    return { icon: '·', color: '#94a3b8' }
+  }
 
   type ObjSortField = 'name' | 'type' | 'total_seconds'
   const [sortField, setSortField] = useState<ObjSortField>('name')
@@ -248,10 +261,10 @@ export default function ObjectsPage() {
               <tr>
                 <th className="th-sort" onClick={() => handleSort('name')}>Name{sortInd('name')}</th>
                 <th className="th-sort" onClick={() => handleSort('type')}>Type{sortInd('type')}</th>
-                <th>Aliases</th>
                 <th>Active</th>
                 <th className="th-sort" onClick={() => handleSort('total_seconds')}>Total{sortInd('total_seconds')}</th>
                 <th>Progress</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -261,27 +274,14 @@ export default function ObjectsPage() {
                   <Fragment key={obj.id}>
                     <tr className={editingId === obj.id ? 'row--editing' : ''}>
                       <td className="cell-name-actions" style={{ verticalAlign: 'top' }}>
-                        {confirmingId === obj.id ? (
-                          <div className="row-actions">
-                            <button className="btn-icon btn-danger" onClick={() => handleDelete(obj.id)} disabled={deletingId === obj.id}>{deletingId === obj.id ? '…' : 'Yes'}</button>
-                            <button className="btn-icon btn-ghost" onClick={() => setConfirmingId(null)}>No</button>
-                          </div>
-                        ) : (
-                          <div className="row-actions">
-                            <button className="btn-icon btn-contents" onClick={() => setPlanExpandedIds(prev => { const s = new Set(prev); s.has(obj.id) ? s.delete(obj.id) : s.add(obj.id); return s })} title="Plans">☰</button>
-                            {activePlanObjectIds.has(obj.id) && (
-                              <button className="btn-icon btn-assign" onClick={() => handleAssignAll(obj.id)} disabled={assigningIds.has(obj.id)} title="Assign all unassigned sessions to active plan">
-                                {assigningIds.has(obj.id) ? '…' : '⬆'}
-                              </button>
-                            )}
-                            <button className="btn-icon btn-edit" onClick={() => openEdit(obj)} title="Edit">✎</button>
-                            <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
-                          </div>
-                        )}
                         <div className="cell-name">{obj.name}</div>
+                        {obj.aliases && obj.aliases.split(';').map(a => a.trim()).filter(Boolean).map((a, i) => (
+                          <div key={i} className="cell-muted" style={{ fontSize: '0.8rem' }}>{a}</div>
+                        ))}
                       </td>
-                      <td><span className="type-badge">{typeMap.get(obj.type) ?? obj.type}</span></td>
-                      <td className="cell-muted">{obj.aliases ?? '—'}</td>
+                      <td className="cell-type">
+                        {(() => { const typeName = typeMap.get(obj.type) ?? String(obj.type); const { icon, color } = getTypeIcon(typeName); return (<><span className="type-icon" style={{ color }}>{icon}</span><span className="type-badge">{typeName}</span></>) })()}
+                      </td>
                       <td>
                         <button className={`toggle ${obj.active ? 'toggle--on' : ''}`} onClick={() => handleToggleActive(obj)} disabled={togglingId === obj.id} title={obj.active ? 'Active' : 'Inactive'} />
                       </td>
@@ -310,6 +310,25 @@ export default function ObjectsPage() {
                                 </div>
                               )
                             })}
+                          </div>
+                        )}
+                      </td>
+                      <td className="cell-action" style={{ verticalAlign: 'top' }}>
+                        {confirmingId === obj.id ? (
+                          <div className="row-actions">
+                            <button className="btn-icon btn-danger" onClick={() => handleDelete(obj.id)} disabled={deletingId === obj.id}>{deletingId === obj.id ? '…' : 'Yes'}</button>
+                            <button className="btn-icon btn-ghost" onClick={() => setConfirmingId(null)}>No</button>
+                          </div>
+                        ) : (
+                          <div className="row-actions">
+                            <button className="btn-icon btn-contents" onClick={() => setPlanExpandedIds(prev => { const s = new Set(prev); s.has(obj.id) ? s.delete(obj.id) : s.add(obj.id); return s })} title="Plans">☰</button>
+                            {activePlanObjectIds.has(obj.id) && (
+                              <button className="btn-icon btn-assign" onClick={() => handleAssignAll(obj.id)} disabled={assigningIds.has(obj.id)} title="Assign all unassigned sessions to active plan">
+                                {assigningIds.has(obj.id) ? '…' : '⬆'}
+                              </button>
+                            )}
+                            <button className="btn-icon btn-edit" onClick={() => openEdit(obj)} title="Edit">✎</button>
+                            <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
                           </div>
                         )}
                       </td>
