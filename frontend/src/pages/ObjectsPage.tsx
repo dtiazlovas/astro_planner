@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Fragment } from 'react'
-import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject } from '../api'
+import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
@@ -37,6 +37,7 @@ export default function ObjectsPage() {
   const [planExpandedIds, setPlanExpandedIds] = useState<Set<number>>(new Set())
   const [activePlanObjectIds, setActivePlanObjectIds] = useState<Set<number>>(new Set())
   const [assigningIds, setAssigningIds] = useState<Set<number>>(new Set())
+  const [dragOverId, setDragOverId] = useState<number | null>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -88,28 +89,52 @@ export default function ObjectsPage() {
     return { icon: '·', color: '#94a3b8' }
   }
 
-  type ObjSortField = 'name' | 'type' | 'total_seconds'
-  const [sortField, setSortField] = useState<ObjSortField>('name')
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  const handleDragStart = (e: React.DragEvent, id: number) => {
+    e.dataTransfer.setData('text/plain', String(id))
+    e.dataTransfer.effectAllowed = 'move'
 
-  const handleSort = (field: ObjSortField) => {
-    if (field === sortField) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-    else { setSortField(field); setSortDir('asc') }
+    const tr = (e.currentTarget as HTMLElement).closest('tr')
+    if (tr) {
+      const rect = tr.getBoundingClientRect()
+      const ghost = document.createElement('table')
+      ghost.className = 'data-table'
+      ghost.style.cssText = `position:absolute;top:-9999px;left:-9999px;width:${rect.width}px;border-collapse:collapse;background:#1e1e32;opacity:0.95;`
+      const tbody = document.createElement('tbody')
+      tbody.appendChild(tr.cloneNode(true))
+      ghost.appendChild(tbody)
+      document.body.appendChild(ghost)
+      e.dataTransfer.setDragImage(ghost, e.clientX - rect.left, e.clientY - rect.top)
+      setTimeout(() => document.body.removeChild(ghost), 0)
+    }
   }
 
-  const sortedObjects = [...objects].sort((a, b) => {
-    if (a.active !== b.active) return a.active ? -1 : 1
-    let cmp = 0
-    switch (sortField) {
-      case 'name': cmp = a.name.localeCompare(b.name); break
-      case 'type': cmp = (typeMap.get(a.type) ?? '').localeCompare(typeMap.get(b.type) ?? ''); break
-      case 'total_seconds': cmp = a.total_seconds - b.total_seconds; break
-    }
-    return sortDir === 'asc' ? cmp : -cmp
-  })
+  const handleDragOver = (e: React.DragEvent, id: number) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOverId(id)
+  }
 
-  const sortInd = (field: ObjSortField) =>
-    sortField === field ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+  const handleDrop = async (e: React.DragEvent, targetId: number) => {
+    e.preventDefault()
+    setDragOverId(null)
+    const sourceId = Number(e.dataTransfer.getData('text/plain'))
+    if (!sourceId || sourceId === targetId) return
+    const newOrder = [...objects]
+    const sourceIdx = newOrder.findIndex(o => o.id === sourceId)
+    const targetIdx = newOrder.findIndex(o => o.id === targetId)
+    if (sourceIdx === -1 || targetIdx === -1) return
+    const [removed] = newOrder.splice(sourceIdx, 1)
+    const newTargetIdx = newOrder.findIndex(o => o.id === targetId)
+    const insertAt = sourceIdx < targetIdx ? newTargetIdx + 1 : newTargetIdx
+    newOrder.splice(insertAt, 0, removed)
+    setObjects(newOrder)
+    try {
+      await reorderObjects(newOrder.map(o => o.id))
+    } catch {
+      setError('Failed to reorder objects')
+      try { setObjects(await getObjects()) } catch {}
+    }
+  }
 
   const openAdd = () => {
     setEditingId(null); setForm(emptyForm); setShowForm(true); setError(null)
@@ -208,9 +233,9 @@ export default function ObjectsPage() {
 
       {error && <div className="error-banner">{error}</div>}
 
-      {showForm && (
+      {showForm && editingId === null && (
         <form className="object-form" onSubmit={handleSubmit}>
-          <p className="form-title">{editingId !== null ? 'Edit Object' : 'New Object'}</p>
+          <p className="form-title">New Object</p>
           <div className="form-grid">
             <div className="form-field">
               <label htmlFor="obj-name">Name</label>
@@ -259,25 +284,36 @@ export default function ObjectsPage() {
           <table className="data-table">
             <thead>
               <tr>
-                <th className="th-sort" onClick={() => handleSort('name')}>Name{sortInd('name')}</th>
-                <th className="th-sort" onClick={() => handleSort('type')}>Type{sortInd('type')}</th>
+                <th>Name</th>
+                <th>Type</th>
                 <th>Active</th>
-                <th className="th-sort" onClick={() => handleSort('total_seconds')}>Total{sortInd('total_seconds')}</th>
+                <th>Total</th>
                 <th>Progress</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {sortedObjects.map(obj => {
+              {objects.map((obj, objIdx) => {
                 const progress = planProgress.get(obj.id)
                 return (
                   <Fragment key={obj.id}>
-                    <tr className={editingId === obj.id ? 'row--editing' : ''}>
+                    <tr
+                      className={editingId === obj.id ? 'row--editing' : dragOverId === obj.id ? 'row--drag-over' : ''}
+                      onDragOver={e => handleDragOver(e, obj.id)}
+                      onDragLeave={() => setDragOverId(null)}
+                      onDrop={e => handleDrop(e, obj.id)}
+                    >
                       <td className="cell-name-actions" style={{ verticalAlign: 'top' }}>
                         <div className="cell-name">{obj.name}</div>
                         {obj.aliases && obj.aliases.split(';').map(a => a.trim()).filter(Boolean).map((a, i) => (
                           <div key={i} className="cell-muted" style={{ fontSize: '0.8rem' }}>{a}</div>
                         ))}
+                        <div
+                          className="drag-handle"
+                          draggable
+                          onDragStart={e => handleDragStart(e, obj.id)}
+                          title="Drag to reorder"
+                        >{Array.from({ length: 9 }).map((_, i) => <span key={i} className="drag-handle__dot" />)}</div>
                       </td>
                       <td className="cell-type">
                         {(() => { const typeName = typeMap.get(obj.type) ?? String(obj.type); const { icon, color } = getTypeIcon(typeName); return (<><span className="type-icon" style={{ color }}>{icon}</span><span className="type-badge">{typeName}</span></>) })()}
@@ -369,6 +405,51 @@ export default function ObjectsPage() {
                               return s
                             })}
                           />
+                        </td>
+                      </tr>
+                    )}
+                    {editingId === obj.id && showForm && (
+                      <tr className="row--editor">
+                        <td colSpan={6} style={{ padding: 0 }}>
+                          <form className="object-form object-form--inline" onSubmit={handleSubmit}>
+                            <div className="form-grid">
+                              <div className="form-field">
+                                <label htmlFor="obj-name">Name</label>
+                                <input id="obj-name" value={form.name} onChange={set('name')} required placeholder="e.g. Andromeda Galaxy" autoFocus />
+                              </div>
+                              <div className="form-field">
+                                <label htmlFor="obj-type">Type</label>
+                                <select id="obj-type" value={form.typeId} onChange={set('typeId')} required>
+                                  <option value="">Select type…</option>
+                                  {types.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                </select>
+                              </div>
+                              <div className="form-field form-field--full">
+                                <label htmlFor="obj-position">Position (JSON)</label>
+                                <input id="obj-position" value={form.position_json} onChange={set('position_json')} required placeholder='{"ra": "00h42m44s", "dec": "+41°16′09″"}' />
+                              </div>
+                              <div className="form-field">
+                                <label htmlFor="obj-aliases">Aliases</label>
+                                <input id="obj-aliases" value={form.aliases} onChange={set('aliases')} placeholder="e.g. M31; NGC 224" />
+                              </div>
+                              <div className="form-field form-field--check">
+                                <label className="check-label">
+                                  <input type="checkbox" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} />
+                                  Active
+                                </label>
+                              </div>
+                              <div className="form-field form-field--full">
+                                <label htmlFor="obj-comment">Comment</label>
+                                <textarea id="obj-comment" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
+                              </div>
+                            </div>
+                            <div className="form-actions">
+                              <button type="submit" className="btn btn-primary" disabled={submitting}>
+                                {submitting ? 'Saving…' : 'Update Object'}
+                              </button>
+                              <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
+                            </div>
+                          </form>
                         </td>
                       </tr>
                     )}

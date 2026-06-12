@@ -36,6 +36,9 @@ export const getObjectPlanProgress = (id: number): Promise<PlanProgressItem[]> =
 export const assignToActivePlan = (id: number): Promise<{ assigned: number }> =>
   fetch(`${BASE}/objects/${id}/assign-to-plan`, { method: 'POST' }).then(json<{ assigned: number }>)
 
+export const reorderObjects = (ids: number[]): Promise<ApObject[]> =>
+  fetch(`${BASE}/objects/reorder`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) }).then(json<ApObject[]>)
+
 export const deleteObject = (id: number): Promise<void> =>
   fetch(`${BASE}/objects/${id}`, { method: 'DELETE' }).then(() => undefined)
 

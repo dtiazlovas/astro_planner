@@ -6,7 +6,8 @@ import {
   getObjectPlanProgress,
   createApObject,
   updateApObject,
-  deleteApObject
+  deleteApObject,
+  reorderAllApObjects
 } from '../services/apObjectService.js'
 import { assignUnassignedToActivePlan } from '../services/apPlanSessionService.js'
 import type { CreateApObjectDto, UpdateApObjectDto } from '../models/ApObject.js'
@@ -15,6 +16,19 @@ const router = Router()
 
 router.get('/', async (_req: Request, res: Response) => {
   try {
+    res.json(await getAllApObjects())
+  } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.put('/reorder', async (req: Request, res: Response) => {
+  const { ids } = req.body as { ids?: unknown }
+  if (!Array.isArray(ids) || ids.some(id => typeof id !== 'number')) {
+    res.status(400).json({ error: 'ids must be an array of numbers' }); return
+  }
+  try {
+    await reorderAllApObjects(ids)
     res.json(await getAllApObjects())
   } catch {
     res.status(500).json({ error: 'Internal server error' })

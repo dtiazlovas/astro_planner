@@ -6,6 +6,7 @@ export interface ApObject {
   comment: string | null
   active: boolean
   aliases: string | null
+  priority: number
   total_seconds: number
 }
 

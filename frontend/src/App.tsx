@@ -26,6 +26,9 @@ export default function App() {
         {page === 'sessions' && <SessionsPage />}
         {page === 'settings' && <SettingsPage />}
       </main>
+      <footer className="app-footer">
+        Icons by <a href="https://www.flaticon.com/" target="_blank" rel="noopener noreferrer">Flaticon</a>
+      </footer>
     </div>
   )
 }

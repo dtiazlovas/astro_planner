@@ -79,6 +79,17 @@ function initSchema(database: Database.Database): void {
     );
   `)
 
+  // Migrate: add priority column if missing
+  try { database.exec('ALTER TABLE ap_object ADD COLUMN priority INTEGER NOT NULL DEFAULT 0') } catch {}
+  // Initialise unique priorities for existing rows that all share the default 0
+  const allZero = (database.prepare('SELECT COUNT(*) as c FROM ap_object WHERE priority != 0').get() as { c: number }).c === 0
+  const objCount = (database.prepare('SELECT COUNT(*) as c FROM ap_object').get() as { c: number }).c
+  if (allZero && objCount > 1) {
+    const rows = database.prepare('SELECT id FROM ap_object ORDER BY id').all() as { id: number }[]
+    const upd = database.prepare('UPDATE ap_object SET priority = @priority WHERE id = @id')
+    database.transaction(() => { rows.forEach((r, i) => upd.run({ priority: i, id: r.id })) })()
+  }
+
   const empty = (database.prepare('SELECT COUNT(*) as c FROM ap_object_types').get() as { c: number }).c === 0
   if (empty) {
     const insert = database.prepare('INSERT INTO ap_object_types (name) VALUES (@name)')
