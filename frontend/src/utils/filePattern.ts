@@ -98,6 +98,38 @@ export async function saveDayStartHour(hour: number): Promise<void> {
   })
 }
 
+const IMAGES_FOLDER_KEY = 'images_folder'
+
+export async function fetchImagesFolder(): Promise<string> {
+  try {
+    const res = await fetch(`${BASE}/settings/${IMAGES_FOLDER_KEY}`)
+    if (res.ok) {
+      const data = await res.json() as { value: string | null }
+      return data.value ?? ''
+    }
+  } catch {}
+  return ''
+}
+
+export async function saveImagesFolder(folder: string): Promise<void> {
+  await fetch(`${BASE}/settings/${IMAGES_FOLDER_KEY}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: folder }),
+  })
+}
+
+export async function pickFolder(): Promise<string | null> {
+  try {
+    const res = await fetch(`${BASE}/settings/pick-folder`, { method: 'POST' })
+    if (!res.ok) return null
+    const data = await res.json() as { path: string }
+    return data.path || null
+  } catch {
+    return null
+  }
+}
+
 export function patternToRegex(pattern: string): RegExp {
   const parts = pattern.split(/(\{[^}]+\})/)
   let rx = ''

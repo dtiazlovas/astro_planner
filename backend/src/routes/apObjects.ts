@@ -92,7 +92,9 @@ router.post('/', async (req: Request, res: Response) => {
       position_json: body.position_json,
       comment: body.comment ?? null,
       active: body.active ?? true,
-      aliases: body.aliases ?? null
+      aliases: body.aliases ?? null,
+      priority: 0,
+      folder: body.folder ?? null,
     }))
   } catch {
     res.status(500).json({ error: 'Internal server error' })

@@ -939,6 +939,212 @@ body {
   font-size: 0.8rem;
 }
 
+/* ── Modal ───────────────────────────────────────────────── */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-dialog {
+  background: #1a1a2e;
+  border: 1px solid #3730a3;
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  width: min(480px, 90vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.modal-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.modal-dialog__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.modal-dialog__title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.form-field--checkbox {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.form-field--checkbox label {
+  margin-bottom: 0;
+}
+
+/* ── Import result dialog ────────────────────────────────── */
+
+.import-result-dialog {
+  background: #1a1a2e;
+  border: 1px solid #3730a3;
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  width: min(440px, 92vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.import-result-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.import-result-dialog__title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.import-result-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border-top: 1px solid #1e2040;
+  padding-top: 0.75rem;
+}
+
+.import-result-row {
+  font-size: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.import-result-row--ok   { color: #34d399; }
+.import-result-row--warn { color: #fbbf24; }
+.import-result-row--fail { color: #f87171; }
+.import-result-row--muted { color: #64748b; }
+
+.import-result-sub {
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.import-result-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font-size: inherit;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-align: left;
+}
+
+.import-result-toggle:hover { opacity: 0.8; }
+
+.import-result-toggle__arrow {
+  font-size: 0.65rem;
+  opacity: 0.7;
+}
+
+.import-result-list {
+  margin: 0.25rem 0 0 1rem;
+  padding: 0;
+  list-style: disc;
+  font-size: 0.82rem;
+  color: #94a3b8;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.import-result-list code {
+  color: #c4b5fd;
+  font-size: 0.82rem;
+}
+
+.import-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 0.25rem;
+}
+
+/* ── Progress dialog ─────────────────────────────────────── */
+
+.progress-dialog {
+  background: #1a1a2e;
+  border: 1px solid #3730a3;
+  border-radius: 0.5rem;
+  padding: 2rem 2.5rem;
+  width: min(380px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: center;
+  text-align: center;
+}
+
+.progress-dialog__step {
+  color: #e2e8f0;
+  font-size: 1rem;
+  margin: 0;
+}
+
+.progress-dialog__count {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #334155;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar__fill {
+  height: 100%;
+  background: #6366f1;
+  border-radius: 3px;
+  transition: width 0.1s ease;
+}
+
+@keyframes progress-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+.progress-bar--indeterminate::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 25%;
+  background: #6366f1;
+  border-radius: 3px;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+
 /* ── States ─────────────────────────────────────────────── */
 
 .error-banner {

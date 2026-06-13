@@ -12,6 +12,7 @@ export interface ApObject {
   active: boolean
   aliases: string | null
   priority: number
+  folder: string | null
   total_seconds: number
 }
 
@@ -50,6 +51,7 @@ export interface ApFilter {
   id: number
   name: string | null
   aliases: string | null
+  folder: string | null
 }
 
 export interface ApObjectSession {

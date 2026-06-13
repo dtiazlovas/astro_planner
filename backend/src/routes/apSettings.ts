@@ -1,7 +1,17 @@
 import { Router, Request, Response } from 'express'
+import { exec } from 'node:child_process'
 import { getSetting, setSetting } from '../services/apSettingService.js'
 
 const router = Router()
+
+router.post('/pick-folder', (_req: Request, res: Response) => {
+  const ps = `Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = 'Select images folder'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }`
+  exec(`powershell -NoProfile -Command "${ps}"`, (err, stdout) => {
+    if (err) { res.status(500).json({ error: 'Folder picker failed' }); return }
+    const path = stdout.trim()
+    res.json({ path })
+  })
+})
 
 router.get('/:key', async (req: Request, res: Response) => {
   try {

@@ -81,6 +81,15 @@ function initSchema(database: Database.Database): void {
 
   // Migrate: add priority column if missing
   try { database.exec('ALTER TABLE ap_object ADD COLUMN priority INTEGER NOT NULL DEFAULT 0') } catch {}
+  // Migrate: add session_id FK to ap_imported
+  try { database.exec('ALTER TABLE ap_imported ADD COLUMN session_id INTEGER REFERENCES ap_session(id) ON DELETE CASCADE') } catch {}
+  // Migrate: add folder column to ap_object
+  try { database.exec('ALTER TABLE ap_object ADD COLUMN folder TEXT') } catch {}
+  // Migrate: add folder column to ap_filter with defaults for built-in filters
+  try { database.exec('ALTER TABLE ap_filter ADD COLUMN folder TEXT') } catch {}
+  for (const [name, folder] of [['Luminance','Lum'],['Red','R'],['Green','G'],['Blue','B'],['H-alpha','Ha'],['Oxygen','Oiii'],['Sulphur','Sii']]) {
+    database.prepare('UPDATE ap_filter SET folder = @folder WHERE name = @name AND folder IS NULL').run({ folder, name })
+  }
   // Initialise unique priorities for existing rows that all share the default 0
   const allZero = (database.prepare('SELECT COUNT(*) as c FROM ap_object WHERE priority != 0').get() as { c: number }).c === 0
   const objCount = (database.prepare('SELECT COUNT(*) as c FROM ap_object').get() as { c: number }).c
@@ -118,18 +127,18 @@ function initSchema(database: Database.Database): void {
 
   const filtersEmpty = (database.prepare('SELECT COUNT(*) as c FROM ap_filter').get() as { c: number }).c === 0
   if (filtersEmpty) {
-    const insert = database.prepare('INSERT INTO ap_filter (name, aliases) VALUES (@name, @aliases)')
+    const insert = database.prepare('INSERT INTO ap_filter (name, aliases, folder) VALUES (@name, @aliases, @folder)')
     database.transaction(() => {
-      for (const { name, aliases } of [
-        { name: 'Luminance', aliases: 'L;Lum' },
-        { name: 'Red',       aliases: 'R' },
-        { name: 'Green',     aliases: 'G' },
-        { name: 'Blue',      aliases: 'B' },
-        { name: 'H-alpha',   aliases: 'H;Ha' },
-        { name: 'Oxygen',    aliases: 'O;Oiii;OIII' },
-        { name: 'Sulphur',   aliases: 'S;Sii;Siii' },
+      for (const { name, aliases, folder } of [
+        { name: 'Luminance', aliases: 'L;Lum',       folder: 'Lum' },
+        { name: 'Red',       aliases: 'R',            folder: 'R' },
+        { name: 'Green',     aliases: 'G',            folder: 'G' },
+        { name: 'Blue',      aliases: 'B',            folder: 'B' },
+        { name: 'H-alpha',   aliases: 'H;Ha',         folder: 'Ha' },
+        { name: 'Oxygen',    aliases: 'O;Oiii;OIII',  folder: 'Oiii' },
+        { name: 'Sulphur',   aliases: 'S;Sii;Siii',   folder: 'Sii' },
       ]) {
-        insert.run({ name, aliases })
+        insert.run({ name, aliases, folder })
       }
     })()
   }

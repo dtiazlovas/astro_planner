@@ -4,10 +4,22 @@ import {
   createSession, createObjectSession,
   updateObject, createObject,
   updateFilter, createFilter,
-  checkImported, recordImported,
+  checkImported, recordImported, copyFilesToObjectFolders,
   getPlans, setPlanSession, createPlan, createPlanDetail,
 } from '../api'
+import type { CopyItem } from '../api'
 import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } from '../types'
+
+interface ImportResult {
+  sessionsCreated: number
+  entriesOk: number
+  entriesFailed: Array<{ target: string; filter: string }>
+  entriesSkipped: Array<{ target: string; filter: string; reason: string }>
+  filesCopied: number
+  filesSkipped: number
+  filesNotFound: number
+  filesFailed: number
+}
 import {
   DEFAULT_PATTERN, fetchPatterns, parseFileMulti, dateKey, toDatetimeLocal,
   matchObject, matchFilter, matchExposure, getPatternAcceptMulti,
@@ -142,9 +154,13 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   // object target state
   const [targetOverrides, setTargetOverrides] = useState<Record<string, number>>({})
   const [targetAliasTo, setTargetAliasTo] = useState<Record<string, string>>({})
-  const [targetNewType, setTargetNewType] = useState<Record<string, string>>({})
   const [ignoredTargets, setIgnoredTargets] = useState<string[]>([])
   const [resolvingTarget, setResolvingTarget] = useState<string | null>(null)
+
+  // create-object dialog
+  const [createDialog, setCreateDialog] = useState<string | null>(null)
+  const [createDialogForm, setCreateDialogForm] = useState({ name: '', typeId: '', aliases: '', position_json: '', active: true, folder: '', comment: '' })
+  const [createDialogSubmitting, setCreateDialogSubmitting] = useState(false)
 
   // filter state
   const [filterOverrides, setFilterOverrides] = useState<Record<string, number>>({})
@@ -156,7 +172,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [entryPlanMap, setEntryPlanMap] = useState<Map<string, number>>(new Map())
 
   const [importing, setImporting] = useState(false)
-  const [done, setDone] = useState<{ sessions: number; entries: number } | null>(null)
+  const [importProgress, setImportProgress] = useState<{ step: string; current: number; total: number } | null>(null)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [resultExpanded, setResultExpanded] = useState<'failed' | 'skipped' | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -192,8 +210,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
   const processFiles = async (all: File[]) => {
     if (!all.length) return
-    setError(null); setDone(null)
-    setTargetOverrides({}); setTargetAliasTo({}); setTargetNewType({}); setIgnoredTargets([])
+    setError(null); setImportResult(null)
+    setTargetOverrides({}); setTargetAliasTo({}); setIgnoredTargets([])
     setFilterOverrides({}); setFilterAliasTo({}); setIgnoredFilters([])
 
     let alreadyImported: string[] = []
@@ -257,21 +275,40 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     }
   }
 
-  const handleCreateObject = async (target: string) => {
-    const typeId = Number(targetNewType[target]) || objectTypes[0]?.id || 1
-    setResolvingTarget(target)
+  const openCreateDialog = (target: string) => {
+    setCreateDialogForm({
+      name: target,
+      typeId: String(objectTypes[0]?.id ?? ''),
+      aliases: target,
+      position_json: '',
+      active: true,
+      folder: '',
+      comment: '',
+    })
+    setCreateDialog(target)
+  }
+
+  const handleCreateDialogSubmit = async () => {
+    if (!createDialogForm.name.trim()) return
+    setCreateDialogSubmitting(true)
     try {
       const created = await createObject({
-        name: target, type: typeId, position_json: '{}',
-        comment: null, active: true, aliases: null,
+        name: createDialogForm.name.trim(),
+        type: Number(createDialogForm.typeId),
+        position_json: createDialogForm.position_json.trim() || '{}',
+        comment: createDialogForm.comment.trim() || null,
+        active: createDialogForm.active,
+        aliases: createDialogForm.aliases.trim() || null,
+        folder: createDialogForm.folder.trim() || null,
       })
       const newObjects = [...objects, created]
       setObjects(newObjects)
       applyPreview(rawFiles, newObjects, filters, targetOverrides, filterOverrides)
+      setCreateDialog(null)
     } catch {
-      setError(`Failed to create object "${target}"`)
+      setError(`Failed to create object "${createDialogForm.name}"`)
     } finally {
-      setResolvingTarget(null)
+      setCreateDialogSubmitting(false)
     }
   }
 
@@ -354,9 +391,14 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const importableSessions = preview?.filter(s => s.entries.some(e => e.canImport)) ?? []
 
   const handleImport = async () => {
-    setImporting(true); setError(null)
-    let createdCount = 0, entryCount = 0
-    const importedNames: string[] = []
+    setImporting(true); setError(null); setImportResult(null); setResultExpanded(null)
+    const totalEntries = importableSessions.reduce((n, s) => n + s.entries.filter(e => e.canImport).length, 0)
+    const entriesSkipped = (preview ?? []).flatMap(s =>
+      s.entries.filter(e => !e.canImport).map(e => ({ target: e.target, filter: e.filter, reason: e.warning ?? 'Unresolved' }))
+    )
+    const entriesFailed: Array<{ target: string; filter: string }> = []
+    let entryCount = 0, sessionsCreated = 0
+
     const sessionByDate = new Map<string, number>()
     for (const s of sessions) {
       const dk = dateKey(new Date(s.start), dayStartHour)
@@ -367,63 +409,100 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     const entriesByObject = new Map<number, ImportEntry[]>()
 
     try {
+      setImportProgress({ step: 'Importing entries…', current: 0, total: totalEntries })
       for (const s of importableSessions) {
         let sessionId: number
-        if (sessionByDate.has(s.dateKey)) {
-          sessionId = sessionByDate.get(s.dateKey)!
-        } else {
-          const created = await createSession({
-            name: s.name, start: toDatetimeLocal(s.startTime),
-            duration: null, duration_set: false, comment: 'Imported from folder',
-          })
-          sessionId = created.id
-          sessionByDate.set(s.dateKey, sessionId)
-          createdCount++
-        }
-        for (const entry of s.entries.filter(e => e.canImport)) {
-          const created = await createObjectSession({
-            session: sessionId, object: entry.objectId!,
-            filter: entry.filterId!, exposure: entry.exposureId!, frames: entry.frames,
-          })
-          const planId = getEntryPlanId(s.dateKey, entry)
-          if (planId) {
-            try { await setPlanSession({ session: created.id, planid: planId }) } catch {}
+        try {
+          if (sessionByDate.has(s.dateKey)) {
+            sessionId = sessionByDate.get(s.dateKey)!
+          } else {
+            const created = await createSession({
+              name: s.name, start: toDatetimeLocal(s.startTime),
+              duration: null, duration_set: false, comment: 'Imported from folder',
+            })
+            sessionId = created.id
+            sessionByDate.set(s.dateKey, sessionId)
+            sessionsCreated++
           }
-          const objId = entry.objectId!
-          createdObjSessionsByObject.set(objId, [...(createdObjSessionsByObject.get(objId) ?? []), created.id])
-          entriesByObject.set(objId, [...(entriesByObject.get(objId) ?? []), entry])
-          importedNames.push(...entry.fileNames)
-          entryCount++
+        } catch {
+          for (const entry of s.entries.filter(e => e.canImport))
+            entriesFailed.push({ target: entry.target, filter: entry.filter })
+          continue
+        }
+
+        const sessionFileNames: string[] = []
+        for (const entry of s.entries.filter(e => e.canImport)) {
+          try {
+            const created = await createObjectSession({
+              session: sessionId, object: entry.objectId!,
+              filter: entry.filterId!, exposure: entry.exposureId!, frames: entry.frames,
+            })
+            const planId = getEntryPlanId(s.dateKey, entry)
+            if (planId) { try { await setPlanSession({ session: created.id, planid: planId }) } catch {} }
+            const objId = entry.objectId!
+            createdObjSessionsByObject.set(objId, [...(createdObjSessionsByObject.get(objId) ?? []), created.id])
+            entriesByObject.set(objId, [...(entriesByObject.get(objId) ?? []), entry])
+            sessionFileNames.push(...entry.fileNames)
+            entryCount++
+            setImportProgress({ step: 'Importing entries…', current: entryCount, total: totalEntries })
+          } catch {
+            entriesFailed.push({ target: entry.target, filter: entry.filter })
+          }
+        }
+        if (sessionFileNames.length) {
+          try { await recordImported(sessionFileNames, sessionId) } catch {}
         }
       }
 
-      // Auto-create an active plan for any imported object that has no plans at all
+      setImportProgress({ step: 'Creating plans…', current: 0, total: 0 })
       for (const [objectId, objSessionIds] of createdObjSessionsByObject.entries()) {
         if (allPlans.some(p => p.object === objectId)) continue
-        const entries = entriesByObject.get(objectId)!
-        const newPlan = await createPlan({ object: objectId, name: entries[0].objectName ?? String(objectId), active: true })
-        const byFilter = new Map<number, number>()
-        for (const e of entries) {
-          if (e.filterId) byFilter.set(e.filterId, (byFilter.get(e.filterId) ?? 0) + e.frames * e.duration)
-        }
-        for (const [filterId, totalSeconds] of byFilter.entries()) {
-          // round up to nearest 10 hours, expressed in minutes
-          const durationMinutes = Math.ceil(totalSeconds / 36000) * 600
-          await createPlanDetail({ planid: newPlan.id, filter: filterId, duration: durationMinutes })
-        }
-        for (const osId of objSessionIds) {
-          try { await setPlanSession({ session: osId, planid: newPlan.id }) } catch {}
-        }
+        try {
+          const entries = entriesByObject.get(objectId)!
+          const newPlan = await createPlan({ object: objectId, name: entries[0].objectName ?? String(objectId), active: true })
+          const byFilter = new Map<number, number>()
+          for (const e of entries) {
+            if (e.filterId) byFilter.set(e.filterId, (byFilter.get(e.filterId) ?? 0) + e.frames * e.duration)
+          }
+          for (const [filterId, totalSeconds] of byFilter.entries()) {
+            const durationMinutes = Math.ceil(totalSeconds / 36000) * 600
+            await createPlanDetail({ planid: newPlan.id, filter: filterId, duration: durationMinutes })
+          }
+          for (const osId of objSessionIds) {
+            try { await setPlanSession({ session: osId, planid: newPlan.id }) } catch {}
+          }
+        } catch {}
       }
 
-      try { await recordImported(importedNames) } catch {}
-      setDone({ sessions: createdCount, entries: entryCount })
+      const copyItems: CopyItem[] = []
+      for (const s of importableSessions) {
+        for (const entry of s.entries.filter(e => e.canImport)) {
+          const obj = objects.find(o => o.id === entry.objectId)
+          if (obj?.folder && entry.fileNames.length) {
+            const filt = filters.find(f => f.id === entry.filterId)
+            const filterFolder = filt?.folder ?? filt?.name ?? entry.filterName ?? ''
+            if (filterFolder)
+              copyItems.push({ fileNames: entry.fileNames, objectFolder: obj.folder, filterName: filterFolder })
+          }
+        }
+      }
+      let filesCopied = 0, filesSkipped = 0, filesNotFound = 0, filesFailed = 0
+      if (copyItems.length) {
+        const totalFiles = copyItems.reduce((n, i) => n + i.fileNames.length, 0)
+        setImportProgress({ step: `Copying ${totalFiles} file${totalFiles !== 1 ? 's' : ''}…`, current: 0, total: 0 })
+        const stats = await copyFilesToObjectFolders(copyItems).catch(() => null)
+        if (stats) { filesCopied = stats.copied; filesSkipped = stats.skipped; filesNotFound = stats.notFound; filesFailed = stats.failed }
+      }
+
+      setImportProgress(null)
+      setImportResult({ sessionsCreated, entriesOk: entryCount, entriesFailed, entriesSkipped, filesCopied, filesSkipped, filesNotFound, filesFailed })
       setPreview(null)
-      onImported()
+      try { onImported() } catch {}
     } catch {
       setError('Import failed — check console for details')
     } finally {
       setImporting(false)
+      setImportProgress(null)
     }
   }
 
@@ -436,16 +515,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
       {error && <div className="error-banner">{error}</div>}
 
-      {done && (
-        <div className="import-success">
-          Added {done.entries} entr{done.entries !== 1 ? 'ies' : 'y'}.
-          {done.sessions > 0 && ` Created ${done.sessions} new session${done.sessions !== 1 ? 's' : ''}.`}
-          {done.sessions === 0 && ' Added to existing session(s).'}
-        </div>
-      )}
-
-      {!done && (
-        <>
+      <>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
             <input ref={fileInputRef} type="file" style={{ display: 'none' }}
               accept={getPatternAcceptMulti(patterns)} multiple onChange={handleFiles} />
@@ -573,15 +643,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                         <span className="cell-muted unresolved-row__or">or</span>
                         <button className="btn btn-sm" onClick={() => setIgnoredTargets(p => [...p, target])}>Ignore</button>
                         <span className="cell-muted unresolved-row__or">or</span>
-                        <span className="cell-muted">New object</span>
-                        <select value={targetNewType[target] ?? String(objectTypes[0]?.id ?? '')}
-                          onChange={e => setTargetNewType(m => ({ ...m, [target]: e.target.value }))}>
-                          {objectTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                        </select>
-                        <button className="btn btn-sm" disabled={resolvingTarget === target}
-                          onClick={() => handleCreateObject(target)}>
-                          {resolvingTarget === target ? '…' : 'Create'}
-                        </button>
+                        <button className="btn btn-sm" onClick={() => openCreateDialog(target)}>Create new object…</button>
                       </div>
                     </div>
                   ))}
@@ -645,7 +707,152 @@ export default function ImportPanel({ onImported, onClose }: Props) {
               )}
             </>
           )}
-        </>
+      </>
+
+      {importResult !== null && (
+        <div className="modal-backdrop">
+          <div className="import-result-dialog">
+            <div className="import-result-dialog__header">
+              <span className="import-result-dialog__title">Import complete</span>
+            </div>
+
+            <div className="import-result-section">
+              <div className="import-result-row import-result-row--ok">
+                ✓ {importResult.entriesOk} {importResult.entriesOk === 1 ? 'entry' : 'entries'} imported
+                {importResult.sessionsCreated > 0 && <span className="import-result-sub"> · {importResult.sessionsCreated} new session{importResult.sessionsCreated !== 1 ? 's' : ''} created</span>}
+              </div>
+              {importResult.entriesSkipped.length > 0 && (
+                <div className="import-result-row import-result-row--warn">
+                  <button className="import-result-toggle" onClick={() => setResultExpanded(v => v === 'skipped' ? null : 'skipped')}>
+                    ⚠ {importResult.entriesSkipped.length} {importResult.entriesSkipped.length === 1 ? 'entry' : 'entries'} skipped
+                    <span className="import-result-toggle__arrow">{resultExpanded === 'skipped' ? '▲' : '▼'}</span>
+                  </button>
+                  {resultExpanded === 'skipped' && (
+                    <ul className="import-result-list">
+                      {importResult.entriesSkipped.map((e, i) => (
+                        <li key={i}><code>{e.target}</code> / {e.filter} — <span className="cell-muted">{e.reason}</span></li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              {importResult.entriesFailed.length > 0 && (
+                <div className="import-result-row import-result-row--fail">
+                  <button className="import-result-toggle" onClick={() => setResultExpanded(v => v === 'failed' ? null : 'failed')}>
+                    ✗ {importResult.entriesFailed.length} {importResult.entriesFailed.length === 1 ? 'entry' : 'entries'} failed
+                    <span className="import-result-toggle__arrow">{resultExpanded === 'failed' ? '▲' : '▼'}</span>
+                  </button>
+                  {resultExpanded === 'failed' && (
+                    <ul className="import-result-list">
+                      {importResult.entriesFailed.map((e, i) => (
+                        <li key={i}><code>{e.target}</code> / {e.filter}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {(importResult.filesCopied + importResult.filesSkipped + importResult.filesNotFound + importResult.filesFailed) > 0 && (
+              <div className="import-result-section">
+                {importResult.filesCopied > 0 && (
+                  <div className="import-result-row import-result-row--ok">✓ {importResult.filesCopied} {importResult.filesCopied === 1 ? 'file' : 'files'} copied</div>
+                )}
+                {importResult.filesSkipped > 0 && (
+                  <div className="import-result-row import-result-row--muted">— {importResult.filesSkipped} {importResult.filesSkipped === 1 ? 'file' : 'files'} already existed</div>
+                )}
+                {importResult.filesNotFound > 0 && (
+                  <div className="import-result-row import-result-row--warn">⚠ {importResult.filesNotFound} {importResult.filesNotFound === 1 ? 'file' : 'files'} not found in images folder</div>
+                )}
+                {importResult.filesFailed > 0 && (
+                  <div className="import-result-row import-result-row--fail">✗ {importResult.filesFailed} {importResult.filesFailed === 1 ? 'file' : 'files'} failed to copy</div>
+                )}
+              </div>
+            )}
+
+            <div className="import-result-actions">
+              <button className="btn btn-primary" onClick={() => { setImportResult(null); setResultExpanded(null) }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {importProgress !== null && (
+        <div className="modal-backdrop">
+          <div className="progress-dialog">
+            <p className="progress-dialog__step">{importProgress.step}</p>
+            {importProgress.total > 0 ? (
+              <>
+                <div className="progress-bar">
+                  <div className="progress-bar__fill" style={{ width: `${Math.round((importProgress.current / importProgress.total) * 100)}%` }} />
+                </div>
+                <p className="progress-dialog__count">{importProgress.current} / {importProgress.total}</p>
+              </>
+            ) : (
+              <div className="progress-bar progress-bar--indeterminate" />
+            )}
+          </div>
+        </div>
+      )}
+
+      {createDialog !== null && (
+        <div className="modal-backdrop" onClick={() => setCreateDialog(null)}>
+          <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+            <div className="modal-dialog__header">
+              <span className="modal-dialog__title">New Object</span>
+              <button className="btn btn-ghost" onClick={() => setCreateDialog(null)}>✕</button>
+            </div>
+            <form onSubmit={e => { e.preventDefault(); handleCreateDialogSubmit() }}>
+              <div className="form-field">
+                <label>Name</label>
+                <input value={createDialogForm.name} autoFocus
+                  onChange={e => setCreateDialogForm(f => ({ ...f, name: e.target.value }))} />
+              </div>
+              <div className="form-field">
+                <label>Type</label>
+                <select value={createDialogForm.typeId}
+                  onChange={e => setCreateDialogForm(f => ({ ...f, typeId: e.target.value }))}>
+                  {objectTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              <div className="form-field">
+                <label>Aliases <span className="cell-muted" style={{ fontWeight: 400, fontSize: '0.8rem' }}>(semicolon-separated)</span></label>
+                <input value={createDialogForm.aliases}
+                  onChange={e => setCreateDialogForm(f => ({ ...f, aliases: e.target.value }))}
+                  placeholder="e.g. M31;Andromeda Galaxy" />
+              </div>
+              <div className="form-field">
+                <label>Folder</label>
+                <input value={createDialogForm.folder}
+                  onChange={e => setCreateDialogForm(f => ({ ...f, folder: e.target.value }))}
+                  placeholder="e.g. M31" spellCheck={false} />
+              </div>
+              <div className="form-field">
+                <label>Position JSON</label>
+                <input value={createDialogForm.position_json}
+                  onChange={e => setCreateDialogForm(f => ({ ...f, position_json: e.target.value }))}
+                  placeholder='{"ra": "00h42m44s", "dec": "+41d16m09s"}' spellCheck={false} />
+              </div>
+              <div className="form-field">
+                <label>Comment</label>
+                <textarea value={createDialogForm.comment} rows={2}
+                  onChange={e => setCreateDialogForm(f => ({ ...f, comment: e.target.value }))} />
+              </div>
+              <div className="form-field form-field--checkbox">
+                <input type="checkbox" id="create-dialog-active" checked={createDialogForm.active}
+                  onChange={e => setCreateDialogForm(f => ({ ...f, active: e.target.checked }))} />
+                <label htmlFor="create-dialog-active">Active</label>
+              </div>
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary"
+                  disabled={createDialogSubmitting || !createDialogForm.name.trim()}>
+                  {createDialogSubmitting ? 'Creating…' : 'Create'}
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => setCreateDialog(null)}>Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   )

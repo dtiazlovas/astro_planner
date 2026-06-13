@@ -7,7 +7,7 @@ import GalaxyIcon from '../components/GalaxyIcon'
 import nebulaImg from '../assets/nebula.png'
 import nebulaReflectionImg from '../assets/nebula-reflection.png'
 
-const emptyForm = { name: '', typeId: '', position_json: '', comment: '', aliases: '', active: true }
+const emptyForm = { name: '', typeId: '', position_json: '', comment: '', aliases: '', active: true, folder: '' }
 
 const fmtDuration = (s: number): string => {
   if (s <= 0) return '—'
@@ -142,7 +142,7 @@ export default function ObjectsPage() {
 
   const openEdit = (obj: ApObject) => {
     setEditingId(obj.id)
-    setForm({ name: obj.name, typeId: String(obj.type), position_json: obj.position_json, comment: obj.comment ?? '', aliases: obj.aliases ?? '', active: obj.active })
+    setForm({ name: obj.name, typeId: String(obj.type), position_json: obj.position_json, comment: obj.comment ?? '', aliases: obj.aliases ?? '', active: obj.active, folder: obj.folder ?? '' })
     setShowForm(true); setConfirmingId(null); setError(null)
   }
 
@@ -151,7 +151,7 @@ export default function ObjectsPage() {
   const handleSubmit = async (e: { preventDefault(): void }) => {
     e.preventDefault()
     setSubmitting(true); setError(null)
-    const payload = { name: form.name.trim(), type: Number(form.typeId), position_json: form.position_json.trim(), comment: form.comment.trim() || null, aliases: form.aliases.trim() || null, active: form.active }
+    const payload = { name: form.name.trim(), type: Number(form.typeId), position_json: form.position_json.trim(), comment: form.comment.trim() || null, aliases: form.aliases.trim() || null, active: form.active, folder: form.folder.trim() || null }
     try {
       if (editingId !== null) {
         const updated = await updateObject(editingId, payload)
@@ -225,8 +225,8 @@ export default function ObjectsPage() {
           {(expandedIds.size > 0 || planExpandedIds.size > 0) && (
             <button className="btn btn-ghost" onClick={() => { setExpandedIds(new Set()); setExpandedStats(new Map()); setPlanExpandedIds(new Set()) }}>Collapse all</button>
           )}
-          <button className={`btn ${showForm ? 'btn-ghost' : 'btn-primary'}`} onClick={showForm ? handleCancel : openAdd}>
-            {showForm ? 'Cancel' : '+ Add Object'}
+          <button className={`btn ${showForm && editingId === null ? 'btn-ghost' : 'btn-primary'}`} onClick={showForm && editingId === null ? handleCancel : openAdd}>
+            {showForm && editingId === null ? 'Cancel' : '+ Add Object'}
           </button>
         </div>
       </div>
@@ -261,6 +261,10 @@ export default function ObjectsPage() {
                 <input type="checkbox" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} />
                 Active
               </label>
+            </div>
+            <div className="form-field form-field--full">
+              <label htmlFor="obj-folder">Folder</label>
+              <input id="obj-folder" value={form.folder} onChange={set('folder')} placeholder="e.g. M31" spellCheck={false} />
             </div>
             <div className="form-field form-field--full">
               <label htmlFor="obj-comment">Comment</label>
@@ -412,6 +416,12 @@ export default function ObjectsPage() {
                       <tr className="row--editor">
                         <td colSpan={6} style={{ padding: 0 }}>
                           <form className="object-form object-form--inline" onSubmit={handleSubmit}>
+                            <div className="form-actions">
+                              <button type="submit" className="btn btn-primary" disabled={submitting}>
+                                {submitting ? 'Saving…' : 'Update Object'}
+                              </button>
+                              <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
+                            </div>
                             <div className="form-grid">
                               <div className="form-field">
                                 <label htmlFor="obj-name">Name</label>
@@ -439,15 +449,13 @@ export default function ObjectsPage() {
                                 </label>
                               </div>
                               <div className="form-field form-field--full">
+                                <label htmlFor="obj-folder">Folder</label>
+                                <input id="obj-folder" value={form.folder} onChange={set('folder')} placeholder="e.g. M31" spellCheck={false} />
+                              </div>
+                              <div className="form-field form-field--full">
                                 <label htmlFor="obj-comment">Comment</label>
                                 <textarea id="obj-comment" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
                               </div>
-                            </div>
-                            <div className="form-actions">
-                              <button type="submit" className="btn btn-primary" disabled={submitting}>
-                                {submitting ? 'Saving…' : 'Update Object'}
-                              </button>
-                              <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
                             </div>
                           </form>
                         </td>

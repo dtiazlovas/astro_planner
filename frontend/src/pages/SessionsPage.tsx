@@ -149,17 +149,17 @@ export default function SessionsPage() {
           <button className={`btn ${showImport ? 'btn-ghost' : 'btn-contents'}`} onClick={() => { setShowImport(v => !v); if (showForm) handleCancel() }}>
             {showImport ? 'Hide Import' : '📁 Import'}
           </button>
-          <button className={`btn ${showForm ? 'btn-ghost' : 'btn-primary'}`} onClick={showForm ? handleCancel : openAdd}>
-            {showForm ? 'Cancel' : '+ Add Session'}
+          <button className={`btn ${showForm && editingId === null ? 'btn-ghost' : 'btn-primary'}`} onClick={showForm && editingId === null ? handleCancel : openAdd}>
+            {showForm && editingId === null ? 'Cancel' : '+ Add Session'}
           </button>
         </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
 
-      {showForm && (
+      {showForm && editingId === null && (
         <form className="object-form" onSubmit={handleSubmit}>
-          <p className="form-title">{editingId !== null ? 'Edit Session' : 'New Session'}</p>
+          <p className="form-title">New Session</p>
           <div className="form-grid">
             <div className="form-field form-field--full">
               <label htmlFor="ses-name">Name</label>
@@ -193,7 +193,7 @@ export default function SessionsPage() {
 
           <div className="form-actions">
             <button type="submit" className="btn btn-primary" disabled={submitting}>
-              {submitting ? 'Saving…' : editingId !== null ? 'Update Session' : 'Save Session'}
+              {submitting ? 'Saving…' : 'Save Session'}
             </button>
           </div>
         </form>
@@ -264,6 +264,50 @@ export default function SessionsPage() {
                             ))
                           }
                         />
+                      </td>
+                    </tr>
+                  )}
+                  {editingId === ses.id && showForm && (
+                    <tr className="row--editor">
+                      <td colSpan={6} style={{ padding: 0 }}>
+                        <form className="object-form object-form--inline" onSubmit={handleSubmit}>
+                          <div className="form-actions">
+                            <button type="submit" className="btn btn-primary" disabled={submitting}>
+                              {submitting ? 'Saving…' : 'Update Session'}
+                            </button>
+                            <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
+                          </div>
+                          <div className="form-grid">
+                            <div className="form-field form-field--full">
+                              <label htmlFor="ses-name-inline">Name</label>
+                              <input id="ses-name-inline" value={form.name} onChange={set('name')} required placeholder="e.g. Backyard session 2026-06-07" autoFocus />
+                            </div>
+
+                            <div className="form-field">
+                              <label htmlFor="ses-start-inline">Start</label>
+                              <input id="ses-start-inline" type="datetime-local" value={form.start} onChange={set('start')} required />
+                            </div>
+
+                            <div className="form-field form-field--check" style={{ alignSelf: 'flex-end', paddingBottom: '0.1rem' }}>
+                              <label className="check-label">
+                                <input type="checkbox" checked={form.duration_set} onChange={e => setForm(f => ({ ...f, duration_set: e.target.checked, duration: e.target.checked ? f.duration : '' }))} />
+                                Set duration
+                              </label>
+                            </div>
+
+                            {form.duration_set && (
+                              <div className="form-field form-field--full">
+                                <label htmlFor="ses-duration-inline">End / Duration</label>
+                                <input id="ses-duration-inline" type="datetime-local" value={form.duration} onChange={set('duration')} />
+                              </div>
+                            )}
+
+                            <div className="form-field form-field--full">
+                              <label htmlFor="ses-comment-inline">Comment</label>
+                              <textarea id="ses-comment-inline" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
+                            </div>
+                          </div>
+                        </form>
                       </td>
                     </tr>
                   )}

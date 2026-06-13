@@ -68,14 +68,14 @@ export const getExposures = (): Promise<ApExposure[]> =>
 export const getFilters = (): Promise<ApFilter[]> =>
   fetch(`${BASE}/filters`).then(json<ApFilter[]>)
 
-export const createFilter = (data: { name: string; aliases: string | null }): Promise<ApFilter> =>
+export const createFilter = (data: { name: string; aliases: string | null; folder?: string | null }): Promise<ApFilter> =>
   fetch(`${BASE}/filters`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   }).then(json<ApFilter>)
 
-export const updateFilter = (id: number, data: { name: string; aliases: string | null }): Promise<ApFilter> =>
+export const updateFilter = (id: number, data: { name: string; aliases: string | null; folder?: string | null }): Promise<ApFilter> =>
   fetch(`${BASE}/filters/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -112,12 +112,22 @@ export const checkImported = (names: string[]): Promise<string[]> =>
     body: JSON.stringify({ names }),
   }).then(json<string[]>)
 
-export const recordImported = (names: string[]): Promise<void> =>
+export const recordImported = (names: string[], sessionId: number): Promise<void> =>
   fetch(`${BASE}/imported/record`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ names }),
+    body: JSON.stringify({ names, sessionId }),
   }).then(() => undefined)
+
+export interface CopyItem { fileNames: string[]; objectFolder: string; filterName: string }
+export interface CopyStats { copied: number; skipped: number; notFound: number; failed: number }
+
+export const copyFilesToObjectFolders = (items: CopyItem[]): Promise<CopyStats> =>
+  fetch(`${BASE}/imported/copy-to-object-folders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  }).then(json<CopyStats>)
 
 export const getPlans = (objectId?: number): Promise<ApPlan[]> =>
   fetch(`${BASE}/plans${objectId !== undefined ? `?object=${objectId}` : ''}`).then(json<ApPlan[]>)

@@ -3,13 +3,13 @@ import type { ApObject, ObjectFilterStat, PlanProgressItem, CreateApObjectDto, U
 
 const SELECT_WITH_CALC = `
   SELECT
-    o.id, o.name, o.type, o.position_json, o.comment, o.active, o.aliases, o.priority,
+    o.id, o.name, o.type, o.position_json, o.comment, o.active, o.aliases, o.priority, o.folder,
     CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS total_seconds
   FROM ap_object o
   LEFT JOIN ap_object_session os ON os.object = o.id
   LEFT JOIN ap_exposure e ON e.id = os.exposure
 `
-const GROUP_BY = `GROUP BY o.id, o.name, o.type, o.position_json, o.comment, o.active, o.aliases, o.priority`
+const GROUP_BY = `GROUP BY o.id, o.name, o.type, o.position_json, o.comment, o.active, o.aliases, o.priority, o.folder`
 
 function mapObject(row: any): ApObject {
   return { ...row, active: !!row.active }
@@ -63,12 +63,12 @@ export const createApObject = async (data: CreateApObjectDto): Promise<ApObject>
   const db = connectToDatabase()
   const { max } = db.prepare('SELECT COALESCE(MAX(priority), -1) as max FROM ap_object').get() as { max: number }
   const { lastInsertRowid } = db.prepare(`
-    INSERT INTO ap_object (name, type, position_json, comment, active, aliases, priority)
-    VALUES (@name, @type, @position_json, @comment, @active, @aliases, @priority)
+    INSERT INTO ap_object (name, type, position_json, comment, active, aliases, priority, folder)
+    VALUES (@name, @type, @position_json, @comment, @active, @aliases, @priority, @folder)
   `).run({
     name: data.name, type: data.type, position_json: data.position_json,
     comment: data.comment ?? null, active: data.active ? 1 : 0, aliases: data.aliases ?? null,
-    priority: max + 1,
+    priority: max + 1, folder: data.folder ?? null,
   })
   return (await getApObjectById(Number(lastInsertRowid)))!
 }
@@ -83,6 +83,7 @@ export const updateApObject = async (id: number, data: UpdateApObjectDto): Promi
   if ('comment' in data)                { setClauses.push('comment = @comment');             params.comment = data.comment ?? null }
   if (data.active !== undefined)        { setClauses.push('active = @active');               params.active = data.active ? 1 : 0 }
   if ('aliases' in data)                { setClauses.push('aliases = @aliases');             params.aliases = data.aliases ?? null }
+  if ('folder' in data)                 { setClauses.push('folder = @folder');               params.folder = data.folder ?? null }
 
   if (setClauses.length === 0) return getApObjectById(id)
   connectToDatabase().prepare(`UPDATE ap_object SET ${setClauses.join(', ')} WHERE id = @id`).run(params)

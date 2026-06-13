@@ -1,15 +1,18 @@
 import { useState, useEffect, FormEvent } from 'react'
 import { getFilters, createFilter, updateFilter, deleteFilter } from '../api'
 import type { ApFilter } from '../types'
-import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour } from '../utils/filePattern'
+import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour, fetchImagesFolder, saveImagesFolder, pickFolder } from '../utils/filePattern'
 
-const emptyFilterForm = { name: '', aliases: '' }
+const emptyFilterForm = { name: '', aliases: '', folder: '' }
 
 export default function SettingsPage() {
   const [patterns, setPatterns] = useState<string[]>([DEFAULT_PATTERN])
   const [saving, setSaving] = useState(false)
   const [test, setTest] = useState('')
   const [dayStartHour, setDayStartHour] = useState(16)
+  const [imagesFolder, setImagesFolder] = useState('')
+  const [imagesFolderSaving, setImagesFolderSaving] = useState(false)
+  const [imagesFolderPicking, setImagesFolderPicking] = useState(false)
 
   const [filters, setFilters] = useState<ApFilter[]>([])
   const [loadingFilters, setLoadingFilters] = useState(true)
@@ -23,6 +26,7 @@ export default function SettingsPage() {
 
   useEffect(() => { fetchPatterns().then(setPatterns) }, [])
   useEffect(() => { fetchDayStartHour().then(setDayStartHour) }, [])
+  useEffect(() => { fetchImagesFolder().then(setImagesFolder) }, [])
 
   useEffect(() => {
     getFilters()
@@ -69,7 +73,7 @@ export default function SettingsPage() {
 
   const openEditFilter = (f: ApFilter) => {
     setEditingFilterId(f.id)
-    setFilterForm({ name: f.name ?? '', aliases: f.aliases ?? '' })
+    setFilterForm({ name: f.name ?? '', aliases: f.aliases ?? '', folder: f.folder ?? '' })
     setShowFilterForm(true); setFilterError(null); setConfirmingFilterId(null)
   }
 
@@ -81,7 +85,7 @@ export default function SettingsPage() {
     e.preventDefault()
     if (!filterForm.name.trim()) return
     setSubmittingFilter(true); setFilterError(null)
-    const payload = { name: filterForm.name.trim(), aliases: filterForm.aliases.trim() || null }
+    const payload = { name: filterForm.name.trim(), aliases: filterForm.aliases.trim() || null, folder: filterForm.folder.trim() || null }
     try {
       if (editingFilterId !== null) {
         const updated = await updateFilter(editingFilterId, payload)
@@ -115,6 +119,50 @@ export default function SettingsPage() {
     <div className="objects-page">
       <div className="page-header"><h2>Settings</h2></div>
 
+      {/* ── Images Folder ── */}
+      <div className="settings-card">
+        <p className="settings-card__title">Images Folder</p>
+        <p className="cell-muted" style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
+          Local folder where captured images are stored. Saved automatically on blur.
+        </p>
+        <div className="form-field">
+          <label htmlFor="images-folder">Folder path</label>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <input
+              id="images-folder"
+              value={imagesFolder}
+              onChange={e => setImagesFolder(e.target.value)}
+              onBlur={async () => {
+                setImagesFolderSaving(true)
+                try { await saveImagesFolder(imagesFolder.trim()) } finally { setImagesFolderSaving(false) }
+              }}
+              placeholder="e.g. D:\Astrophotography\Images"
+              style={{ fontFamily: 'monospace', fontSize: '0.85rem', flex: 1 }}
+              spellCheck={false}
+            />
+            <button
+              className="btn btn-secondary"
+              disabled={imagesFolderPicking}
+              onClick={async () => {
+                setImagesFolderPicking(true)
+                try {
+                  const picked = await pickFolder()
+                  if (picked) {
+                    setImagesFolder(picked)
+                    await saveImagesFolder(picked)
+                  }
+                } finally {
+                  setImagesFolderPicking(false)
+                }
+              }}
+            >
+              {imagesFolderPicking ? '…' : 'Browse…'}
+            </button>
+            {imagesFolderSaving && <span className="cell-muted" style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}>saving…</span>}
+          </div>
+        </div>
+      </div>
+
       {/* ── Filters ── */}
       <div className="settings-card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
@@ -138,6 +186,11 @@ export default function SettingsPage() {
               <input value={filterForm.aliases} onChange={e => setFilterForm(f => ({ ...f, aliases: e.target.value }))}
                 placeholder="e.g. L;Lum;Lum2" />
             </div>
+            <div className="form-field">
+              <label>Folder</label>
+              <input value={filterForm.folder} onChange={e => setFilterForm(f => ({ ...f, folder: e.target.value }))}
+                placeholder="e.g. Lum" spellCheck={false} />
+            </div>
             <div className="form-actions">
               <button type="submit" className="btn btn-primary" disabled={submittingFilter || !filterForm.name.trim()}>
                 {submittingFilter ? 'Saving…' : editingFilterId !== null ? 'Save' : 'Add'}
@@ -157,6 +210,7 @@ export default function SettingsPage() {
               <tr>
                 <th>Name</th>
                 <th>Aliases</th>
+                <th>Folder</th>
                 <th></th>
               </tr>
             </thead>
@@ -170,6 +224,9 @@ export default function SettingsPage() {
                           <span key={i} className="type-badge" style={{ marginRight: '0.25rem' }}>{a.trim()}</span>
                         ))
                       : '—'}
+                  </td>
+                  <td className="cell-muted" style={{ fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                    {f.folder ?? '—'}
                   </td>
                   <td className="cell-actions">
                     {confirmingFilterId === f.id ? (
