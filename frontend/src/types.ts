@@ -26,6 +26,7 @@ export interface PlanProgressItem {
   filter_name: string | null
   target_minutes: number
   captured_seconds: number
+  total_frames: number
 }
 
 export type CreateApObjectDto = Omit<ApObject, 'id' | 'total_seconds'>

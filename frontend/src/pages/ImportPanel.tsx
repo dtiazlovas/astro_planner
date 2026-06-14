@@ -497,7 +497,6 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       setImportProgress(null)
       setImportResult({ sessionsCreated, entriesOk: entryCount, entriesFailed, entriesSkipped, filesCopied, filesSkipped, filesNotFound, filesFailed })
       setPreview(null)
-      try { onImported() } catch {}
     } catch {
       setError('Import failed — check console for details')
     } finally {
@@ -771,7 +770,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
             )}
 
             <div className="import-result-actions">
-              <button className="btn btn-primary" onClick={() => { setImportResult(null); setResultExpanded(null) }}>Close</button>
+              <button className="btn btn-primary" onClick={() => { setImportResult(null); setResultExpanded(null); try { onImported() } catch {} }}>Close</button>
             </div>
           </div>
         </div>

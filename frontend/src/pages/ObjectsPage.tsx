@@ -339,8 +339,12 @@ export default function ObjectsPage() {
                             {progress.map(p => {
                               const capturedMins = p.captured_seconds / 60
                               const pct = p.target_minutes > 0 ? Math.min(100, Math.round(capturedMins / p.target_minutes * 100)) : 0
+                              const avgExp = p.total_frames > 0 ? Math.round(p.captured_seconds / p.total_frames) : null
+                              const tooltip = p.total_frames > 0
+                                ? `${p.total_frames} frame${p.total_frames !== 1 ? 's' : ''}${avgExp !== null ? ` × ${avgExp}s` : ''}`
+                                : undefined
                               return (
-                                <div key={p.filter_id} className="plan-progress-item">
+                                <div key={p.filter_id} className="plan-progress-item" title={tooltip}>
                                   <FilterBadge name={p.filter_name} />
                                   <div className="plan-progress-bar">
                                     <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
@@ -354,23 +358,16 @@ export default function ObjectsPage() {
                         )}
                       </td>
                       <td className="cell-action" style={{ verticalAlign: 'top' }}>
-                        {confirmingId === obj.id ? (
-                          <div className="row-actions">
-                            <button className="btn-icon btn-danger" onClick={() => handleDelete(obj.id)} disabled={deletingId === obj.id}>{deletingId === obj.id ? '…' : 'Yes'}</button>
-                            <button className="btn-icon btn-ghost" onClick={() => setConfirmingId(null)}>No</button>
-                          </div>
-                        ) : (
-                          <div className="row-actions">
-                            <button className="btn-icon btn-contents" onClick={() => setPlanExpandedIds(prev => { const s = new Set(prev); s.has(obj.id) ? s.delete(obj.id) : s.add(obj.id); return s })} title="Plans">☰</button>
-                            {activePlanObjectIds.has(obj.id) && (
-                              <button className="btn-icon btn-assign" onClick={() => handleAssignAll(obj.id)} disabled={assigningIds.has(obj.id)} title="Assign all unassigned sessions to active plan">
-                                {assigningIds.has(obj.id) ? '…' : '⬆'}
-                              </button>
-                            )}
-                            <button className="btn-icon btn-edit" onClick={() => openEdit(obj)} title="Edit">✎</button>
-                            <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
-                          </div>
-                        )}
+                        <div className="row-actions">
+                          <button className="btn-icon btn-contents" onClick={() => setPlanExpandedIds(prev => { const s = new Set(prev); s.has(obj.id) ? s.delete(obj.id) : s.add(obj.id); return s })} title="Plans">☰</button>
+                          {activePlanObjectIds.has(obj.id) && (
+                            <button className="btn-icon btn-assign" onClick={() => handleAssignAll(obj.id)} disabled={assigningIds.has(obj.id)} title="Assign all unassigned sessions to active plan">
+                              {assigningIds.has(obj.id) ? '…' : '⬆'}
+                            </button>
+                          )}
+                          <button className="btn-icon btn-edit" onClick={() => openEdit(obj)} title="Edit">✎</button>
+                          <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
+                        </div>
                       </td>
                     </tr>
                     {expandedIds.has(obj.id) && (
@@ -468,6 +465,28 @@ export default function ObjectsPage() {
           </table>
         </div>
       )}
+
+      {confirmingId !== null && (() => {
+        const obj = objects.find(o => o.id === confirmingId)
+        return (
+          <div className="modal-backdrop" onClick={() => setConfirmingId(null)}>
+            <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+              <div className="modal-dialog__header">
+                <span className="modal-dialog__title">Delete object?</span>
+              </div>
+              <p style={{ color: '#cbd5e1', margin: 0 }}>
+                <strong style={{ color: '#e2e8f0' }}>{obj?.name}</strong> will be permanently deleted.
+              </p>
+              <div className="form-actions">
+                <button className="btn btn-danger" onClick={() => handleDelete(confirmingId)} disabled={deletingId === confirmingId}>
+                  {deletingId === confirmingId ? 'Deleting…' : 'Delete'}
+                </button>
+                <button className="btn btn-ghost" onClick={() => setConfirmingId(null)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

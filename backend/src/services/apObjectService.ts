@@ -47,7 +47,8 @@ export const getObjectPlanProgress = async (objectId: number): Promise<PlanProgr
       pd.filter   AS filter_id,
       f.name      AS filter_name,
       pd.duration AS target_minutes,
-      CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS captured_seconds
+      CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS captured_seconds,
+      COALESCE(SUM(os.frames), 0) AS total_frames
     FROM ActivePlan ap
     JOIN ap_plan_details pd ON pd.planid = ap.id
     JOIN ap_filter f        ON f.id = pd.filter

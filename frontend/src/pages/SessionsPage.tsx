@@ -236,20 +236,11 @@ export default function SessionsPage() {
                     <td className="cell-time">{fmtCalcDuration(Number(ses.calculated_seconds))}</td>
                     <td className="cell-muted">{ses.comment ?? '—'}</td>
                     <td className="cell-action">
-                      {confirmingId === ses.id ? (
-                        <div className="row-actions">
-                          <button className="btn-icon btn-danger" onClick={() => handleDelete(ses.id)} disabled={deletingId === ses.id}>
-                            {deletingId === ses.id ? '…' : 'Yes'}
-                          </button>
-                          <button className="btn-icon btn-ghost" onClick={() => setConfirmingId(null)}>No</button>
-                        </div>
-                      ) : (
-                        <div className="row-actions">
-                          <button className="btn-icon btn-contents" onClick={() => setSelectedIds(prev => { const s = new Set(prev); s.has(ses.id) ? s.delete(ses.id) : s.add(ses.id); return s })} title="Contents">≡</button>
-                          <button className="btn-icon btn-edit" onClick={() => openEdit(ses)} title="Edit">✎</button>
-                          <button className="btn-icon btn-danger" onClick={() => setConfirmingId(ses.id)} title="Delete">✕</button>
-                        </div>
-                      )}
+                      <div className="row-actions">
+                        <button className="btn-icon btn-contents" onClick={() => setSelectedIds(prev => { const s = new Set(prev); s.has(ses.id) ? s.delete(ses.id) : s.add(ses.id); return s })} title="Contents">≡</button>
+                        <button className="btn-icon btn-edit" onClick={() => openEdit(ses)} title="Edit">✎</button>
+                        <button className="btn-icon btn-danger" onClick={() => setConfirmingId(ses.id)} title="Delete">✕</button>
+                      </div>
                     </td>
                   </tr>
                   {selectedIds.has(ses.id) && (
@@ -318,6 +309,27 @@ export default function SessionsPage() {
         </div>
       )}
 
+      {confirmingId !== null && (() => {
+        const ses = sessions.find(s => s.id === confirmingId)
+        return (
+          <div className="modal-backdrop" onClick={() => setConfirmingId(null)}>
+            <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+              <div className="modal-dialog__header">
+                <span className="modal-dialog__title">Delete session?</span>
+              </div>
+              <p style={{ color: '#cbd5e1', margin: 0 }}>
+                <strong style={{ color: '#e2e8f0' }}>{ses?.name}</strong> and all its imported file records will be permanently deleted.
+              </p>
+              <div className="form-actions">
+                <button className="btn btn-danger" onClick={() => handleDelete(confirmingId)} disabled={deletingId === confirmingId}>
+                  {deletingId === confirmingId ? 'Deleting…' : 'Delete'}
+                </button>
+                <button className="btn btn-ghost" onClick={() => setConfirmingId(null)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
