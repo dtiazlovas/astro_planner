@@ -1,18 +1,22 @@
 import { connectToDatabase } from '../db.js'
 import type { ApPlan, CreateApPlanDto, UpdateApPlanDto } from '../models/ApPlan.js'
 
-const SELECT = 'SELECT id, object, name, active FROM ap_plan'
+const SELECT = 'SELECT id, object, name, active, equipment FROM ap_plan'
 
 function mapPlan(row: any): ApPlan {
   return { ...row, active: !!row.active }
 }
 
-export const getAllPlans = async (): Promise<ApPlan[]> => {
-  return (connectToDatabase().prepare(`${SELECT} ORDER BY name`).all() as any[]).map(mapPlan)
+export const getAllPlans = async (equipment?: number): Promise<ApPlan[]> => {
+  const where = equipment !== undefined ? 'WHERE equipment = @equipment' : ''
+  const params = equipment !== undefined ? { equipment } : {}
+  return (connectToDatabase().prepare(`${SELECT} ${where} ORDER BY name`).all(params) as any[]).map(mapPlan)
 }
 
-export const getPlansByObject = async (objectId: number): Promise<ApPlan[]> => {
-  return (connectToDatabase().prepare(`${SELECT} WHERE object = @object ORDER BY name`).all({ object: objectId }) as any[]).map(mapPlan)
+export const getPlansByObject = async (objectId: number, equipment?: number): Promise<ApPlan[]> => {
+  const where = equipment !== undefined ? 'AND equipment = @equipment' : ''
+  const params = equipment !== undefined ? { object: objectId, equipment } : { object: objectId }
+  return (connectToDatabase().prepare(`${SELECT} WHERE object = @object ${where} ORDER BY name`).all(params) as any[]).map(mapPlan)
 }
 
 export const getPlanById = async (id: number): Promise<ApPlan | null> => {
@@ -22,8 +26,8 @@ export const getPlanById = async (id: number): Promise<ApPlan | null> => {
 
 export const createPlan = async (data: CreateApPlanDto): Promise<ApPlan> => {
   const { lastInsertRowid } = connectToDatabase().prepare(`
-    INSERT INTO ap_plan (object, name, active) VALUES (@object, @name, @active)
-  `).run({ object: data.object, name: data.name, active: data.active ? 1 : 0 })
+    INSERT INTO ap_plan (object, name, active, equipment) VALUES (@object, @name, @active, @equipment)
+  `).run({ object: data.object, name: data.name, active: data.active ? 1 : 0, equipment: data.equipment ?? null })
   return (await getPlanById(Number(lastInsertRowid)))!
 }
 
@@ -31,8 +35,9 @@ export const updatePlan = async (id: number, data: UpdateApPlanDto): Promise<ApP
   const setClauses: string[] = []
   const params: Record<string, unknown> = { id }
 
-  if (data.name   !== undefined) { setClauses.push('name = @name');     params.name = data.name }
-  if (data.active !== undefined) { setClauses.push('active = @active'); params.active = data.active ? 1 : 0 }
+  if (data.name      !== undefined) { setClauses.push('name = @name');           params.name = data.name }
+  if (data.active    !== undefined) { setClauses.push('active = @active');       params.active = data.active ? 1 : 0 }
+  if (data.equipment !== undefined) { setClauses.push('equipment = @equipment'); params.equipment = data.equipment ?? null }
 
   if (setClauses.length === 0) return getPlanById(id)
   connectToDatabase().prepare(`UPDATE ap_plan SET ${setClauses.join(', ')} WHERE id = @id`).run(params)

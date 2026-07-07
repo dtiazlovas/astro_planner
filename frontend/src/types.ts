@@ -38,6 +38,7 @@ export interface ApSession {
   duration: string | null
   duration_set: boolean
   comment: string | null
+  equipment: number | null
   calculated_seconds: number
 }
 
@@ -77,6 +78,7 @@ export interface ApPlan {
   object: number
   name: string
   active: boolean
+  equipment: number | null
 }
 
 export interface ApPlanDetail {
@@ -91,3 +93,15 @@ export interface ApPlanSession {
   session: number
   planid: number
 }
+
+export interface ApEquipment {
+  id: number
+  name: string
+  focal_length: number
+  focal_ratio: number
+  reducer: number
+  sensor: string
+  binning: number
+}
+
+export type CreateApEquipmentDto = Omit<ApEquipment, 'id'>

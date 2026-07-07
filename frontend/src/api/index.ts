@@ -1,4 +1,4 @@
-import type { ApObject, ObjectFilterStat, PlanProgressItem, ApObjectType, ApSession, CreateApObjectDto, CreateApSessionDto, ApObjectSession, CreateApObjectSessionDto, ApExposure, ApFilter, ApPlan, ApPlanDetail, ApPlanSession } from '../types'
+import type { ApObject, ObjectFilterStat, PlanProgressItem, ApObjectType, ApSession, CreateApObjectDto, CreateApSessionDto, ApObjectSession, CreateApObjectSessionDto, ApExposure, ApFilter, ApPlan, ApPlanDetail, ApPlanSession, ApEquipment, CreateApEquipmentDto } from '../types'
 
 const BASE = '/api'
 
@@ -7,11 +7,15 @@ const json = <T>(res: Response): Promise<T> => {
   return res.json() as Promise<T>
 }
 
+// Builds a `?equipment=ID` query suffix, omitted when no rig is active.
+const eqQuery = (equipment?: number | null, lead = '?'): string =>
+  equipment != null ? `${lead}equipment=${equipment}` : ''
+
 export const getObjectTypes = (): Promise<ApObjectType[]> =>
   fetch(`${BASE}/object-types`).then(json<ApObjectType[]>)
 
-export const getObjects = (): Promise<ApObject[]> =>
-  fetch(`${BASE}/objects`).then(json<ApObject[]>)
+export const getObjects = (equipment?: number | null): Promise<ApObject[]> =>
+  fetch(`${BASE}/objects${eqQuery(equipment)}`).then(json<ApObject[]>)
 
 export const createObject = (data: CreateApObjectDto): Promise<ApObject> =>
   fetch(`${BASE}/objects`, {
@@ -27,14 +31,14 @@ export const updateObject = (id: number, data: Partial<Omit<ApObject, 'id'>>): P
     body: JSON.stringify(data),
   }).then(json<ApObject>)
 
-export const getObjectFilterStats = (id: number): Promise<ObjectFilterStat[]> =>
-  fetch(`${BASE}/objects/${id}/filter-stats`).then(json<ObjectFilterStat[]>)
+export const getObjectFilterStats = (id: number, equipment?: number | null): Promise<ObjectFilterStat[]> =>
+  fetch(`${BASE}/objects/${id}/filter-stats${eqQuery(equipment)}`).then(json<ObjectFilterStat[]>)
 
-export const getObjectPlanProgress = (id: number): Promise<PlanProgressItem[]> =>
-  fetch(`${BASE}/objects/${id}/plan-progress`).then(json<PlanProgressItem[]>)
+export const getObjectPlanProgress = (id: number, equipment?: number | null): Promise<PlanProgressItem[]> =>
+  fetch(`${BASE}/objects/${id}/plan-progress${eqQuery(equipment)}`).then(json<PlanProgressItem[]>)
 
-export const assignToActivePlan = (id: number): Promise<{ assigned: number }> =>
-  fetch(`${BASE}/objects/${id}/assign-to-plan`, { method: 'POST' }).then(json<{ assigned: number }>)
+export const assignToActivePlan = (id: number, equipment?: number | null): Promise<{ assigned: number }> =>
+  fetch(`${BASE}/objects/${id}/assign-to-plan${eqQuery(equipment)}`, { method: 'POST' }).then(json<{ assigned: number }>)
 
 export const reorderObjects = (ids: number[]): Promise<ApObject[]> =>
   fetch(`${BASE}/objects/reorder`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) }).then(json<ApObject[]>)
@@ -49,8 +53,8 @@ export const updateSession = (id: number, data: Partial<Omit<ApSession, 'id'>>):
     body: JSON.stringify(data),
   }).then(json<ApSession>)
 
-export const getSessions = (): Promise<ApSession[]> =>
-  fetch(`${BASE}/sessions`).then(json<ApSession[]>)
+export const getSessions = (equipment?: number | null): Promise<ApSession[]> =>
+  fetch(`${BASE}/sessions${eqQuery(equipment)}`).then(json<ApSession[]>)
 
 export const createSession = (data: CreateApSessionDto): Promise<ApSession> =>
   fetch(`${BASE}/sessions`, {
@@ -129,10 +133,29 @@ export const copyFilesToObjectFolders = (items: CopyItem[]): Promise<CopyStats> 
     body: JSON.stringify({ items }),
   }).then(json<CopyStats>)
 
-export const getPlans = (objectId?: number): Promise<ApPlan[]> =>
-  fetch(`${BASE}/plans${objectId !== undefined ? `?object=${objectId}` : ''}`).then(json<ApPlan[]>)
+export interface FitsAnalysis {
+  fileName: string
+  snr: number | null
+  dateObs: string | null
+  width: number | null
+  height: number | null
+  stars?: number
+  error?: string
+}
 
-export const createPlan = (data: { object: number; name: string; active: boolean }): Promise<ApPlan> =>
+export const analyzeFits = (fileNames: string[], normalize = true): Promise<FitsAnalysis[]> =>
+  fetch(`${BASE}/fits/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileNames, normalize }),
+  }).then(json<FitsAnalysis[]>)
+
+export const getPlans = (objectId?: number, equipment?: number | null): Promise<ApPlan[]> => {
+  const params = [objectId !== undefined ? `object=${objectId}` : '', equipment != null ? `equipment=${equipment}` : ''].filter(Boolean)
+  return fetch(`${BASE}/plans${params.length ? `?${params.join('&')}` : ''}`).then(json<ApPlan[]>)
+}
+
+export const createPlan = (data: { object: number; name: string; active: boolean; equipment?: number | null }): Promise<ApPlan> =>
   fetch(`${BASE}/plans`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -178,3 +201,23 @@ export const setPlanSession = (data: { session: number; planid: number }): Promi
 
 export const deletePlanSession = (id: number): Promise<void> =>
   fetch(`${BASE}/plan-sessions/${id}`, { method: 'DELETE' }).then(() => undefined)
+
+export const getEquipment = (): Promise<ApEquipment[]> =>
+  fetch(`${BASE}/equipment`).then(json<ApEquipment[]>)
+
+export const createEquipment = (data: CreateApEquipmentDto): Promise<ApEquipment> =>
+  fetch(`${BASE}/equipment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }).then(json<ApEquipment>)
+
+export const updateEquipment = (id: number, data: CreateApEquipmentDto): Promise<ApEquipment> =>
+  fetch(`${BASE}/equipment/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }).then(json<ApEquipment>)
+
+export const deleteEquipment = (id: number): Promise<void> =>
+  fetch(`${BASE}/equipment/${id}`, { method: 'DELETE' }).then(() => undefined)

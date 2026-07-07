@@ -5,6 +5,7 @@ export interface ApSession {
   duration: Date | null
   duration_set: boolean
   comment: string | null
+  equipment: number | null
   calculated_seconds: number
 }
 

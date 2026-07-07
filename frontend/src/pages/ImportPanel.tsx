@@ -6,9 +6,12 @@ import {
   updateFilter, createFilter,
   checkImported, recordImported, copyFilesToObjectFolders,
   getPlans, setPlanSession, createPlan, createPlanDetail,
+  analyzeFits,
 } from '../api'
-import type { CopyItem } from '../api'
+import type { CopyItem, FitsAnalysis } from '../api'
 import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } from '../types'
+import { useEquipment } from '../context/EquipmentContext'
+import SnrChart, { type SnrPoint } from '../components/SnrChart'
 
 interface ImportResult {
   sessionsCreated: number
@@ -135,6 +138,7 @@ function buildPreview(
 }
 
 export default function ImportPanel({ onImported, onClose }: Props) {
+  const { activeId } = useEquipment()
   const [objects, setObjects] = useState<ApObject[]>([])
   const [objectTypes, setObjectTypes] = useState<ApObjectType[]>([])
   const [filters, setFilters] = useState<ApFilter[]>([])
@@ -177,6 +181,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [resultExpanded, setResultExpanded] = useState<'failed' | 'skipped' | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // ── SNR analysis / frame approval ─────────────────────────────
+  const [snrResults, setSnrResults] = useState<Map<string, FitsAnalysis>>(new Map())
+  const [snrThreshold, setSnrThreshold] = useState<number | null>(null)
+  const [analyzing, setAnalyzing] = useState(false)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
 
@@ -185,7 +194,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   }, [])
 
   useEffect(() => {
-    Promise.all([getObjects(), getFilters(), getExposures(), fetchPatterns(), getObjectTypes(), getSessions(), getPlans(), fetchDayStartHour()])
+    Promise.all([getObjects(activeId), getFilters(), getExposures(), fetchPatterns(), getObjectTypes(), getSessions(activeId), getPlans(undefined, activeId), fetchDayStartHour()])
       .then(([o, f, e, p, ot, s, pl, dsh]) => {
         setObjects(o); setFilters(f); setExposures(e); setPatterns(p); setObjectTypes(ot); setSessions(s); setAllPlans(pl); setDayStartHour(dsh)
         setLookupReady(true)
@@ -213,6 +222,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setError(null); setImportResult(null)
     setTargetOverrides({}); setTargetAliasTo({}); setIgnoredTargets([])
     setFilterOverrides({}); setFilterAliasTo({}); setIgnoredFilters([])
+    setSnrResults(new Map()); setSnrThreshold(null)
 
     let alreadyImported: string[] = []
     try { alreadyImported = await checkImported(all.map(f => f.name)) } catch {}
@@ -386,6 +396,75 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     })
   }
 
+  // ── SNR analysis ─────────────────────────────────────────────
+  // All distinct .fit file names across importable entries, in capture order.
+  const importableFileNames = [...new Set(
+    (preview ?? []).flatMap(s => s.entries.filter(e => e.canImport)).flatMap(e => e.fileNames)
+  )]
+
+  const handleAnalyzeSnr = async () => {
+    if (!importableFileNames.length) return
+    setAnalyzing(true); setError(null)
+    const total = importableFileNames.length
+    const BATCH = 6
+    try {
+      // Analyze in batches so we can show progress. Ask the backend for raw
+      // PSFSW values and normalize across the full set here (see below).
+      const raw: FitsAnalysis[] = []
+      setImportProgress({ step: 'Analyzing frame quality…', current: 0, total })
+      for (let i = 0; i < total; i += BATCH) {
+        const chunk = importableFileNames.slice(i, i + BATCH)
+        raw.push(...await analyzeFits(chunk, false))
+        setImportProgress({ step: 'Analyzing frame quality…', current: Math.min(i + BATCH, total), total })
+      }
+
+      // Unit-median normalization over every analyzed frame (PixInsight's K).
+      const weights = raw.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
+      const median = weights.length ? weights[weights.length >> 1] : 0
+      const normed = median > 0
+        ? raw.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
+        : raw
+
+      setSnrResults(new Map(normed.map(r => [r.fileName, r])))
+      // Default the approve line at the minimum measured weight (everything approved).
+      const snrs = normed.map(r => r.snr).filter((v): v is number => v != null)
+      setSnrThreshold(snrs.length ? Math.min(...snrs) : null)
+    } catch {
+      setError('Quality analysis failed — is the images folder set and reachable?')
+    } finally {
+      setAnalyzing(false)
+      setImportProgress(null)
+    }
+  }
+
+  // Capture time for ordering: FITS DATE-OBS, else the filename-parsed datetime.
+  const timeForFile = (fileName: string): number => {
+    const dateObs = snrResults.get(fileName)?.dateObs
+    if (dateObs) { const t = Date.parse(dateObs); if (!isNaN(t)) return t }
+    return parseFileMulti(fileName, patterns)?.datetime.getTime() ?? 0
+  }
+
+  const snrPoints: SnrPoint[] = [...snrResults.values()]
+    .filter(r => r.snr != null)
+    .map(r => ({ fileName: r.fileName, snr: r.snr as number, time: timeForFile(r.fileName) }))
+    .sort((a, b) => a.time - b.time)
+
+  const analyzedCount = snrPoints.length
+  const analysisErrors = [...snrResults.values()].filter(r => r.snr == null).length
+  const avgStars = (() => {
+    const counts = [...snrResults.values()].map(r => r.stars ?? 0).filter(n => n > 0)
+    return counts.length ? Math.round(counts.reduce((a, b) => a + b, 0) / counts.length) : 0
+  })()
+  const rejectedCount = snrThreshold == null ? 0 : snrPoints.filter(p => p.snr < snrThreshold).length
+
+  // A file is approved if we couldn't measure it (unknown → keep) or it clears the line.
+  const isApproved = (fileName: string): boolean => {
+    if (snrThreshold == null) return true
+    const r = snrResults.get(fileName)
+    if (!r || r.snr == null) return true
+    return r.snr >= snrThreshold
+  }
+
   // ── import ───────────────────────────────────────────────────
   const importableCount = preview?.flatMap(s => s.entries).filter(e => e.canImport).length ?? 0
   const importableSessions = preview?.filter(s => s.entries.some(e => e.canImport)) ?? []
@@ -419,6 +498,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
             const created = await createSession({
               name: s.name, start: toDatetimeLocal(s.startTime),
               duration: null, duration_set: false, comment: 'Imported from folder',
+              equipment: activeId,
             })
             sessionId = created.id
             sessionByDate.set(s.dateKey, sessionId)
@@ -459,7 +539,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         if (allPlans.some(p => p.object === objectId)) continue
         try {
           const entries = entriesByObject.get(objectId)!
-          const newPlan = await createPlan({ object: objectId, name: entries[0].objectName ?? String(objectId), active: true })
+          const newPlan = await createPlan({ object: objectId, name: entries[0].objectName ?? String(objectId), active: true, equipment: activeId })
           const byFilter = new Map<number, number>()
           for (const e of entries) {
             if (e.filterId) byFilter.set(e.filterId, (byFilter.get(e.filterId) ?? 0) + e.frames * e.duration)
@@ -478,11 +558,12 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       for (const s of importableSessions) {
         for (const entry of s.entries.filter(e => e.canImport)) {
           const obj = objects.find(o => o.id === entry.objectId)
-          if (obj?.folder && entry.fileNames.length) {
+          const approvedFiles = entry.fileNames.filter(isApproved)
+          if (obj?.folder && approvedFiles.length) {
             const filt = filters.find(f => f.id === entry.filterId)
             const filterFolder = filt?.folder ?? filt?.name ?? entry.filterName ?? ''
             if (filterFolder)
-              copyItems.push({ fileNames: entry.fileNames, objectFolder: obj.folder, filterName: filterFolder })
+              copyItems.push({ fileNames: approvedFiles, objectFolder: obj.folder, filterName: filterFolder })
           }
         }
       }
@@ -547,11 +628,37 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                   </span>
                 )}
                 {importableCount > 0 && (
+                  <button className="btn btn-secondary" onClick={handleAnalyzeSnr} disabled={analyzing || importing}>
+                    {analyzing ? 'Analyzing…' : snrResults.size ? '↻ Re-analyze quality' : '📈 Analyze quality'}
+                  </button>
+                )}
+                {importableCount > 0 && (
                   <button className="btn btn-primary" onClick={handleImport} disabled={importing}>
                     {importing ? 'Importing…' : `Import ${importableCount} entr${importableCount !== 1 ? 'ies' : 'y'}`}
                   </button>
                 )}
               </div>
+
+              {snrResults.size > 0 && snrThreshold != null && analyzedCount > 0 && (
+                <div className="import-session-block">
+                  <div className="import-session-header">
+                    <span className="cell-name">Frame quality (PSF Signal Weight)</span>
+                    <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                      {analyzedCount} analyzed{avgStars > 0 ? ` · ~${avgStars} stars/frame` : ''} · median frame ≈ 1.0 · {rejectedCount} below approve line will be skipped
+                      {analysisErrors > 0 ? ` · ${analysisErrors} not measurable (kept)` : ''}
+                    </span>
+                  </div>
+                  <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.25rem 0 0.5rem' }}>
+                    Drag the ▸ handle to set the approve line — only frames above it are copied.
+                  </p>
+                  <SnrChart points={snrPoints} threshold={snrThreshold} onThresholdChange={setSnrThreshold} />
+                </div>
+              )}
+              {snrResults.size > 0 && analyzedCount === 0 && (
+                <div className="import-warnings">
+                  No SNR could be measured — files may be missing from the images folder, or not mono FITS.
+                </div>
+              )}
 
               {preview.map(session => (
                 <div key={session.dateKey} className="import-session-block">

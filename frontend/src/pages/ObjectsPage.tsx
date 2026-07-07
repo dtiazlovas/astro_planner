@@ -1,6 +1,7 @@
 import React, { useState, useEffect, Fragment } from 'react'
 import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
+import { useEquipment } from '../context/EquipmentContext'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
 import GalaxyIcon from '../components/GalaxyIcon'
@@ -19,6 +20,7 @@ const fmtDuration = (s: number): string => {
 const fmtMinsH = (minutes: number): string => `${(minutes / 60).toFixed(1)}h`
 
 export default function ObjectsPage() {
+  const { activeId } = useEquipment()
   const [objects, setObjects] = useState<ApObject[]>([])
   const [types, setTypes] = useState<ApObjectType[]>([])
   const [loading, setLoading] = useState(true)
@@ -42,13 +44,13 @@ export default function ObjectsPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [objs, ts, plans] = await Promise.all([getObjects(), getObjectTypes(), getPlans()])
+        const [objs, ts, plans] = await Promise.all([getObjects(activeId), getObjectTypes(), getPlans(undefined, activeId)])
         setObjects(objs)
         setTypes(ts)
         const activePlanObjIds = [...new Set(plans.filter(p => p.active).map(p => p.object))]
         setActivePlanObjectIds(new Set(activePlanObjIds))
         const progressResults = await Promise.all(
-          activePlanObjIds.map(id => getObjectPlanProgress(id).catch(() => [] as PlanProgressItem[]))
+          activePlanObjIds.map(id => getObjectPlanProgress(id, activeId).catch(() => [] as PlanProgressItem[]))
         )
         const map = new Map<number, PlanProgressItem[]>()
         activePlanObjIds.forEach((id, i) => {
@@ -62,13 +64,15 @@ export default function ObjectsPage() {
       }
     }
     load()
-  }, [])
+    // Collapse any rig-specific expanded state when switching rigs
+    setExpandedIds(new Set()); setExpandedStats(new Map()); setPlanExpandedIds(new Set())
+  }, [activeId])
 
   const handleAssignAll = async (objectId: number) => {
     setAssigningIds(prev => new Set(prev).add(objectId))
     try {
-      await assignToActivePlan(objectId)
-      const progress = await getObjectPlanProgress(objectId)
+      await assignToActivePlan(objectId, activeId)
+      const progress = await getObjectPlanProgress(objectId, activeId)
       setPlanProgress(prev => new Map(prev).set(objectId, progress))
     } catch {
       setError('Failed to assign sessions to plan')
@@ -132,7 +136,7 @@ export default function ObjectsPage() {
       await reorderObjects(newOrder.map(o => o.id))
     } catch {
       setError('Failed to reorder objects')
-      try { setObjects(await getObjects()) } catch {}
+      try { setObjects(await getObjects(activeId)) } catch {}
     }
   }
 
@@ -207,7 +211,7 @@ export default function ObjectsPage() {
     }
     setExpandedIds(prev => new Set(prev).add(obj.id))
     setLoadingIds(prev => new Set(prev).add(obj.id))
-    getObjectFilterStats(obj.id)
+    getObjectFilterStats(obj.id, activeId)
       .then(s => setExpandedStats(prev => new Map(prev).set(obj.id, s)))
       .catch(() => {})
       .finally(() => setLoadingIds(prev => { const s = new Set(prev); s.delete(obj.id); return s }))

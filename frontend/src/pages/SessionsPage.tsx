@@ -1,10 +1,11 @@
 import { useState, useEffect, Fragment } from 'react'
 import { getSessions, createSession, updateSession, deleteSession } from '../api'
 import type { ApSession } from '../types'
+import { useEquipment } from '../context/EquipmentContext'
 import SessionContentsPanel from './SessionContentsPanel'
 import ImportPanel from './ImportPanel'
 
-const emptyForm = { name: '', start: '', duration: '', duration_set: false, comment: '' }
+const emptyForm = { name: '', start: '', duration: '', duration_set: false, comment: '', equipment: '' }
 
 const fmtCalcDuration = (totalSeconds: number): string => {
   if (totalSeconds <= 0) return '—'
@@ -26,6 +27,7 @@ const toDatetimeLocal = (iso: string | null): string => {
 }
 
 export default function SessionsPage() {
+  const { activeId, equipment } = useEquipment()
   const [sessions, setSessions] = useState<ApSession[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -57,15 +59,16 @@ export default function SessionsPage() {
     sortField === field ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
 
   useEffect(() => {
-    getSessions()
+    setLoading(true)
+    getSessions(activeId)
       .then(setSessions)
       .catch(() => setError('Failed to load sessions'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [activeId])
 
   const openAdd = () => {
     setEditingId(null)
-    setForm(emptyForm)
+    setForm({ ...emptyForm, equipment: activeId != null ? String(activeId) : '' })
     setShowForm(true)
     setError(null)
   }
@@ -78,6 +81,7 @@ export default function SessionsPage() {
       duration: toDatetimeLocal(ses.duration),
       duration_set: ses.duration_set,
       comment: ses.comment ?? '',
+      equipment: ses.equipment != null ? String(ses.equipment) : '',
     })
     setShowForm(true)
     setConfirmingId(null)
@@ -101,6 +105,7 @@ export default function SessionsPage() {
       duration: form.duration_set && form.duration ? form.duration : null,
       duration_set: form.duration_set,
       comment: form.comment.trim() || null,
+      equipment: form.equipment ? Number(form.equipment) : null,
     }
     try {
       if (editingId !== null) {
@@ -135,7 +140,7 @@ export default function SessionsPage() {
   }
 
   const set = (field: keyof Omit<typeof emptyForm, 'duration_set'>) => (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => setForm(f => ({ ...f, [field]: e.target.value }))
 
   return (
@@ -171,6 +176,14 @@ export default function SessionsPage() {
               <input id="ses-start" type="datetime-local" value={form.start} onChange={set('start')} required />
             </div>
 
+            <div className="form-field">
+              <label htmlFor="ses-equipment">Rig</label>
+              <select id="ses-equipment" value={form.equipment} onChange={set('equipment')}>
+                <option value="">— none —</option>
+                {equipment.map(eq => <option key={eq.id} value={eq.id}>{eq.name}</option>)}
+              </select>
+            </div>
+
             <div className="form-field form-field--check" style={{ alignSelf: 'flex-end', paddingBottom: '0.1rem' }}>
               <label className="check-label">
                 <input type="checkbox" checked={form.duration_set} onChange={e => setForm(f => ({ ...f, duration_set: e.target.checked, duration: e.target.checked ? f.duration : '' }))} />
@@ -203,7 +216,7 @@ export default function SessionsPage() {
         <ImportPanel
           onClose={() => setShowImport(false)}
           onImported={() => {
-            getSessions().then(setSessions).catch(() => {})
+            getSessions(activeId).then(setSessions).catch(() => {})
             setShowImport(false)
           }}
         />
@@ -277,6 +290,14 @@ export default function SessionsPage() {
                             <div className="form-field">
                               <label htmlFor="ses-start-inline">Start</label>
                               <input id="ses-start-inline" type="datetime-local" value={form.start} onChange={set('start')} required />
+                            </div>
+
+                            <div className="form-field">
+                              <label htmlFor="ses-equipment-inline">Rig</label>
+                              <select id="ses-equipment-inline" value={form.equipment} onChange={set('equipment')}>
+                                <option value="">— none —</option>
+                                {equipment.map(eq => <option key={eq.id} value={eq.id}>{eq.name}</option>)}
+                              </select>
                             </div>
 
                             <div className="form-field form-field--check" style={{ alignSelf: 'flex-end', paddingBottom: '0.1rem' }}>

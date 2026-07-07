@@ -14,9 +14,15 @@ import type { CreateApObjectDto, UpdateApObjectDto } from '../models/ApObject.js
 
 const router = Router()
 
-router.get('/', async (_req: Request, res: Response) => {
+const equipmentParam = (req: Request): number | null => {
+  if (req.query.equipment === undefined) return null
+  const n = Number(req.query.equipment)
+  return Number.isNaN(n) ? null : n
+}
+
+router.get('/', async (req: Request, res: Response) => {
   try {
-    res.json(await getAllApObjects())
+    res.json(await getAllApObjects(equipmentParam(req)))
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }
@@ -39,7 +45,7 @@ router.post('/:id/assign-to-plan', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (Number.isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return }
   try {
-    const assigned = await assignUnassignedToActivePlan(id)
+    const assigned = await assignUnassignedToActivePlan(id, equipmentParam(req))
     res.json({ assigned })
   } catch (err) {
     console.error('assignUnassignedToActivePlan error:', err)
@@ -51,7 +57,7 @@ router.get('/:id/plan-progress', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (Number.isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return }
   try {
-    res.json(await getObjectPlanProgress(id))
+    res.json(await getObjectPlanProgress(id, equipmentParam(req)))
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }
@@ -61,7 +67,7 @@ router.get('/:id/filter-stats', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (Number.isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return }
   try {
-    res.json(await getObjectFilterStats(id))
+    res.json(await getObjectFilterStats(id, equipmentParam(req)))
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }

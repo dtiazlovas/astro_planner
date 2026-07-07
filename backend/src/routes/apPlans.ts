@@ -5,12 +5,14 @@ const router = Router()
 
 router.get('/', async (req: Request, res: Response) => {
   try {
+    const eqRaw = req.query.equipment !== undefined ? Number(req.query.equipment) : undefined
+    const equipment = eqRaw !== undefined && !Number.isNaN(eqRaw) ? eqRaw : undefined
     if (req.query.object !== undefined) {
       const objectId = Number(req.query.object)
       if (Number.isNaN(objectId)) { res.status(400).json({ error: 'Invalid object id' }); return }
-      res.json(await getPlansByObject(objectId))
+      res.json(await getPlansByObject(objectId, equipment))
     } else {
-      res.json(await getAllPlans())
+      res.json(await getAllPlans(equipment))
     }
   } catch {
     res.status(500).json({ error: 'Internal server error' })
@@ -30,12 +32,13 @@ router.get('/:id', async (req: Request, res: Response) => {
 })
 
 router.post('/', async (req: Request, res: Response) => {
-  const { object, name, active } = req.body
+  const { object, name, active, equipment } = req.body
   if (!object || !name) { res.status(400).json({ error: 'object and name are required' }); return }
   try {
     res.status(201).json(await createPlan({
       object: Number(object), name,
       active: active ?? true,
+      equipment: equipment ?? null,
     }))
   } catch {
     res.status(500).json({ error: 'Internal server error' })

@@ -3,6 +3,7 @@ export interface ApPlan {
   object: number
   name: string
   active: boolean
+  equipment: number | null
 }
 
 export type CreateApPlanDto = Omit<ApPlan, 'id'>

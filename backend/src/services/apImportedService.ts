@@ -23,7 +23,7 @@ export interface CopyItem {
   filterName: string
 }
 
-async function buildFileIndex(dir: string): Promise<Map<string, string>> {
+export async function buildFileIndex(dir: string): Promise<Map<string, string>> {
   const index = new Map<string, string>()
   const scan = async (current: string) => {
     try {

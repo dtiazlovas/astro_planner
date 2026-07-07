@@ -1,9 +1,10 @@
 import { useState, useEffect, Fragment } from 'react'
 import { getPlans, createPlan, updatePlan, deletePlan, getPlanDetails, createPlanDetail, updatePlanDetail, deletePlanDetail, getFilters } from '../api'
 import type { ApPlan, ApPlanDetail, ApFilter } from '../types'
+import { useEquipment } from '../context/EquipmentContext'
 import FilterBadge from '../components/FilterBadge'
 
-const emptyPlanForm = { name: '', active: true }
+const emptyPlanForm = { name: '', active: true, equipment: '' }
 const emptyDetailForm = { filterId: '', hours: '0', minutes: '0' }
 
 const fmtDuration = (minutes: number) => {
@@ -22,6 +23,7 @@ interface Props {
 }
 
 export default function PlansPanel({ objectId, objectName, onClose, onActivePlanChange }: Props) {
+  const { activeId, equipment } = useEquipment()
   const [plans, setPlans] = useState<ApPlan[]>([])
   const [filters, setFilters] = useState<ApFilter[]>([])
   const [loading, setLoading] = useState(true)
@@ -46,11 +48,11 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
   const [deletingDetailId, setDeletingDetailId] = useState<number | null>(null)
 
   useEffect(() => {
-    Promise.all([getPlans(objectId), getFilters()])
+    Promise.all([getPlans(objectId, activeId), getFilters()])
       .then(([p, f]) => { setPlans(p); setFilters(f) })
       .catch(() => setError('Failed to load plans'))
       .finally(() => setLoading(false))
-  }, [objectId])
+  }, [objectId, activeId])
 
   const filterName = (id: number) => filters.find(f => f.id === id)?.name ?? `Filter ${id}`
 
@@ -71,7 +73,7 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
 
   const openEditPlan = (plan: ApPlan) => {
     setEditingPlanId(plan.id)
-    setPlanForm({ name: plan.name, active: plan.active })
+    setPlanForm({ name: plan.name, active: plan.active, equipment: plan.equipment != null ? String(plan.equipment) : '' })
     setShowPlanForm(true)
     setConfirmingPlanId(null)
     setError(null)
@@ -85,13 +87,14 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
     e.preventDefault()
     setSubmittingPlan(true); setError(null)
     try {
+      const equipmentId = planForm.equipment ? Number(planForm.equipment) : null
       if (editingPlanId !== null) {
-        const updated = await updatePlan(editingPlanId, { name: planForm.name.trim(), active: planForm.active })
+        const updated = await updatePlan(editingPlanId, { name: planForm.name.trim(), active: planForm.active, equipment: equipmentId })
         const next = plans.map(p => p.id === editingPlanId ? updated : p)
         setPlans(next)
         onActivePlanChange?.(next.some(p => p.active))
       } else {
-        const created = await createPlan({ object: objectId, name: planForm.name.trim(), active: planForm.active })
+        const created = await createPlan({ object: objectId, name: planForm.name.trim(), active: planForm.active, equipment: equipmentId })
         const next = [...plans, created]
         setPlans(next)
         onActivePlanChange?.(next.some(p => p.active))
@@ -197,7 +200,7 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
             className={`btn ${showPlanForm ? 'btn-ghost' : 'btn-primary'}`}
             onClick={() => {
               if (showPlanForm) handleCancelPlan()
-              else { setShowPlanForm(true); setEditingPlanId(null); setPlanForm(emptyPlanForm) }
+              else { setShowPlanForm(true); setEditingPlanId(null); setPlanForm({ ...emptyPlanForm, equipment: activeId != null ? String(activeId) : '' }) }
             }}>
             {showPlanForm ? 'Cancel' : '+ Add Plan'}
           </button>
@@ -215,6 +218,14 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
               <input id="plan-name" value={planForm.name}
                 onChange={e => setPlanForm(f => ({ ...f, name: e.target.value }))}
                 required placeholder="e.g. Ha narrowband" autoFocus />
+            </div>
+            <div className="form-field">
+              <label htmlFor="plan-equipment">Rig</label>
+              <select id="plan-equipment" value={planForm.equipment}
+                onChange={e => setPlanForm(f => ({ ...f, equipment: e.target.value }))}>
+                <option value="">— none —</option>
+                {equipment.map(eq => <option key={eq.id} value={eq.id}>{eq.name}</option>)}
+              </select>
             </div>
             <div className="form-field form-field--check" style={{ alignSelf: 'flex-end', paddingBottom: '0.1rem' }}>
               <label className="check-label">

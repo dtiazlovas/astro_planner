@@ -10,9 +10,10 @@ import type { CreateApSessionDto, UpdateApSessionDto } from '../models/ApSession
 
 const router = Router()
 
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    res.json(await getAllApSessions())
+    const eq = req.query.equipment !== undefined ? Number(req.query.equipment) : undefined
+    res.json(await getAllApSessions(eq !== undefined && !Number.isNaN(eq) ? eq : undefined))
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }
@@ -42,7 +43,8 @@ router.post('/', async (req: Request, res: Response) => {
       start: new Date(body.start as unknown as string),
       duration: body.duration ? new Date(body.duration as unknown as string) : null,
       duration_set: body.duration_set,
-      comment: body.comment ?? null
+      comment: body.comment ?? null,
+      equipment: body.equipment ?? null
     }))
   } catch {
     res.status(500).json({ error: 'Internal server error' })

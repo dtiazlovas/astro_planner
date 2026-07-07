@@ -77,6 +77,16 @@ function initSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS ap_imported (
       filename TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS ap_equipment (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      name         TEXT    NOT NULL,
+      focal_length INTEGER NOT NULL,
+      focal_ratio  REAL    NOT NULL,
+      reducer      REAL    NOT NULL DEFAULT 1.0,
+      sensor       TEXT    NOT NULL,
+      binning      INTEGER NOT NULL DEFAULT 1
+    );
   `)
 
   // Migrate: add priority column if missing
@@ -87,6 +97,9 @@ function initSchema(database: Database.Database): void {
   try { database.exec('ALTER TABLE ap_object ADD COLUMN folder TEXT') } catch {}
   // Migrate: add folder column to ap_filter with defaults for built-in filters
   try { database.exec('ALTER TABLE ap_filter ADD COLUMN folder TEXT') } catch {}
+  // Migrate: tag sessions and plans with the equipment (rig) used
+  try { database.exec('ALTER TABLE ap_session ADD COLUMN equipment INTEGER REFERENCES ap_equipment(id)') } catch {}
+  try { database.exec('ALTER TABLE ap_plan ADD COLUMN equipment INTEGER REFERENCES ap_equipment(id)') } catch {}
   for (const [name, folder] of [['Luminance','Lum'],['Red','R'],['Green','G'],['Blue','B'],['H-alpha','Ha'],['Oxygen','Oiii'],['Sulphur','Sii']]) {
     database.prepare('UPDATE ap_filter SET folder = @folder WHERE name = @name AND folder IS NULL').run({ folder, name })
   }
@@ -123,6 +136,19 @@ function initSchema(database: Database.Database): void {
         insert.run({ duration })
       }
     })()
+  }
+
+  // Seed a default rig, then tag any existing/untagged sessions and plans with it
+  const equipmentEmpty = (database.prepare('SELECT COUNT(*) as c FROM ap_equipment').get() as { c: number }).c === 0
+  if (equipmentEmpty) {
+    database.prepare(
+      'INSERT INTO ap_equipment (name, focal_length, focal_ratio, reducer, sensor, binning) VALUES (@name, @focal_length, @focal_ratio, @reducer, @sensor, @binning)'
+    ).run({ name: 'Default Rig', focal_length: 250, focal_ratio: 4.9, reducer: 1.0, sensor: '571', binning: 1 })
+  }
+  const defaultRig = database.prepare('SELECT id FROM ap_equipment ORDER BY id LIMIT 1').get() as { id: number } | undefined
+  if (defaultRig) {
+    database.prepare('UPDATE ap_session SET equipment = @id WHERE equipment IS NULL').run({ id: defaultRig.id })
+    database.prepare('UPDATE ap_plan SET equipment = @id WHERE equipment IS NULL').run({ id: defaultRig.id })
   }
 
   const filtersEmpty = (database.prepare('SELECT COUNT(*) as c FROM ap_filter').get() as { c: number }).c === 0

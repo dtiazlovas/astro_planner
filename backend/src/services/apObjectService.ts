@@ -1,12 +1,14 @@
 import { connectToDatabase } from '../db.js'
 import type { ApObject, ObjectFilterStat, PlanProgressItem, CreateApObjectDto, UpdateApObjectDto } from '../models/ApObject.js'
 
+// When `@equipment` is non-null, only count captures from sessions taken with that rig.
 const SELECT_WITH_CALC = `
   SELECT
     o.id, o.name, o.type, o.position_json, o.comment, o.active, o.aliases, o.priority, o.folder,
     CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS total_seconds
   FROM ap_object o
   LEFT JOIN ap_object_session os ON os.object = o.id
+    AND (@equipment IS NULL OR os.session IN (SELECT id FROM ap_session WHERE equipment = @equipment))
   LEFT JOIN ap_exposure e ON e.id = os.exposure
 `
 const GROUP_BY = `GROUP BY o.id, o.name, o.type, o.position_json, o.comment, o.active, o.aliases, o.priority, o.folder`
@@ -15,16 +17,16 @@ function mapObject(row: any): ApObject {
   return { ...row, active: !!row.active }
 }
 
-export const getAllApObjects = async (): Promise<ApObject[]> => {
-  return (connectToDatabase().prepare(`${SELECT_WITH_CALC} ${GROUP_BY} ORDER BY o.priority ASC, o.id ASC`).all() as any[]).map(mapObject)
+export const getAllApObjects = async (equipment: number | null = null): Promise<ApObject[]> => {
+  return (connectToDatabase().prepare(`${SELECT_WITH_CALC} ${GROUP_BY} ORDER BY o.priority ASC, o.id ASC`).all({ equipment }) as any[]).map(mapObject)
 }
 
-export const getApObjectById = async (id: number): Promise<ApObject | null> => {
-  const row = connectToDatabase().prepare(`${SELECT_WITH_CALC} WHERE o.id = @id ${GROUP_BY}`).get({ id }) as any
+export const getApObjectById = async (id: number, equipment: number | null = null): Promise<ApObject | null> => {
+  const row = connectToDatabase().prepare(`${SELECT_WITH_CALC} WHERE o.id = @id ${GROUP_BY}`).get({ id, equipment }) as any
   return row ? mapObject(row) : null
 }
 
-export const getObjectFilterStats = async (objectId: number): Promise<ObjectFilterStat[]> => {
+export const getObjectFilterStats = async (objectId: number, equipment: number | null = null): Promise<ObjectFilterStat[]> => {
   return connectToDatabase().prepare(`
     SELECT
       f.name AS filter_name,
@@ -33,15 +35,18 @@ export const getObjectFilterStats = async (objectId: number): Promise<ObjectFilt
     JOIN ap_exposure e ON e.id = os.exposure
     JOIN ap_filter f ON f.id = os.filter
     WHERE os.object = @objectId
+    AND (@equipment IS NULL OR os.session IN (SELECT id FROM ap_session WHERE equipment = @equipment))
     GROUP BY f.id, f.name
     ORDER BY total_seconds DESC
-  `).all({ objectId }) as ObjectFilterStat[]
+  `).all({ objectId, equipment }) as ObjectFilterStat[]
 }
 
-export const getObjectPlanProgress = async (objectId: number): Promise<PlanProgressItem[]> => {
+export const getObjectPlanProgress = async (objectId: number, equipment: number | null = null): Promise<PlanProgressItem[]> => {
   return connectToDatabase().prepare(`
     WITH ActivePlan AS (
-      SELECT id FROM ap_plan WHERE object = @objectId AND active = 1 ORDER BY id LIMIT 1
+      SELECT id FROM ap_plan
+      WHERE object = @objectId AND active = 1 AND (@equipment IS NULL OR equipment = @equipment)
+      ORDER BY id LIMIT 1
     )
     SELECT
       pd.filter   AS filter_id,
@@ -57,7 +62,7 @@ export const getObjectPlanProgress = async (objectId: number): Promise<PlanProgr
     LEFT JOIN ap_exposure e        ON e.id = os.exposure
     GROUP BY pd.filter, f.name, pd.duration
     ORDER BY pd.filter
-  `).all({ objectId }) as PlanProgressItem[]
+  `).all({ objectId, equipment }) as PlanProgressItem[]
 }
 
 export const createApObject = async (data: CreateApObjectDto): Promise<ApObject> => {

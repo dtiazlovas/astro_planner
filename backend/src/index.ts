@@ -13,6 +13,8 @@ import apImportedRouter from './routes/apImported.js'
 import apPlansRouter from './routes/apPlans.js'
 import apPlanDetailsRouter from './routes/apPlanDetails.js'
 import apPlanSessionsRouter from './routes/apPlanSessions.js'
+import apEquipmentRouter from './routes/apEquipment.js'
+import apFitsRouter from './routes/apFits.js'
 import { closeDatabaseConnection, connectToDatabase } from './db.js'
 
 const app = express()
@@ -33,6 +35,8 @@ app.use('/api/imported', apImportedRouter)
 app.use('/api/plans', apPlansRouter)
 app.use('/api/plan-details', apPlanDetailsRouter)
 app.use('/api/plan-sessions', apPlanSessionsRouter)
+app.use('/api/equipment', apEquipmentRouter)
+app.use('/api/fits', apFitsRouter)
 
 const startServer = (): void => {
   try {
