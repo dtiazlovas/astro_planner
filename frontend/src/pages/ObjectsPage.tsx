@@ -1,6 +1,12 @@
 import React, { useState, useEffect, Fragment } from 'react'
-import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects } from '../api'
+import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
+import { fetchPatterns, fetchImportFileMode, fetchDayStartHour, type ImportFileMode } from '../utils/filePattern'
+import { ensureImagesFolderAccess, listObjectFolderFiles, getObjectFolderFiles, deleteObjectFolderFiles } from '../utils/imagesFolder'
+import { scanObjectFiles, applyObjectSync, type SyncScanResult } from '../utils/objectSync'
+import { analyzeFitsFiles } from '../utils/fitsAnalysis'
+import type { FitsAnalysis } from '../utils/fits'
+import SnrChart, { type SnrPoint } from '../components/SnrChart'
 import { useEquipment } from '../context/EquipmentContext'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
@@ -40,6 +46,21 @@ export default function ObjectsPage() {
   const [activePlanObjectIds, setActivePlanObjectIds] = useState<Set<number>>(new Set())
   const [assigningIds, setAssigningIds] = useState<Set<number>>(new Set())
   const [dragOverId, setDragOverId] = useState<number | null>(null)
+  const [importFileMode, setImportFileMode] = useState<ImportFileMode>('frontend')
+  const [syncingId, setSyncingId] = useState<number | null>(null)
+  const [syncPreview, setSyncPreview] = useState<{ obj: ApObject; scan: SyncScanResult } | null>(null)
+  const [syncApplying, setSyncApplying] = useState(false)
+
+  // ── sub-quality analysis inside the sync dialog ──────────────
+  // Runs per filter: quality scales differ between filters, so each gets its
+  // own normalization and limit.
+  const [qualityFilterId, setQualityFilterId] = useState<number | null>(null)
+  const [qualityResults, setQualityResults] = useState<Map<string, FitsAnalysis>>(new Map())
+  const [qualityThreshold, setQualityThreshold] = useState<number | null>(null)
+  const [qualityAnalyzing, setQualityAnalyzing] = useState(false)
+  const [qualityProgress, setQualityProgress] = useState<{ current: number; total: number } | null>(null)
+  const [qualityDeleting, setQualityDeleting] = useState(false)
+  const [confirmDeleteSubs, setConfirmDeleteSubs] = useState(false)
 
   useEffect(() => {
     const load = async () => {
@@ -67,6 +88,150 @@ export default function ObjectsPage() {
     // Collapse any rig-specific expanded state when switching rigs
     setExpandedIds(new Set()); setExpandedStats(new Map()); setPlanExpandedIds(new Set())
   }, [activeId])
+
+  // Loaded up-front so the sync click can request folder permission while the
+  // click's transient user activation is still fresh.
+  useEffect(() => { fetchImportFileMode().then(setImportFileMode) }, [])
+
+  const handleSync = async (obj: ApObject, keepQuality = false) => {
+    if (!obj.folder) return
+    setSyncingId(obj.id); setError(null)
+    if (!keepQuality) {
+      setQualityResults(new Map()); setQualityThreshold(null); setConfirmDeleteSubs(false); setQualityFilterId(null)
+    }
+    try {
+      let present: string[]
+      if (importFileMode === 'backend') {
+        present = await getObjectFolderFilesViaBackend(obj.folder)
+      } else {
+        const dir = await ensureImagesFolderAccess()
+        if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+        present = await listObjectFolderFiles(dir, obj.folder)
+      }
+      const [filters, exposures, patterns, sessions, imported, dayStartHour] = await Promise.all([
+        getFilters(), getExposures(), fetchPatterns(), getSessions(), getImportedRecords(), fetchDayStartHour(),
+      ])
+      const scan = await scanObjectFiles(obj, objects, present, imported, filters, exposures, patterns, sessions, dayStartHour, activeId)
+      setSyncPreview({ obj, scan })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sync scan failed')
+    } finally {
+      setSyncingId(null)
+    }
+  }
+
+  const handleApplySync = async () => {
+    if (!syncPreview) return
+    setSyncApplying(true); setError(null)
+    try {
+      const applied = await applyObjectSync(syncPreview.obj, syncPreview.scan, activeId)
+      if (applied.failedGroups > 0) {
+        setError(`${applied.failedGroups} sync group${applied.failedGroups !== 1 ? 's' : ''} failed to update — their records were kept, run sync again`)
+      }
+      const id = syncPreview.obj.id
+      setObjects(await getObjects(activeId))
+      if (expandedIds.has(id)) {
+        getObjectFilterStats(id, activeId)
+          .then(s => setExpandedStats(prev => new Map(prev).set(id, s)))
+          .catch(() => {})
+      }
+      if (activePlanObjectIds.has(id)) {
+        getObjectPlanProgress(id, activeId)
+          .then(p => setPlanProgress(prev => new Map(prev).set(id, p)))
+          .catch(() => {})
+      }
+      setSyncPreview(null)
+    } catch {
+      setError('Failed to apply sync — stats may be partially updated, run sync again')
+    } finally {
+      setSyncApplying(false)
+    }
+  }
+
+  // ── sub-quality analysis / culling ───────────────────────────
+  const analyzableFilters = [...new Map(
+    (syncPreview?.scan.analyzableFiles ?? []).map(f => [f.filterId, f.filterName])
+  ).entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
+  const activeQualityFilterId = qualityFilterId ?? analyzableFilters[0]?.id ?? null
+  const qualityFilterFiles = (syncPreview?.scan.analyzableFiles ?? []).filter(f => f.filterId === activeQualityFilterId)
+
+  const qualityTimeByName = new Map((syncPreview?.scan.analyzableFiles ?? []).map(f => [f.name, f.time]))
+  const qualityPoints: SnrPoint[] = [...qualityResults.values()]
+    .filter(r => r.snr != null)
+    .map(r => ({ fileName: r.fileName, snr: r.snr as number, time: qualityTimeByName.get(r.fileName) ?? 0 }))
+    .sort((a, b) => a.time - b.time)
+  const qualityUnmeasured = qualityResults.size - qualityPoints.length
+  const belowLimitFiles = qualityThreshold == null ? [] : qualityPoints.filter(p => p.snr < qualityThreshold).map(p => p.fileName)
+
+  const handleQualityFilterChange = (id: number) => {
+    setQualityFilterId(id)
+    setQualityResults(new Map()); setQualityThreshold(null); setConfirmDeleteSubs(false)
+  }
+
+  const handleAnalyzeQuality = async () => {
+    if (!syncPreview?.obj.folder) return
+    const names = qualityFilterFiles.map(f => f.name)
+    if (!names.length) return
+    setQualityAnalyzing(true); setError(null); setConfirmDeleteSubs(false)
+    setQualityProgress({ current: 0, total: names.length })
+    try {
+      // Raw PSFSW values, normalized to unit median over the set below.
+      let raw: FitsAnalysis[]
+      if (importFileMode === 'backend') {
+        raw = []
+        const BATCH = 6
+        for (let i = 0; i < names.length; i += BATCH) {
+          raw.push(...await analyzeFitsViaBackend(names.slice(i, i + BATCH), false))
+          setQualityProgress({ current: Math.min(i + BATCH, names.length), total: names.length })
+        }
+      } else {
+        const dir = await ensureImagesFolderAccess()
+        if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+        const files = await getObjectFolderFiles(dir, syncPreview.obj.folder, names)
+        raw = await analyzeFitsFiles(files, done => setQualityProgress({ current: done, total: files.length }))
+      }
+      const weights = raw.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
+      const median = weights.length ? weights[weights.length >> 1] : 0
+      const normed = median > 0
+        ? raw.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
+        : raw
+      setQualityResults(new Map(normed.map(r => [r.fileName, r])))
+      const snrs = normed.map(r => r.snr).filter((v): v is number => v != null)
+      setQualityThreshold(snrs.length ? Math.min(...snrs) : null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Quality analysis failed')
+    } finally {
+      setQualityAnalyzing(false); setQualityProgress(null)
+    }
+  }
+
+  const handleDeleteBelowLimit = async () => {
+    if (!syncPreview?.obj.folder || !belowLimitFiles.length) return
+    setQualityDeleting(true); setError(null)
+    try {
+      let stats: { deleted: number; failed: number }
+      if (importFileMode === 'backend') {
+        stats = await deleteObjectFilesViaBackend(syncPreview.obj.folder, belowLimitFiles)
+      } else {
+        const dir = await ensureImagesFolderAccess()
+        if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+        stats = await deleteObjectFolderFiles(dir, syncPreview.obj.folder, belowLimitFiles)
+      }
+      if (stats.failed > 0) setError(`${stats.failed} file${stats.failed !== 1 ? 's' : ''} could not be deleted`)
+      setQualityResults(prev => {
+        const m = new Map(prev)
+        for (const n of belowLimitFiles) m.delete(n)
+        return m
+      })
+      setConfirmDeleteSubs(false)
+      // Re-scan so the DB cleanup for the deleted subs lands in this preview.
+      await handleSync(syncPreview.obj, true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Deleting files failed')
+    } finally {
+      setQualityDeleting(false)
+    }
+  }
 
   const handleAssignAll = async (objectId: number) => {
     setAssigningIds(prev => new Set(prev).add(objectId))
@@ -337,7 +502,11 @@ export default function ObjectsPage() {
                         {fmtDuration(Number(obj.total_seconds))}
                         {obj.total_seconds > 0 && <span className="expand-caret">{expandedIds.has(obj.id) ? ' ▾' : ' ▸'}</span>}
                       </td>
-                      <td className="cell-progress">
+                      <td
+                        className={`cell-progress ${obj.total_seconds > 0 ? 'cell-total--clickable' : ''}`}
+                        onClick={() => handleToggleExpand(obj)}
+                        title={obj.total_seconds > 0 ? 'Click to see filter breakdown' : undefined}
+                      >
                         {progress && progress.length > 0 && (
                           <div className="plan-progress-list">
                             {progress.map(p => {
@@ -369,6 +538,12 @@ export default function ObjectsPage() {
                               {assigningIds.has(obj.id) ? '…' : '⬆'}
                             </button>
                           )}
+                          {obj.folder && (
+                            <button className="btn-icon btn-sync" onClick={() => handleSync(obj)} disabled={syncingId !== null}
+                              title="Sync stats with files present in the object folder">
+                              {syncingId === obj.id ? '…' : '⟳'}
+                            </button>
+                          )}
                           <button className="btn-icon btn-edit" onClick={() => openEdit(obj)} title="Edit">✎</button>
                           <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
                         </div>
@@ -389,6 +564,11 @@ export default function ObjectsPage() {
                                   <div key={i} className="filter-stat-item">
                                     <FilterBadge name={s.filter_name} />
                                     <span className="cell-time">{fmtDuration(Number(s.total_seconds))}</span>
+                                    {(s.exposures?.length ?? 0) > 0 && (
+                                      <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                                        {s.exposures!.map(e => `${e.frames} × ${e.duration}s`).join(' · ')}
+                                      </span>
+                                    )}
                                   </div>
                                 ))}
                               </div>
@@ -467,6 +647,149 @@ export default function ObjectsPage() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {syncPreview !== null && (
+        <div className="modal-backdrop" onClick={() => setSyncPreview(null)}>
+          <div className="modal-dialog" onClick={e => e.stopPropagation()} style={{ maxWidth: '42rem' }}>
+            <div className="modal-dialog__header">
+              <span className="modal-dialog__title">Sync files — {syncPreview.obj.name}</span>
+              <button className="btn btn-ghost" onClick={() => setSyncPreview(null)}>✕</button>
+            </div>
+            <p className="cell-muted" style={{ margin: '0 0 0.75rem', fontSize: '0.85rem' }}>
+              {syncPreview.scan.presentCount} file{syncPreview.scan.presentCount !== 1 ? 's' : ''} in folder
+              {' · '}{syncPreview.scan.recordedCount} imported record{syncPreview.scan.recordedCount !== 1 ? 's' : ''} for this object
+              {' '}<span title="Files are matched by name with the extension ignored">(extensions ignored)</span>
+            </p>
+            {syncPreview.scan.changes.length === 0 && syncPreview.scan.unadjustable.length === 0 ? (
+              <p style={{ color: '#4ade80', margin: 0 }}>✓ Everything in sync — session counts match the files on disk.</p>
+            ) : (
+              <>
+                {syncPreview.scan.changes.length > 0 && (
+                  <>
+                    <p style={{ color: '#cbd5e1', margin: '0 0 0.5rem' }}>
+                      Session entries will be set to the number of subs actually on disk:
+                    </p>
+                    <table className="data-table" style={{ marginBottom: '0.75rem' }}>
+                      <thead>
+                        <tr><th>Session</th><th>Filter</th><th>Exposure</th><th>On disk</th><th>Frames</th><th></th></tr>
+                      </thead>
+                      <tbody>
+                        {syncPreview.scan.changes.map(c => (
+                          <tr key={`${c.dateKey}|${c.filterId}|${c.exposureId}`}>
+                            <td>
+                              {c.sessionName}
+                              {c.sessionId === null && <span className="type-badge" style={{ marginLeft: '0.4rem' }}>new session</span>}
+                            </td>
+                            <td><span className="type-badge">{c.filterName}</span></td>
+                            <td>{c.duration}s</td>
+                            <td>{c.diskFiles}</td>
+                            <td>
+                              {c.entryIds.length > 0 ? `${c.currentFrames} → ${c.newFrames}` : c.newFrames}
+                              {c.entryIds.length === 0 && <span className="cell-muted"> (new entry)</span>}
+                              {c.entryIds.length > 0 && c.newFrames === 0 && <span className="cell-muted"> (entry removed)</span>}
+                              {c.entryIds.length > 1 && c.newFrames > 0 && <span className="cell-muted"> (merges {c.entryIds.length} entries)</span>}
+                            </td>
+                            <td className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                              {[
+                                c.addFiles.length ? `+${c.addFiles.length} file${c.addFiles.length !== 1 ? 's' : ''} registered` : null,
+                                c.missingFiles.length ? `−${c.missingFiles.length} stale record${c.missingFiles.length !== 1 ? 's' : ''}` : null,
+                              ].filter(Boolean).join(' · ')}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+                {syncPreview.scan.unadjustable.length > 0 && (
+                  <p className="cell-muted" style={{ fontSize: '0.85rem', margin: '0 0 0.5rem' }}>
+                    ⚠ {syncPreview.scan.unadjustable.length} stale record{syncPreview.scan.unadjustable.length !== 1 ? 's' : ''} fit no
+                    session/filter/exposure — removed without touching stats.
+                  </p>
+                )}
+                {syncPreview.scan.unattributable > 0 && (
+                  <p className="cell-muted" style={{ fontSize: '0.85rem', margin: '0 0 0.5rem' }}>
+                    {syncPreview.scan.unattributable} file{syncPreview.scan.unattributable !== 1 ? 's' : ''} in the folder
+                    {' '}match{syncPreview.scan.unattributable === 1 ? 'es' : ''} no pattern for this object (e.g. masters) — ignored.
+                  </p>
+                )}
+              </>
+            )}
+            {/* ── Sub quality ── */}
+            {syncPreview.scan.analyzableFiles.length > 0 && (
+              <div style={{ marginTop: '0.75rem', borderTop: '1px solid #2a2a35', paddingTop: '0.75rem' }}>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    className="select-dark"
+                    value={activeQualityFilterId ?? ''}
+                    onChange={e => handleQualityFilterChange(Number(e.target.value))}
+                    disabled={qualityAnalyzing || qualityDeleting}
+                  >
+                    {analyzableFilters.map(f => (
+                      <option key={f.id} value={f.id}>
+                        {f.name} ({syncPreview.scan.analyzableFiles.filter(a => a.filterId === f.id).length})
+                      </option>
+                    ))}
+                  </select>
+                  <button className="btn btn-secondary" onClick={handleAnalyzeQuality}
+                    disabled={qualityAnalyzing || qualityDeleting || syncApplying || syncingId !== null || !qualityFilterFiles.length}>
+                    {qualityAnalyzing
+                      ? `Analyzing… ${qualityProgress ? `${qualityProgress.current}/${qualityProgress.total}` : ''}`
+                      : qualityResults.size ? '↻ Re-analyze quality' : '📈 Analyze quality'}
+                  </button>
+                  {qualityResults.size > 0 && (
+                    <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                      {analyzableFilters.find(f => f.id === activeQualityFilterId)?.name}: {qualityPoints.length} measured · median ≈ 1.0 · {belowLimitFiles.length} below the limit
+                      {qualityUnmeasured > 0 ? ` · ${qualityUnmeasured} not measurable (kept)` : ''}
+                    </span>
+                  )}
+                </div>
+                {qualityResults.size > 0 && qualityThreshold != null && qualityPoints.length > 0 && (
+                  <>
+                    <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.5rem 0' }}>
+                      Drag the ▸ handle to set the limit — subs below it (including derived copies) are deleted from disk.
+                    </p>
+                    <SnrChart points={qualityPoints} threshold={qualityThreshold} onThresholdChange={setQualityThreshold} />
+                    {belowLimitFiles.length > 0 && (
+                      <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        {confirmDeleteSubs ? (
+                          <>
+                            <span style={{ color: '#f87171', fontSize: '0.85rem' }}>
+                              Permanently delete {belowLimitFiles.length} sub{belowLimitFiles.length !== 1 ? 's' : ''} from disk?
+                            </span>
+                            <button className="btn btn-danger" onClick={handleDeleteBelowLimit} disabled={qualityDeleting}>
+                              {qualityDeleting ? 'Deleting…' : 'Yes, delete'}
+                            </button>
+                            <button className="btn btn-ghost" onClick={() => setConfirmDeleteSubs(false)} disabled={qualityDeleting}>Cancel</button>
+                          </>
+                        ) : (
+                          <button className="btn btn-danger" onClick={() => setConfirmDeleteSubs(true)}
+                            disabled={qualityDeleting || qualityAnalyzing || syncingId !== null}>
+                            🗑 Delete {belowLimitFiles.length} low-quality sub{belowLimitFiles.length !== 1 ? 's' : ''}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="form-actions">
+              {(syncPreview.scan.changes.length > 0 || syncPreview.scan.unadjustable.length > 0) && (
+                <button className="btn btn-primary" onClick={handleApplySync} disabled={syncApplying || syncingId !== null || qualityDeleting}>
+                  {syncApplying ? 'Applying…' : `Apply ${syncPreview.scan.changes.length} change${syncPreview.scan.changes.length !== 1 ? 's' : ''}${
+                    syncPreview.scan.addCount > 0 ? ` · register ${syncPreview.scan.addCount}` : ''}${
+                    syncPreview.scan.missingCount > 0 ? ` · drop ${syncPreview.scan.missingCount}` : ''}`}
+                </button>
+              )}
+              <button className="btn btn-ghost" onClick={() => setSyncPreview(null)}>
+                {syncPreview.scan.changes.length > 0 || syncPreview.scan.unadjustable.length > 0 ? 'Cancel' : 'Close'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

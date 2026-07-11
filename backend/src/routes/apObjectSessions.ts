@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import {
   getBySession,
+  getByObject,
   createApObjectSession,
   updateApObjectSession,
   deleteApObjectSession
@@ -10,9 +11,10 @@ const router = Router()
 
 router.get('/', async (req: Request, res: Response) => {
   const sessionId = Number(req.query.session)
-  if (Number.isNaN(sessionId)) { res.status(400).json({ error: 'session query param required' }); return }
+  const objectId = Number(req.query.object)
+  if (Number.isNaN(sessionId) && Number.isNaN(objectId)) { res.status(400).json({ error: 'session or object query param required' }); return }
   try {
-    res.json(await getBySession(sessionId))
+    res.json(Number.isNaN(sessionId) ? await getByObject(objectId) : await getBySession(sessionId))
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }

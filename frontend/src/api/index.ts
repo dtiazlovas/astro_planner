@@ -96,6 +96,9 @@ export const deleteFilter = (id: number): Promise<void> =>
 export const getObjectSessions = (sessionId: number): Promise<ApObjectSession[]> =>
   fetch(`${BASE}/object-sessions?session=${sessionId}`).then(json<ApObjectSession[]>)
 
+export const getObjectSessionsForObject = (objectId: number): Promise<ApObjectSession[]> =>
+  fetch(`${BASE}/object-sessions?object=${objectId}`).then(json<ApObjectSession[]>)
+
 export const createObjectSession = (data: CreateApObjectSessionDto): Promise<ApObjectSession> =>
   fetch(`${BASE}/object-sessions`, {
     method: 'POST',
@@ -111,7 +114,8 @@ export const updateObjectSession = (id: number, data: Partial<CreateApObjectSess
   }).then(json<ApObjectSession>)
 
 export const deleteObjectSession = (id: number): Promise<void> =>
-  fetch(`${BASE}/object-sessions/${id}`, { method: 'DELETE' }).then(() => undefined)
+  fetch(`${BASE}/object-sessions/${id}`, { method: 'DELETE' })
+    .then(res => { if (!res.ok) throw new Error(`${res.status} ${res.statusText}`) })
 
 export const checkImported = (names: string[]): Promise<string[]> =>
   fetch(`${BASE}/imported/check`, {
@@ -126,6 +130,34 @@ export const recordImported = (names: string[], sessionId: number): Promise<void
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ names, sessionId }),
   }).then(() => undefined)
+
+export interface ImportedRecord { filename: string; session_id: number | null }
+
+export const getImportedRecords = (): Promise<ImportedRecord[]> =>
+  fetch(`${BASE}/imported`).then(json<ImportedRecord[]>)
+
+export const removeImported = (names: string[]): Promise<{ removed: number }> =>
+  fetch(`${BASE}/imported/remove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names }),
+  }).then(json<{ removed: number }>)
+
+// Lists files present in an object's folder on the server ('backend' file mode).
+export const getObjectFolderFilesViaBackend = (objectFolder: string): Promise<string[]> =>
+  fetch(`${BASE}/imported/object-files`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ objectFolder }),
+  }).then(json<string[]>)
+
+// Deletes subs (and their derived copies) from an object's folder on the server.
+export const deleteObjectFilesViaBackend = (objectFolder: string, fileNames: string[]): Promise<{ deleted: number; failed: number }> =>
+  fetch(`${BASE}/imported/delete-object-files`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ objectFolder, fileNames }),
+  }).then(json<{ deleted: number; failed: number }>)
 
 // ── Server-side file operations — used only in 'backend' import file mode ───
 // The server locates files by name in the images folder's parent tree, so

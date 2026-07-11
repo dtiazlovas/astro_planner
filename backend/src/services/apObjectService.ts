@@ -42,18 +42,31 @@ export const getAllFilterStats = async (equipment: number | null = null): Promis
 }
 
 export const getObjectFilterStats = async (objectId: number, equipment: number | null = null): Promise<ObjectFilterStat[]> => {
-  return connectToDatabase().prepare(`
+  const rows = connectToDatabase().prepare(`
     SELECT
+      f.id AS filter_id,
       f.name AS filter_name,
+      e.duration AS duration,
+      COALESCE(SUM(os.frames), 0) AS frames,
       CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS total_seconds
     FROM ap_object_session os
     JOIN ap_exposure e ON e.id = os.exposure
     JOIN ap_filter f ON f.id = os.filter
     WHERE os.object = @objectId
     AND (@equipment IS NULL OR os.session IN (SELECT id FROM ap_session WHERE equipment = @equipment))
-    GROUP BY f.id, f.name
-    ORDER BY total_seconds DESC
-  `).all({ objectId, equipment }) as ObjectFilterStat[]
+    GROUP BY f.id, f.name, e.duration
+  `).all({ objectId, equipment }) as { filter_id: number; filter_name: string | null; duration: number; frames: number; total_seconds: number }[]
+
+  const byFilter = new Map<number, ObjectFilterStat>()
+  for (const r of rows) {
+    const stat = byFilter.get(r.filter_id) ?? { filter_name: r.filter_name, total_seconds: 0, exposures: [] }
+    stat.total_seconds += r.total_seconds
+    stat.exposures!.push({ duration: r.duration, frames: r.frames })
+    byFilter.set(r.filter_id, stat)
+  }
+  const stats = [...byFilter.values()]
+  for (const s of stats) s.exposures!.sort((a, b) => b.duration - a.duration)
+  return stats.sort((a, b) => b.total_seconds - a.total_seconds)
 }
 
 export const getObjectPlanProgress = async (objectId: number, equipment: number | null = null): Promise<PlanProgressItem[]> => {

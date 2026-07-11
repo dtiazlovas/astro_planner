@@ -16,9 +16,16 @@ export interface ApObject {
   total_seconds: number
 }
 
+export interface FilterExposureStat {
+  duration: number
+  frames: number
+}
+
 export interface ObjectFilterStat {
   filter_name: string | null
   total_seconds: number
+  // Per-exposure frame counts; populated by the per-object stats only.
+  exposures?: FilterExposureStat[]
 }
 
 export interface PlanProgressItem {

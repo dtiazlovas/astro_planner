@@ -17,6 +17,80 @@ export const recordImported = async (names: string[], sessionId: number): Promis
   db.transaction((ns: string[]) => { for (const filename of ns) stmt.run({ filename, sessionId }) })(names)
 }
 
+export const getAllImported = async (): Promise<{ filename: string; session_id: number | null }[]> => {
+  return connectToDatabase().prepare('SELECT filename, session_id FROM ap_imported').all() as { filename: string; session_id: number | null }[]
+}
+
+export const removeImported = async (names: string[]): Promise<number> => {
+  if (!names.length) return 0
+  const db = connectToDatabase()
+  const stmt = db.prepare('DELETE FROM ap_imported WHERE filename = @filename')
+  let removed = 0
+  db.transaction((ns: string[]) => { for (const filename of ns) removed += stmt.run({ filename }).changes })(names)
+  return removed
+}
+
+// Lists file names (recursively) inside the given object folder under the
+// images folder. Returns null when the images folder isn't configured.
+export const listObjectFolderFiles = async (objectFolder: string): Promise<string[] | null> => {
+  const db = connectToDatabase()
+  const setting = db.prepare("SELECT value FROM ap_settings WHERE name = 'images_folder'").get() as { value: string } | undefined
+  const imagesFolder = setting?.value?.trim()
+  if (!imagesFolder) return null
+  const root = path.resolve(imagesFolder)
+  const dir = path.resolve(root, objectFolder)
+  if (dir !== root && !dir.startsWith(root + path.sep)) return null // traversal guard
+  const names: string[] = []
+  const scan = async (current: string) => {
+    try {
+      const entries = await fs.readdir(current, { withFileTypes: true })
+      await Promise.all(entries.map(entry =>
+        entry.isDirectory() ? scan(path.join(current, entry.name)) : Promise.resolve(void names.push(entry.name))
+      ))
+    } catch {}
+  }
+  await scan(dir)
+  return names
+}
+
+const stemOf = (n: string) => n.replace(/\.[^.]+$/, '').toLowerCase()
+const baseOf = (s: string): string => {
+  // Strip trailing "_<alpha...>" processing suffixes; numeric ones are frame numbers.
+  while (true) {
+    const t = s.replace(/_[a-z][a-z0-9]*$/, '')
+    if (t === s) return s
+    s = t
+  }
+}
+
+// Deletes the given subs from the object folder — every file sharing a base
+// name (extension and processing suffixes ignored), so derived copies go too.
+// Returns null when the images folder isn't configured.
+export const deleteObjectFolderFiles = async (objectFolder: string, fileNames: string[]): Promise<{ deleted: number; failed: number } | null> => {
+  const db = connectToDatabase()
+  const setting = db.prepare("SELECT value FROM ap_settings WHERE name = 'images_folder'").get() as { value: string } | undefined
+  const imagesFolder = setting?.value?.trim()
+  if (!imagesFolder) return null
+  const root = path.resolve(imagesFolder)
+  const dir = path.resolve(root, objectFolder)
+  if (dir !== root && !dir.startsWith(root + path.sep)) return null // traversal guard
+  const targets = new Set(fileNames.map(n => baseOf(stemOf(n))))
+  const stats = { deleted: 0, failed: 0 }
+  const scan = async (current: string) => {
+    try {
+      const entries = await fs.readdir(current, { withFileTypes: true })
+      for (const entry of entries) {
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) { await scan(full); continue }
+        if (!targets.has(baseOf(stemOf(entry.name)))) continue
+        try { await fs.unlink(full); stats.deleted++ } catch { stats.failed++ }
+      }
+    } catch {}
+  }
+  await scan(dir)
+  return stats
+}
+
 export interface CopyItem {
   fileNames: string[]
   objectFolder: string

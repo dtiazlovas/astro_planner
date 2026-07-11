@@ -24,6 +24,10 @@ export const getBySession = async (sessionId: number): Promise<ApObjectSessionRo
   return connectToDatabase().prepare(`${SELECT_JOINED} WHERE os.session = @session ORDER BY os.id`).all({ session: sessionId }) as ApObjectSessionRow[]
 }
 
+export const getByObject = async (objectId: number): Promise<ApObjectSessionRow[]> => {
+  return connectToDatabase().prepare(`${SELECT_JOINED} WHERE os.object = @object ORDER BY os.id`).all({ object: objectId }) as ApObjectSessionRow[]
+}
+
 export const createApObjectSession = async (data: CreateApObjectSessionDto): Promise<ApObjectSessionRow> => {
   const db = connectToDatabase()
   const { lastInsertRowid } = db.prepare(`

@@ -13,7 +13,7 @@ router.post('/pick-folder', (_req: Request, res: Response) => {
   })
 })
 
-router.get('/:key', async (req: Request, res: Response) => {
+router.get('/:key', async (req: Request<{ key: string }>, res: Response) => {
   try {
     const item = await getSetting(req.params.key)
     if (!item) { res.status(404).json({ error: 'Not found' }); return }
@@ -23,7 +23,7 @@ router.get('/:key', async (req: Request, res: Response) => {
   }
 })
 
-router.put('/:key', async (req: Request, res: Response) => {
+router.put('/:key', async (req: Request<{ key: string }>, res: Response) => {
   const { value } = req.body as { value?: string }
   if (value === undefined) { res.status(400).json({ error: 'value is required' }); return }
   try {

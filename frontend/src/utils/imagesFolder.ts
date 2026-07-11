@@ -91,6 +91,91 @@ async function getDestDir(root: FileSystemDirectoryHandle, item: CopyItem): Prom
   return dir
 }
 
+// Lists all file names (recursively) inside objectFolder under the images
+// folder. A missing object folder just means nothing has been copied yet.
+export async function listObjectFolderFiles(root: FileSystemDirectoryHandle, objectFolder: string): Promise<string[]> {
+  let dir = root
+  try {
+    for (const part of segments(objectFolder)) dir = await dir.getDirectoryHandle(part)
+  } catch {
+    return []
+  }
+  const names: string[] = []
+  const scan = async (d: FileSystemDirectoryHandle): Promise<void> => {
+    for await (const handle of d.values()) {
+      if (handle.kind === 'directory') await scan(handle as FileSystemDirectoryHandle)
+      else names.push(handle.name)
+    }
+  }
+  await scan(dir)
+  return names
+}
+
+const stemOf = (n: string) => n.replace(/\.[^.]+$/, '').toLowerCase()
+const baseOf = (s: string): string => {
+  while (true) {
+    const t = s.replace(/_[a-z][a-z0-9]*$/, '')
+    if (t === s) return s
+    s = t
+  }
+}
+
+async function resolveObjectDir(root: FileSystemDirectoryHandle, objectFolder: string): Promise<FileSystemDirectoryHandle | null> {
+  let dir = root
+  try {
+    for (const part of segments(objectFolder)) dir = await dir.getDirectoryHandle(part)
+  } catch {
+    return null
+  }
+  return dir
+}
+
+// Reads the given files (by name) from the object folder tree as File objects.
+export async function getObjectFolderFiles(root: FileSystemDirectoryHandle, objectFolder: string, names: string[]): Promise<File[]> {
+  const dir = await resolveObjectDir(root, objectFolder)
+  if (!dir) return []
+  const wanted = new Set(names)
+  const out: File[] = []
+  const scan = async (d: FileSystemDirectoryHandle): Promise<void> => {
+    for await (const handle of d.values()) {
+      if (handle.kind === 'directory') await scan(handle as FileSystemDirectoryHandle)
+      else if (wanted.has(handle.name)) {
+        wanted.delete(handle.name)
+        out.push(await (handle as FileSystemFileHandle).getFile())
+      }
+    }
+  }
+  await scan(dir)
+  return out
+}
+
+export interface DeleteStats { deleted: number; failed: number }
+
+// Deletes the given subs from the object folder — every file sharing a base
+// name (extension and processing suffixes ignored), so derived copies go too.
+export async function deleteObjectFolderFiles(root: FileSystemDirectoryHandle, objectFolder: string, fileNames: string[]): Promise<DeleteStats> {
+  const stats: DeleteStats = { deleted: 0, failed: 0 }
+  const dir = await resolveObjectDir(root, objectFolder)
+  if (!dir) return stats
+  const targets = new Set(fileNames.map(n => baseOf(stemOf(n))))
+  const scan = async (d: FileSystemDirectoryHandle): Promise<void> => {
+    // Collect first — don't mutate the directory while iterating it.
+    const files: string[] = []
+    const dirs: FileSystemDirectoryHandle[] = []
+    for await (const handle of d.values()) {
+      if (handle.kind === 'directory') dirs.push(handle as FileSystemDirectoryHandle)
+      else files.push(handle.name)
+    }
+    for (const name of files) {
+      if (!targets.has(baseOf(stemOf(name)))) continue
+      try { await d.removeEntry(name); stats.deleted++ } catch { stats.failed++ }
+    }
+    for (const sub of dirs) await scan(sub)
+  }
+  await scan(dir)
+  return stats
+}
+
 export async function copyFilesToObjectFolders(
   root: FileSystemDirectoryHandle,
   items: CopyItem[],
