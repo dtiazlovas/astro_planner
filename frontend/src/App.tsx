@@ -3,6 +3,7 @@ import ObjectsPage from './pages/ObjectsPage'
 import SessionsPage from './pages/SessionsPage'
 import EquipmentPage from './pages/EquipmentPage'
 import SettingsPage from './pages/SettingsPage'
+import TotalsBar from './components/TotalsBar'
 import { useEquipment } from './context/EquipmentContext'
 import './index.css'
 
@@ -30,6 +31,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <TotalsBar refreshKey={page} />
       <header className="app-header">
         <h1>Astro Session Logger</h1>
         <nav className="app-nav">

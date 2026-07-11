@@ -4,11 +4,13 @@ import {
   createSession, createObjectSession,
   updateObject, createObject,
   updateFilter, createFilter,
-  checkImported, recordImported, copyFilesToObjectFolders,
+  checkImported, recordImported,
   getPlans, setPlanSession, createPlan, createPlanDetail,
-  analyzeFits,
+  analyzeFitsViaBackend, copyFilesViaBackend,
 } from '../api'
-import type { CopyItem, FitsAnalysis } from '../api'
+import { analyzeFitsFiles } from '../utils/fitsAnalysis'
+import type { FitsAnalysis } from '../utils/fits'
+import { ensureImagesFolderAccess, copyFilesToObjectFolders, type CopyItem } from '../utils/imagesFolder'
 import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } from '../types'
 import { useEquipment } from '../context/EquipmentContext'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
@@ -22,11 +24,12 @@ interface ImportResult {
   filesSkipped: number
   filesNotFound: number
   filesFailed: number
+  copyWarning: string | null
 }
 import {
   DEFAULT_PATTERN, fetchPatterns, parseFileMulti, dateKey, toDatetimeLocal,
   matchObject, matchFilter, matchExposure, getPatternAcceptMulti,
-  fetchDayStartHour,
+  fetchDayStartHour, fetchImportFileMode, type ImportFileMode,
 } from '../utils/filePattern'
 
 interface ImportEntry {
@@ -146,6 +149,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [sessions, setSessions] = useState<ApSession[]>([])
   const [patterns, setPatterns] = useState<string[]>([DEFAULT_PATTERN])
   const [dayStartHour, setDayStartHour] = useState(16)
+  const [importFileMode, setImportFileMode] = useState<ImportFileMode>('frontend')
   const [lookupReady, setLookupReady] = useState(false)
 
   const [rawFiles, setRawFiles] = useState<File[]>([])
@@ -194,9 +198,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   }, [])
 
   useEffect(() => {
-    Promise.all([getObjects(activeId), getFilters(), getExposures(), fetchPatterns(), getObjectTypes(), getSessions(activeId), getPlans(undefined, activeId), fetchDayStartHour()])
-      .then(([o, f, e, p, ot, s, pl, dsh]) => {
-        setObjects(o); setFilters(f); setExposures(e); setPatterns(p); setObjectTypes(ot); setSessions(s); setAllPlans(pl); setDayStartHour(dsh)
+    Promise.all([getObjects(activeId), getFilters(), getExposures(), fetchPatterns(), getObjectTypes(), getSessions(activeId), getPlans(undefined, activeId), fetchDayStartHour(), fetchImportFileMode()])
+      .then(([o, f, e, p, ot, s, pl, dsh, ifm]) => {
+        setObjects(o); setFilters(f); setExposures(e); setPatterns(p); setObjectTypes(ot); setSessions(s); setAllPlans(pl); setDayStartHour(dsh); setImportFileMode(ifm)
         setLookupReady(true)
       })
       .catch(() => setError('Failed to load lookup data'))
@@ -405,17 +409,27 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const handleAnalyzeSnr = async () => {
     if (!importableFileNames.length) return
     setAnalyzing(true); setError(null)
-    const total = importableFileNames.length
-    const BATCH = 6
     try {
-      // Analyze in batches so we can show progress. Ask the backend for raw
-      // PSFSW values and normalize across the full set here (see below).
-      const raw: FitsAnalysis[] = []
-      setImportProgress({ step: 'Analyzing frame quality…', current: 0, total })
-      for (let i = 0; i < total; i += BATCH) {
-        const chunk = importableFileNames.slice(i, i + BATCH)
-        raw.push(...await analyzeFits(chunk, false))
-        setImportProgress({ step: 'Analyzing frame quality…', current: Math.min(i + BATCH, total), total })
+      // Raw PSFSW values in both modes; normalized across the full set below.
+      let raw: FitsAnalysis[]
+      if (importFileMode === 'backend') {
+        // Server mode: the backend locates files by name near its images
+        // folder. Analyze in batches so we can show progress.
+        const total = importableFileNames.length
+        const BATCH = 6
+        raw = []
+        setImportProgress({ step: 'Analyzing frame quality…', current: 0, total })
+        for (let i = 0; i < total; i += BATCH) {
+          raw.push(...await analyzeFitsViaBackend(importableFileNames.slice(i, i + BATCH), false))
+          setImportProgress({ step: 'Analyzing frame quality…', current: Math.min(i + BATCH, total), total })
+        }
+      } else {
+        // Browser mode: analyze the picked File objects directly, in a worker.
+        const fileByName = new Map(rawFiles.map(f => [f.name, f]))
+        const files = importableFileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined)
+        setImportProgress({ step: 'Analyzing frame quality…', current: 0, total: files.length })
+        raw = await analyzeFitsFiles(files, done =>
+          setImportProgress({ step: 'Analyzing frame quality…', current: done, total: files.length }))
       }
 
       // Unit-median normalization over every analyzed frame (PixInsight's K).
@@ -430,7 +444,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       const snrs = normed.map(r => r.snr).filter((v): v is number => v != null)
       setSnrThreshold(snrs.length ? Math.min(...snrs) : null)
     } catch {
-      setError('Quality analysis failed — is the images folder set and reachable?')
+      setError(importFileMode === 'backend'
+        ? 'Quality analysis failed — is the images folder set and reachable on the server?'
+        : 'Quality analysis failed')
     } finally {
       setAnalyzing(false)
       setImportProgress(null)
@@ -471,6 +487,23 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
   const handleImport = async () => {
     setImporting(true); setError(null); setImportResult(null); setResultExpanded(null)
+
+    // In browser mode files are copied via the File System Access API. Acquire
+    // folder access first: a permission prompt needs this click's transient
+    // user activation, which would be long expired once copying starts.
+    const fileByName = new Map(rawFiles.map(f => [f.name, f]))
+    const wantsCopy = importableSessions.some(s => s.entries.some(e => {
+      if (!e.canImport) return false
+      const obj = objects.find(o => o.id === e.objectId)
+      return !!obj?.folder && e.fileNames.some(isApproved)
+    }))
+    let imagesDir: FileSystemDirectoryHandle | null = null
+    let copyWarning: string | null = null
+    if (wantsCopy && importFileMode === 'frontend') {
+      imagesDir = await ensureImagesFolderAccess()
+      if (!imagesDir) copyWarning = 'Images folder not accessible — no files were copied. Choose it in Settings and grant access.'
+    }
+
     const totalEntries = importableSessions.reduce((n, s) => n + s.entries.filter(e => e.canImport).length, 0)
     const entriesSkipped = (preview ?? []).flatMap(s =>
       s.entries.filter(e => !e.canImport).map(e => ({ target: e.target, filter: e.filter, reason: e.warning ?? 'Unresolved' }))
@@ -554,29 +587,42 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         } catch {}
       }
 
-      const copyItems: CopyItem[] = []
+      // Approved files per entry that map to an object folder + filter folder.
+      const copyGroups: { fileNames: string[]; objectFolder: string; filterName: string }[] = []
       for (const s of importableSessions) {
         for (const entry of s.entries.filter(e => e.canImport)) {
           const obj = objects.find(o => o.id === entry.objectId)
-          const approvedFiles = entry.fileNames.filter(isApproved)
-          if (obj?.folder && approvedFiles.length) {
+          const approvedNames = entry.fileNames.filter(isApproved)
+          if (obj?.folder && approvedNames.length) {
             const filt = filters.find(f => f.id === entry.filterId)
             const filterFolder = filt?.folder ?? filt?.name ?? entry.filterName ?? ''
             if (filterFolder)
-              copyItems.push({ fileNames: approvedFiles, objectFolder: obj.folder, filterName: filterFolder })
+              copyGroups.push({ fileNames: approvedNames, objectFolder: obj.folder, filterName: filterFolder })
           }
         }
       }
       let filesCopied = 0, filesSkipped = 0, filesNotFound = 0, filesFailed = 0
-      if (copyItems.length) {
-        const totalFiles = copyItems.reduce((n, i) => n + i.fileNames.length, 0)
+      if (copyGroups.length && importFileMode === 'backend') {
+        const totalFiles = copyGroups.reduce((n, i) => n + i.fileNames.length, 0)
         setImportProgress({ step: `Copying ${totalFiles} file${totalFiles !== 1 ? 's' : ''}…`, current: 0, total: 0 })
-        const stats = await copyFilesToObjectFolders(copyItems).catch(() => null)
+        const stats = await copyFilesViaBackend(copyGroups).catch(() => null)
         if (stats) { filesCopied = stats.copied; filesSkipped = stats.skipped; filesNotFound = stats.notFound; filesFailed = stats.failed }
+        else copyWarning = 'File copying failed on the server.'
+      } else if (copyGroups.length && imagesDir) {
+        const copyItems: CopyItem[] = copyGroups.map(g => ({
+          files: g.fileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined),
+          objectFolder: g.objectFolder, filterName: g.filterName,
+        }))
+        const totalFiles = copyItems.reduce((n, i) => n + i.files.length, 0)
+        setImportProgress({ step: 'Copying files…', current: 0, total: totalFiles })
+        const stats = await copyFilesToObjectFolders(imagesDir, copyItems, done =>
+          setImportProgress({ step: 'Copying files…', current: done, total: totalFiles })).catch(() => null)
+        if (stats) { filesCopied = stats.copied; filesSkipped = stats.skipped; filesFailed = stats.failed }
+        else copyWarning = 'File copying failed.'
       }
 
       setImportProgress(null)
-      setImportResult({ sessionsCreated, entriesOk: entryCount, entriesFailed, entriesSkipped, filesCopied, filesSkipped, filesNotFound, filesFailed })
+      setImportResult({ sessionsCreated, entriesOk: entryCount, entriesFailed, entriesSkipped, filesCopied, filesSkipped, filesNotFound, filesFailed, copyWarning })
       setPreview(null)
     } catch {
       setError('Import failed — check console for details')
@@ -656,7 +702,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
               )}
               {snrResults.size > 0 && analyzedCount === 0 && (
                 <div className="import-warnings">
-                  No SNR could be measured — files may be missing from the images folder, or not mono FITS.
+                  {importFileMode === 'backend'
+                    ? 'No SNR could be measured — files may be missing from the images folder, or not mono FITS.'
+                    : 'No SNR could be measured — files may not be mono FITS images.'}
                 </div>
               )}
 
@@ -859,7 +907,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
               )}
             </div>
 
-            {(importResult.filesCopied + importResult.filesSkipped + importResult.filesNotFound + importResult.filesFailed) > 0 && (
+            {((importResult.filesCopied + importResult.filesSkipped + importResult.filesNotFound + importResult.filesFailed) > 0 || importResult.copyWarning) && (
               <div className="import-result-section">
                 {importResult.filesCopied > 0 && (
                   <div className="import-result-row import-result-row--ok">✓ {importResult.filesCopied} {importResult.filesCopied === 1 ? 'file' : 'files'} copied</div>
@@ -872,6 +920,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                 )}
                 {importResult.filesFailed > 0 && (
                   <div className="import-result-row import-result-row--fail">✗ {importResult.filesFailed} {importResult.filesFailed === 1 ? 'file' : 'files'} failed to copy</div>
+                )}
+                {importResult.copyWarning && (
+                  <div className="import-result-row import-result-row--warn">⚠ {importResult.copyWarning}</div>
                 )}
               </div>
             )}

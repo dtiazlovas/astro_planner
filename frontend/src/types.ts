@@ -29,7 +29,8 @@ export interface PlanProgressItem {
   total_frames: number
 }
 
-export type CreateApObjectDto = Omit<ApObject, 'id' | 'total_seconds'>
+// `priority` is server-assigned on create (new objects go to the end of the ordering)
+export type CreateApObjectDto = Omit<ApObject, 'id' | 'total_seconds' | 'priority'>
 
 export interface ApSession {
   id: number

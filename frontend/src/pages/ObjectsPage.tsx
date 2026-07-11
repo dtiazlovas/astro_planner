@@ -301,7 +301,7 @@ export default function ObjectsPage() {
               </tr>
             </thead>
             <tbody>
-              {objects.map((obj, objIdx) => {
+              {objects.map(obj => {
                 const progress = planProgress.get(obj.id)
                 return (
                   <Fragment key={obj.id}>

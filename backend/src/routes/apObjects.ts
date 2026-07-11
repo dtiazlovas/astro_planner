@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import {
   getAllApObjects,
   getApObjectById,
+  getAllFilterStats,
   getObjectFilterStats,
   getObjectPlanProgress,
   createApObject,
@@ -68,6 +69,15 @@ router.get('/:id/filter-stats', async (req: Request, res: Response) => {
   if (Number.isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return }
   try {
     res.json(await getObjectFilterStats(id, equipmentParam(req)))
+  } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Global per-filter totals — declared before '/:id' so it isn't captured as an id.
+router.get('/filter-stats', async (req: Request, res: Response) => {
+  try {
+    res.json(await getAllFilterStats(equipmentParam(req)))
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }

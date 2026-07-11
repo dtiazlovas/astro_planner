@@ -1,4 +1,5 @@
 import type { ApObject, ObjectFilterStat, PlanProgressItem, ApObjectType, ApSession, CreateApObjectDto, CreateApSessionDto, ApObjectSession, CreateApObjectSessionDto, ApExposure, ApFilter, ApPlan, ApPlanDetail, ApPlanSession, ApEquipment, CreateApEquipmentDto } from '../types'
+import type { FitsAnalysis } from '../utils/fits'
 
 const BASE = '/api'
 
@@ -33,6 +34,9 @@ export const updateObject = (id: number, data: Partial<Omit<ApObject, 'id'>>): P
 
 export const getObjectFilterStats = (id: number, equipment?: number | null): Promise<ObjectFilterStat[]> =>
   fetch(`${BASE}/objects/${id}/filter-stats${eqQuery(equipment)}`).then(json<ObjectFilterStat[]>)
+
+export const getAllFilterStats = (equipment?: number | null): Promise<ObjectFilterStat[]> =>
+  fetch(`${BASE}/objects/filter-stats${eqQuery(equipment)}`).then(json<ObjectFilterStat[]>)
 
 export const getObjectPlanProgress = (id: number, equipment?: number | null): Promise<PlanProgressItem[]> =>
   fetch(`${BASE}/objects/${id}/plan-progress${eqQuery(equipment)}`).then(json<PlanProgressItem[]>)
@@ -123,27 +127,21 @@ export const recordImported = (names: string[], sessionId: number): Promise<void
     body: JSON.stringify({ names, sessionId }),
   }).then(() => undefined)
 
-export interface CopyItem { fileNames: string[]; objectFolder: string; filterName: string }
-export interface CopyStats { copied: number; skipped: number; notFound: number; failed: number }
+// ── Server-side file operations — used only in 'backend' import file mode ───
+// The server locates files by name in the images folder's parent tree, so
+// sources must live on the server machine; the browser never reads the bytes.
 
-export const copyFilesToObjectFolders = (items: CopyItem[]): Promise<CopyStats> =>
+export interface BackendCopyItem { fileNames: string[]; objectFolder: string; filterName: string }
+export interface BackendCopyStats { copied: number; skipped: number; notFound: number; failed: number }
+
+export const copyFilesViaBackend = (items: BackendCopyItem[]): Promise<BackendCopyStats> =>
   fetch(`${BASE}/imported/copy-to-object-folders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ items }),
-  }).then(json<CopyStats>)
+  }).then(json<BackendCopyStats>)
 
-export interface FitsAnalysis {
-  fileName: string
-  snr: number | null
-  dateObs: string | null
-  width: number | null
-  height: number | null
-  stars?: number
-  error?: string
-}
-
-export const analyzeFits = (fileNames: string[], normalize = true): Promise<FitsAnalysis[]> =>
+export const analyzeFitsViaBackend = (fileNames: string[], normalize = true): Promise<FitsAnalysis[]> =>
   fetch(`${BASE}/fits/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

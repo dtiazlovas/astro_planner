@@ -19,6 +19,51 @@ body {
   min-height: 100vh;
 }
 
+.totals-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.4rem 2rem;
+  background: #07070f;
+  border-bottom: 1px solid #17172b;
+  flex-wrap: wrap;
+}
+
+.totals-bar__label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.totals-bar__items {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.totals-bar__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.totals-bar__time {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.totals-bar__grand {
+  margin-left: auto;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #a78bfa;
+  white-space: nowrap;
+}
+
 .app-header {
   display: flex;
   align-items: center;
