@@ -48,6 +48,8 @@ function readHeader(bytes: Uint8Array): FitsHeader {
 export interface FitsAnalysis {
   fileName: string
   snr: number | null
+  /** median star FWHM in pixels (moment-based; lower is better) */
+  fwhm: number | null
   dateObs: string | null
   width: number | null
   height: number | null
@@ -126,11 +128,11 @@ function estimateSky(px: Float32Array): { bg: number; sigma: number } {
 //   • K is applied later as unit-median normalization over the analyzed set.
 const R_PHOT = 4, R_IN = 6, R_OUT = 9, DETECT_SIGMA = 5, MAX_STARS = 300, MIN_SEP = 8
 
-function computePsfSignalWeight(px: Float32Array, w: number, h: number): { weight: number | null; stars: number } {
+function computePsfSignalWeight(px: Float32Array, w: number, h: number): { weight: number | null; stars: number; fwhm: number | null } {
   const { bg, sigma } = estimateSky(px)
   const thr = bg + DETECT_SIGMA * sigma
   const margin = R_OUT + 1
-  if (w <= 2 * margin || h <= 2 * margin) return { weight: null, stars: 0 }
+  if (w <= 2 * margin || h <= 2 * margin) return { weight: null, stars: 0, fwhm: null }
 
   // Collect local maxima (only test neighbours for the few pixels above threshold).
   const cand: { x: number; y: number; v: number }[] = []
@@ -155,11 +157,12 @@ function computePsfSignalWeight(px: Float32Array, w: number, h: number): { weigh
     if (chosen.some(s => (s.x - c.x) ** 2 + (s.y - c.y) ** 2 < sep2)) continue
     chosen.push({ x: c.x, y: c.y })
   }
-  if (!chosen.length) return { weight: null, stars: 0 }
+  if (!chosen.length) return { weight: null, stars: 0, fwhm: null }
 
   let sumFlux = 0        // Σ Fᵢ  — total signal
   let sumMeanFlux = 0    // Σ M̄ᵢ — signal concentration
   let stars = 0
+  const fwhms: number[] = []
   for (const { x, y } of chosen) {
     // Local sky = median of the annulus.
     const ann: number[] = []
@@ -198,16 +201,81 @@ function computePsfSignalWeight(px: Float32Array, w: number, h: number): { weigh
 
     sumFlux += flux
     sumMeanFlux += flux / area                          // M̄ᵢ — mean PSF flux
+    // FWHM from the same second moments: 2√(2·ln2) × geometric-mean sigma.
+    fwhms.push(2.3548 * Math.pow(varx * vary, 0.25))
     stars++
   }
-  if (!stars) return { weight: null, stars: 0 }
+  if (!stars) return { weight: null, stars: 0, fwhm: null }
+
+  fwhms.sort((a, b) => a - b)
+  const fwhm = fwhms[fwhms.length >> 1]
 
   const b = Math.max(bg, 1e-6)
   const raw = (sumFlux * sumMeanFlux) / (sigma * b)
-  return { weight: raw, stars }
+  return { weight: raw, stars, fwhm }
 }
 
+// ── XISF (PixInsight) support ────────────────────────────────────────────────
+// Calibrated subs are usually saved as .xisf. Monolithic XISF 1.0 layout:
+// 8-byte signature "XISF0100", uint32 LE header length, 4 reserved bytes, then
+// an XML header describing the image and its attached pixel block.
+
+const attrOf = (tag: string, name: string): string | null =>
+  tag.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? null
+
+function analyzeXisfBuffer(fileName: string, buf: ArrayBuffer): FitsAnalysis {
+  const bytes = new Uint8Array(buf)
+  const dv = new DataView(buf)
+  const headerLen = dv.getUint32(8, true)
+  const xml = new TextDecoder().decode(bytes.subarray(16, Math.min(16 + headerLen, bytes.length)))
+  const imgTag = xml.match(/<Image\b[^>]*>/)?.[0]
+  if (!imgTag) throw new Error('No image in XISF header')
+  const geometry = (attrOf(imgTag, 'geometry') ?? '').split(':').map(Number)
+  const [w, h] = geometry
+  const channels = geometry.length > 2 ? geometry[2] : 1
+  if (!w || !h) throw new Error('Not a XISF image')
+  if (channels !== 1) throw new Error('Only mono images are supported')
+  if (attrOf(imgTag, 'compression')) throw new Error('Compressed XISF not supported')
+  const location = (attrOf(imgTag, 'location') ?? '').split(':')
+  if (location[0] !== 'attachment') throw new Error('Unsupported XISF data location')
+  const dataStart = parseInt(location[1], 10)
+  const sampleFormat = attrOf(imgTag, 'sampleFormat') ?? 'UInt16'
+  const littleEndian = (attrOf(imgTag, 'byteOrder') ?? 'little') !== 'big'
+  const dateObs = xml.match(/<FITSKeyword\b[^>]*name="DATE-OBS"[^>]*value="([^"]*)"/)?.[1]?.replace(/'/g, '').trim() ?? null
+
+  const readers: Record<string, { bpp: number; read: (off: number) => number }> = {
+    UInt8:   { bpp: 1, read: off => dv.getUint8(off) },
+    UInt16:  { bpp: 2, read: off => dv.getUint16(off, littleEndian) },
+    UInt32:  { bpp: 4, read: off => dv.getUint32(off, littleEndian) },
+    Float32: { bpp: 4, read: off => dv.getFloat32(off, littleEndian) },
+    Float64: { bpp: 8, read: off => dv.getFloat64(off, littleEndian) },
+  }
+  const reader = readers[sampleFormat]
+  if (!reader) throw new Error(`Unsupported XISF sample format ${sampleFormat}`)
+
+  const npix = w * h
+  const px = new Float32Array(npix)
+  const limit = dv.byteLength
+  for (let i = 0; i < npix; i++) {
+    const off = dataStart + i * reader.bpp
+    if (off + reader.bpp > limit) break
+    px[i] = reader.read(off)
+  }
+
+  const { weight, stars, fwhm } = computePsfSignalWeight(px, w, h)
+  if (weight == null) throw new Error('No stars detected')
+  return { fileName, snr: weight, fwhm: fwhm != null ? Math.round(fwhm * 100) / 100 : null, dateObs, width: w, height: h, stars }
+}
+
+// Dispatches on the file signature: XISF or FITS.
 export function analyzeFitsBuffer(fileName: string, buf: ArrayBuffer): FitsAnalysis {
+  const head = new Uint8Array(buf)
+  if (head.length >= 8 && ascii.decode(head.subarray(0, 8)) === 'XISF0100')
+    return analyzeXisfBuffer(fileName, buf)
+  return analyzeFitsImage(fileName, buf)
+}
+
+function analyzeFitsImage(fileName: string, buf: ArrayBuffer): FitsAnalysis {
   const bytes = new Uint8Array(buf)
   const dv = new DataView(buf)
   const { cards, dataStart } = readHeader(bytes)
@@ -229,8 +297,8 @@ export function analyzeFitsBuffer(fileName: string, buf: ArrayBuffer): FitsAnaly
     cards.BZERO !== undefined ? parseFloat(cards.BZERO) : 0,
     cards.BSCALE !== undefined ? parseFloat(cards.BSCALE) : 1)
 
-  const { weight, stars } = computePsfSignalWeight(px, w, h)
+  const { weight, stars, fwhm } = computePsfSignalWeight(px, w, h)
   if (weight == null) throw new Error('No stars detected')
   // `snr` carries the raw PSF Signal Weight here; normalized to unit median later.
-  return { fileName, snr: weight, dateObs, width: w, height: h, stars }
+  return { fileName, snr: weight, fwhm: fwhm != null ? Math.round(fwhm * 100) / 100 : null, dateObs, width: w, height: h, stars }
 }

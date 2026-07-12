@@ -6,7 +6,7 @@ import {
   updateFilter, createFilter,
   checkImported, recordImported,
   getPlans, setPlanSession, createPlan, createPlanDetail,
-  analyzeFitsViaBackend, copyFilesViaBackend,
+  analyzeFitsViaBackend, copyFilesViaBackend, saveImportedAnalysis,
 } from '../api'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
 import type { FitsAnalysis } from '../utils/fits'
@@ -14,6 +14,7 @@ import { ensureImagesFolderAccess, copyFilesToObjectFolders, type CopyItem } fro
 import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } from '../types'
 import { useEquipment } from '../context/EquipmentContext'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
+import FileListDialog from '../components/FileListDialog'
 
 interface ImportResult {
   sessionsCreated: number
@@ -189,9 +190,17 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [snrResults, setSnrResults] = useState<Map<string, FitsAnalysis>>(new Map())
   const [snrThreshold, setSnrThreshold] = useState<number | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
+  const [showRejectedList, setShowRejectedList] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
+  const analyzeAbortRef = useRef<AbortController | null>(null)
+  // Raw (un-normalized) analysis values, persisted onto the import records on import.
+  const rawAnalysisRef = useRef<Map<string, { psfsw: number | null; fwhm: number | null }>>(new Map())
+
+  // Closing the panel stops a running analysis instead of letting it keep
+  // hammering the worker / server in the background.
+  useEffect(() => () => analyzeAbortRef.current?.abort(), [])
 
   useEffect(() => {
     if (folderInputRef.current) folderInputRef.current.setAttribute('webkitdirectory', '')
@@ -409,8 +418,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const handleAnalyzeSnr = async () => {
     if (!importableFileNames.length) return
     setAnalyzing(true); setError(null)
+    const ctrl = new AbortController()
+    analyzeAbortRef.current = ctrl
     try {
       // Raw PSFSW values in both modes; normalized across the full set below.
+      // On stop, whatever finished so far is still used.
       let raw: FitsAnalysis[]
       if (importFileMode === 'backend') {
         // Server mode: the backend locates files by name near its images
@@ -420,7 +432,13 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         raw = []
         setImportProgress({ step: 'Analyzing frame quality…', current: 0, total })
         for (let i = 0; i < total; i += BATCH) {
-          raw.push(...await analyzeFitsViaBackend(importableFileNames.slice(i, i + BATCH), false))
+          if (ctrl.signal.aborted) break
+          try {
+            raw.push(...await analyzeFitsViaBackend(importableFileNames.slice(i, i + BATCH), false, ctrl.signal))
+          } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') break
+            throw err
+          }
           setImportProgress({ step: 'Analyzing frame quality…', current: Math.min(i + BATCH, total), total })
         }
       } else {
@@ -429,8 +447,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         const files = importableFileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined)
         setImportProgress({ step: 'Analyzing frame quality…', current: 0, total: files.length })
         raw = await analyzeFitsFiles(files, done =>
-          setImportProgress({ step: 'Analyzing frame quality…', current: done, total: files.length }))
+          setImportProgress({ step: 'Analyzing frame quality…', current: done, total: files.length }), ctrl.signal)
       }
+      if (!raw.length) return
+      for (const r of raw) rawAnalysisRef.current.set(r.fileName, { psfsw: r.snr, fwhm: r.fwhm })
 
       // Unit-median normalization over every analyzed frame (PixInsight's K).
       const weights = raw.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
@@ -448,6 +468,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         ? 'Quality analysis failed — is the images folder set and reachable on the server?'
         : 'Quality analysis failed')
     } finally {
+      analyzeAbortRef.current = null
       setAnalyzing(false)
       setImportProgress(null)
     }
@@ -471,7 +492,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     const counts = [...snrResults.values()].map(r => r.stars ?? 0).filter(n => n > 0)
     return counts.length ? Math.round(counts.reduce((a, b) => a + b, 0) / counts.length) : 0
   })()
-  const rejectedCount = snrThreshold == null ? 0 : snrPoints.filter(p => p.snr < snrThreshold).length
+  const rejectedFiles = snrThreshold == null ? [] : snrPoints.filter(p => p.snr < snrThreshold).map(p => p.fileName)
+  const rejectedCount = rejectedFiles.length
 
   // A file is approved if we couldn't measure it (unknown → keep) or it clears the line.
   const isApproved = (fileName: string): boolean => {
@@ -519,6 +541,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
     const createdObjSessionsByObject = new Map<number, number[]>()
     const entriesByObject = new Map<number, ImportEntry[]>()
+    const allRecordedNames: string[] = []
 
     try {
       setImportProgress({ step: 'Importing entries…', current: 0, total: totalEntries })
@@ -564,8 +587,16 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         }
         if (sessionFileNames.length) {
           try { await recordImported(sessionFileNames, sessionId) } catch {}
+          allRecordedNames.push(...sessionFileNames)
         }
       }
+
+      // Persist quality analysis measured during this import onto the records.
+      const analysisItems = allRecordedNames
+        .map(n => ({ n, a: rawAnalysisRef.current.get(n) }))
+        .filter((x): x is { n: string; a: { psfsw: number | null; fwhm: number | null } } => !!x.a && (x.a.psfsw != null || x.a.fwhm != null))
+        .map(x => ({ filename: x.n, psfsw: x.a.psfsw, fwhm: x.a.fwhm }))
+      if (analysisItems.length) { try { await saveImportedAnalysis(analysisItems) } catch {} }
 
       setImportProgress({ step: 'Creating plans…', current: 0, total: 0 })
       for (const [objectId, objSessionIds] of createdObjSessionsByObject.entries()) {
@@ -698,6 +729,18 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                     Drag the ▸ handle to set the approve line — only frames above it are copied.
                   </p>
                   <SnrChart points={snrPoints} threshold={snrThreshold} onThresholdChange={setSnrThreshold} />
+                  {rejectedCount > 0 && (
+                    <button className="btn btn-ghost" style={{ marginTop: '0.5rem' }} onClick={() => setShowRejectedList(true)}>
+                      📋 View {rejectedCount} rejected…
+                    </button>
+                  )}
+                  {showRejectedList && (
+                    <FileListDialog
+                      title="Frames below the approve line"
+                      files={rejectedFiles}
+                      onClose={() => setShowRejectedList(false)}
+                    />
+                  )}
                 </div>
               )}
               {snrResults.size > 0 && analyzedCount === 0 && (
@@ -947,6 +990,12 @@ export default function ImportPanel({ onImported, onClose }: Props) {
               </>
             ) : (
               <div className="progress-bar progress-bar--indeterminate" />
+            )}
+            {analyzing && (
+              <button className="btn btn-ghost" style={{ marginTop: '0.75rem' }}
+                onClick={() => analyzeAbortRef.current?.abort()}>
+                ■ Stop analysis
+              </button>
             )}
           </div>
         </div>

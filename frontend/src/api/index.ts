@@ -131,10 +131,23 @@ export const recordImported = (names: string[], sessionId: number): Promise<void
     body: JSON.stringify({ names, sessionId }),
   }).then(() => undefined)
 
-export interface ImportedRecord { filename: string; session_id: number | null }
+export interface ImportedRecord {
+  filename: string
+  session_id: number | null
+  // persisted quality analysis: raw PSFSW and FWHM in pixels
+  psfsw: number | null
+  fwhm: number | null
+}
 
 export const getImportedRecords = (): Promise<ImportedRecord[]> =>
   fetch(`${BASE}/imported`).then(json<ImportedRecord[]>)
+
+export const saveImportedAnalysis = (items: { filename: string; psfsw: number | null; fwhm: number | null }[]): Promise<{ updated: number }> =>
+  fetch(`${BASE}/imported/analysis`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  }).then(json<{ updated: number }>)
 
 export const removeImported = (names: string[]): Promise<{ removed: number }> =>
   fetch(`${BASE}/imported/remove`, {
@@ -173,11 +186,12 @@ export const copyFilesViaBackend = (items: BackendCopyItem[]): Promise<BackendCo
     body: JSON.stringify({ items }),
   }).then(json<BackendCopyStats>)
 
-export const analyzeFitsViaBackend = (fileNames: string[], normalize = true): Promise<FitsAnalysis[]> =>
+export const analyzeFitsViaBackend = (fileNames: string[], normalize = true, signal?: AbortSignal): Promise<FitsAnalysis[]> =>
   fetch(`${BASE}/fits/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileNames, normalize }),
+    signal,
   }).then(json<FitsAnalysis[]>)
 
 export const getPlans = (objectId?: number, equipment?: number | null): Promise<ApPlan[]> => {

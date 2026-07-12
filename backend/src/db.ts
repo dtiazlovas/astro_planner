@@ -100,6 +100,9 @@ function initSchema(database: Database.Database): void {
   // Migrate: tag sessions and plans with the equipment (rig) used
   try { database.exec('ALTER TABLE ap_session ADD COLUMN equipment INTEGER REFERENCES ap_equipment(id)') } catch {}
   try { database.exec('ALTER TABLE ap_plan ADD COLUMN equipment INTEGER REFERENCES ap_equipment(id)') } catch {}
+  // Migrate: persist per-file quality analysis (raw PSFSW + FWHM in pixels)
+  try { database.exec('ALTER TABLE ap_imported ADD COLUMN psfsw REAL') } catch {}
+  try { database.exec('ALTER TABLE ap_imported ADD COLUMN fwhm REAL') } catch {}
   for (const [name, folder] of [['Luminance','Lum'],['Red','R'],['Green','G'],['Blue','B'],['H-alpha','Ha'],['Oxygen','Oiii'],['Sulphur','Sii']]) {
     database.prepare('UPDATE ap_filter SET folder = @folder WHERE name = @name AND folder IS NULL').run({ folder, name })
   }

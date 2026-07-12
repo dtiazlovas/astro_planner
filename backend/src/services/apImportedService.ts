@@ -17,8 +17,20 @@ export const recordImported = async (names: string[], sessionId: number): Promis
   db.transaction((ns: string[]) => { for (const filename of ns) stmt.run({ filename, sessionId }) })(names)
 }
 
-export const getAllImported = async (): Promise<{ filename: string; session_id: number | null }[]> => {
-  return connectToDatabase().prepare('SELECT filename, session_id FROM ap_imported').all() as { filename: string; session_id: number | null }[]
+export const getAllImported = async (): Promise<{ filename: string; session_id: number | null; psfsw: number | null; fwhm: number | null }[]> => {
+  return connectToDatabase().prepare('SELECT filename, session_id, psfsw, fwhm FROM ap_imported').all() as { filename: string; session_id: number | null; psfsw: number | null; fwhm: number | null }[]
+}
+
+// Persists per-file quality analysis (raw PSFSW + FWHM) on existing records.
+export const saveImportedAnalysis = async (items: { filename: string; psfsw: number | null; fwhm: number | null }[]): Promise<number> => {
+  if (!items.length) return 0
+  const db = connectToDatabase()
+  const stmt = db.prepare('UPDATE ap_imported SET psfsw = @psfsw, fwhm = @fwhm WHERE filename = @filename')
+  let updated = 0
+  db.transaction((rows: typeof items) => {
+    for (const r of rows) updated += stmt.run({ filename: r.filename, psfsw: r.psfsw, fwhm: r.fwhm }).changes
+  })(items)
+  return updated
 }
 
 export const removeImported = async (names: string[]): Promise<number> => {

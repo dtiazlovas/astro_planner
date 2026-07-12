@@ -1,11 +1,24 @@
 import { Router, Request, Response } from 'express'
-import { checkImported, recordImported, copyFilesToObjectFolders, getAllImported, removeImported, listObjectFolderFiles, deleteObjectFolderFiles, type CopyItem, type CopyStats } from '../services/apImportedService.js'
+import { checkImported, recordImported, copyFilesToObjectFolders, getAllImported, removeImported, listObjectFolderFiles, deleteObjectFolderFiles, saveImportedAnalysis, type CopyItem, type CopyStats } from '../services/apImportedService.js'
 
 const router = Router()
 
 router.get('/', async (_req: Request, res: Response) => {
   try {
     res.json(await getAllImported())
+  } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.post('/analysis', async (req: Request, res: Response) => {
+  const { items } = req.body as { items?: { filename?: string; psfsw?: number | null; fwhm?: number | null }[] }
+  if (!Array.isArray(items) || items.some(i => typeof i?.filename !== 'string')) {
+    res.status(400).json({ error: 'items must be an array of { filename, psfsw, fwhm }' }); return
+  }
+  try {
+    const updated = await saveImportedAnalysis(items.map(i => ({ filename: i.filename!, psfsw: i.psfsw ?? null, fwhm: i.fwhm ?? null })))
+    res.json({ updated })
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }

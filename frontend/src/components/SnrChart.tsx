@@ -11,6 +11,10 @@ interface Props {
   points: SnrPoint[]
   threshold: number
   onThresholdChange: (value: number) => void
+  /** axis / tooltip label for the plotted metric */
+  metricLabel?: string
+  /** which side of the threshold is approved: 'above' (default, e.g. PSFSW) or 'below' (e.g. FWHM) */
+  goodDirection?: 'above' | 'below'
 }
 
 const H = 300
@@ -20,7 +24,8 @@ const APPROVED = '#4ade80'
 const REJECTED = '#6b7280'
 const LINE = '#f59e0b'
 
-export default function SnrChart({ points, threshold, onThresholdChange }: Props) {
+export default function SnrChart({ points, threshold, onThresholdChange, metricLabel = 'PSFSW', goodDirection = 'above' }: Props) {
+  const isApproved = (v: number) => goodDirection === 'above' ? v >= threshold : v <= threshold
   const wrapRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const [w, setW] = useState(720)
@@ -54,7 +59,7 @@ export default function SnrChart({ points, threshold, onThresholdChange }: Props
   }
 
   const thY = yFor(threshold)
-  const approvedCount = sorted.filter(p => p.snr >= threshold).length
+  const approvedCount = sorted.filter(p => isApproved(p.snr)).length
 
   useEffect(() => {
     if (!dragging) return
@@ -87,7 +92,7 @@ export default function SnrChart({ points, threshold, onThresholdChange }: Props
       <div className="snr-chart__legend">
         <span><span className="snr-dot" style={{ background: APPROVED }} /> Approved · {approvedCount}</span>
         <span><span className="snr-dot" style={{ background: REJECTED }} /> Rejected · {sorted.length - approvedCount}</span>
-        <span className="snr-chart__threshold-label">PSFSW ≥ {threshold.toFixed(2)}</span>
+        <span className="snr-chart__threshold-label">{metricLabel} {goodDirection === 'above' ? '≥' : '≤'} {threshold.toFixed(2)}</span>
       </div>
       <svg ref={svgRef} width="100%" height={H} viewBox={`0 0 ${w} ${H}`} style={{ touchAction: 'none', userSelect: 'none' }}>
         {/* y grid + labels */}
@@ -101,7 +106,7 @@ export default function SnrChart({ points, threshold, onThresholdChange }: Props
         <line x1={M.left} y1={M.top} x2={M.left} y2={M.top + plotH} stroke="#ffffff33" />
         <line x1={M.left} y1={M.top + plotH} x2={M.left + plotW} y2={M.top + plotH} stroke="#ffffff33" />
         <text x={M.left + plotW / 2} y={H - 6} textAnchor="middle" fontSize="11" fill="#9ca3af">Capture order →</text>
-        <text x={14} y={M.top + plotH / 2} textAnchor="middle" fontSize="11" fill="#9ca3af" transform={`rotate(-90 14 ${M.top + plotH / 2})`}>PSFSW</text>
+        <text x={14} y={M.top + plotH / 2} textAnchor="middle" fontSize="11" fill="#9ca3af" transform={`rotate(-90 14 ${M.top + plotH / 2})`}>{metricLabel}</text>
 
         {/* threshold line */}
         <line x1={M.left} y1={thY} x2={M.left + plotW} y2={thY} stroke={LINE} strokeWidth={1.5} strokeDasharray="5 4" />
@@ -111,10 +116,10 @@ export default function SnrChart({ points, threshold, onThresholdChange }: Props
           <circle
             key={p.fileName}
             cx={xFor(i)} cy={yFor(p.snr)} r={3.5}
-            fill={p.snr >= threshold ? APPROVED : REJECTED}
-            opacity={p.snr >= threshold ? 1 : 0.55}
+            fill={isApproved(p.snr) ? APPROVED : REJECTED}
+            opacity={isApproved(p.snr) ? 1 : 0.55}
           >
-            <title>{`${p.fileName}\nPSFSW ${p.snr.toFixed(3)}`}</title>
+            <title>{`${p.fileName}\n${metricLabel} ${p.snr.toFixed(3)}`}</title>
           </circle>
         ))}
 

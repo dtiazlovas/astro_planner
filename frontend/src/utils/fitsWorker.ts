@@ -14,7 +14,7 @@ ctx.onmessage = async e => {
     result = analyzeFitsBuffer(file.name, await file.arrayBuffer())
   } catch (err) {
     result = {
-      fileName: file.name, snr: null, dateObs: null, width: null, height: null,
+      fileName: file.name, snr: null, fwhm: null, dateObs: null, width: null, height: null,
       error: err instanceof Error ? err.message : 'Analysis failed',
     }
   }

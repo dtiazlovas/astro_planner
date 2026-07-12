@@ -1,5 +1,5 @@
-import React, { useState, useEffect, Fragment } from 'react'
-import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend } from '../api'
+import React, { useState, useEffect, useRef, Fragment } from 'react'
+import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend, saveImportedAnalysis } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
 import { fetchPatterns, fetchImportFileMode, fetchDayStartHour, type ImportFileMode } from '../utils/filePattern'
 import { ensureImagesFolderAccess, listObjectFolderFiles, getObjectFolderFiles, deleteObjectFolderFiles } from '../utils/imagesFolder'
@@ -7,6 +7,7 @@ import { scanObjectFiles, applyObjectSync, type SyncScanResult } from '../utils/
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
 import type { FitsAnalysis } from '../utils/fits'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
+import FileListDialog from '../components/FileListDialog'
 import { useEquipment } from '../context/EquipmentContext'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
@@ -55,12 +56,25 @@ export default function ObjectsPage() {
   // Runs per filter: quality scales differ between filters, so each gets its
   // own normalization and limit.
   const [qualityFilterId, setQualityFilterId] = useState<number | null>(null)
+  // Both metrics are measured in one pass; this only selects which one is
+  // shown and culled against. PSFSW: higher is better; FWHM: lower is better.
+  const [qualityMetric, setQualityMetric] = useState<'psfsw' | 'fwhm'>('psfsw')
   const [qualityResults, setQualityResults] = useState<Map<string, FitsAnalysis>>(new Map())
   const [qualityThreshold, setQualityThreshold] = useState<number | null>(null)
   const [qualityAnalyzing, setQualityAnalyzing] = useState(false)
   const [qualityProgress, setQualityProgress] = useState<{ current: number; total: number } | null>(null)
   const [qualityDeleting, setQualityDeleting] = useState(false)
   const [confirmDeleteSubs, setConfirmDeleteSubs] = useState(false)
+  const [showCullList, setShowCullList] = useState(false)
+  const qualityAbortRef = useRef<AbortController | null>(null)
+
+  // Closing the dialog (or leaving the page) stops a running analysis instead
+  // of letting it keep hammering the worker / server in the background.
+  useEffect(() => () => qualityAbortRef.current?.abort(), [])
+  const closeSyncPreview = () => {
+    qualityAbortRef.current?.abort()
+    setSyncPreview(null)
+  }
 
   useEffect(() => {
     const load = async () => {
@@ -155,72 +169,116 @@ export default function ObjectsPage() {
   const activeQualityFilterId = qualityFilterId ?? analyzableFilters[0]?.id ?? null
   const qualityFilterFiles = (syncPreview?.scan.analyzableFiles ?? []).filter(f => f.filterId === activeQualityFilterId)
 
+  const metricValue = (r: FitsAnalysis): number | null => qualityMetric === 'psfsw' ? r.snr : r.fwhm
+  // Default limit keeps everything: min for PSFSW (cull below), max for FWHM (cull above).
+  const defaultThreshold = (results: Iterable<FitsAnalysis>, metric: 'psfsw' | 'fwhm'): number | null => {
+    const vals = [...results].map(r => metric === 'psfsw' ? r.snr : r.fwhm).filter((v): v is number => v != null)
+    if (!vals.length) return null
+    return metric === 'psfsw' ? Math.min(...vals) : Math.max(...vals)
+  }
+
   const qualityTimeByName = new Map((syncPreview?.scan.analyzableFiles ?? []).map(f => [f.name, f.time]))
   const qualityPoints: SnrPoint[] = [...qualityResults.values()]
-    .filter(r => r.snr != null)
-    .map(r => ({ fileName: r.fileName, snr: r.snr as number, time: qualityTimeByName.get(r.fileName) ?? 0 }))
+    .filter(r => metricValue(r) != null)
+    .map(r => ({ fileName: r.fileName, snr: metricValue(r) as number, time: qualityTimeByName.get(r.fileName) ?? 0 }))
     .sort((a, b) => a.time - b.time)
   const qualityUnmeasured = qualityResults.size - qualityPoints.length
-  const belowLimitFiles = qualityThreshold == null ? [] : qualityPoints.filter(p => p.snr < qualityThreshold).map(p => p.fileName)
+  const cullFiles = qualityThreshold == null ? [] : qualityPoints
+    .filter(p => qualityMetric === 'psfsw' ? p.snr < qualityThreshold : p.snr > qualityThreshold)
+    .map(p => p.fileName)
 
   const handleQualityFilterChange = (id: number) => {
     setQualityFilterId(id)
     setQualityResults(new Map()); setQualityThreshold(null); setConfirmDeleteSubs(false)
   }
 
-  const handleAnalyzeQuality = async () => {
+  const handleQualityMetricChange = (metric: 'psfsw' | 'fwhm') => {
+    setQualityMetric(metric)
+    setQualityThreshold(defaultThreshold(qualityResults.values(), metric))
+    setConfirmDeleteSubs(false)
+  }
+
+  // `force` recomputes everything; otherwise persisted values are used and
+  // only files without a saved analysis are measured (and then persisted).
+  const handleAnalyzeQuality = async (force: boolean) => {
     if (!syncPreview?.obj.folder) return
-    const names = qualityFilterFiles.map(f => f.name)
-    if (!names.length) return
+    if (!qualityFilterFiles.length) return
     setQualityAnalyzing(true); setError(null); setConfirmDeleteSubs(false)
-    setQualityProgress({ current: 0, total: names.length })
+    const ctrl = new AbortController()
+    qualityAbortRef.current = ctrl
     try {
-      // Raw PSFSW values, normalized to unit median over the set below.
-      let raw: FitsAnalysis[]
-      if (importFileMode === 'backend') {
-        raw = []
-        const BATCH = 6
-        for (let i = 0; i < names.length; i += BATCH) {
-          raw.push(...await analyzeFitsViaBackend(names.slice(i, i + BATCH), false))
-          setQualityProgress({ current: Math.min(i + BATCH, names.length), total: names.length })
+      const stored: FitsAnalysis[] = force ? [] : qualityFilterFiles
+        .filter(f => f.storedPsfsw != null)
+        .map(f => ({ fileName: f.name, snr: f.storedPsfsw, fwhm: f.storedFwhm, dateObs: null, width: null, height: null }))
+      const storedNames = new Set(stored.map(r => r.fileName))
+      const names = qualityFilterFiles.map(f => f.name).filter(n => !storedNames.has(n))
+
+      // Raw PSFSW values (saved and computed alike), normalized to unit
+      // median over the combined set below. On stop, partial results show.
+      let raw: FitsAnalysis[] = []
+      if (names.length) {
+        setQualityProgress({ current: 0, total: names.length })
+        if (importFileMode === 'backend') {
+          const BATCH = 6
+          for (let i = 0; i < names.length; i += BATCH) {
+            if (ctrl.signal.aborted) break
+            try {
+              raw.push(...await analyzeFitsViaBackend(names.slice(i, i + BATCH), false, ctrl.signal))
+            } catch (err) {
+              if (err instanceof DOMException && err.name === 'AbortError') break
+              throw err
+            }
+            setQualityProgress({ current: Math.min(i + BATCH, names.length), total: names.length })
+          }
+        } else {
+          const dir = await ensureImagesFolderAccess()
+          if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+          const files = await getObjectFolderFiles(dir, syncPreview.obj.folder, names)
+          raw = await analyzeFitsFiles(files, done => setQualityProgress({ current: done, total: files.length }), ctrl.signal)
         }
-      } else {
-        const dir = await ensureImagesFolderAccess()
-        if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
-        const files = await getObjectFolderFiles(dir, syncPreview.obj.folder, names)
-        raw = await analyzeFitsFiles(files, done => setQualityProgress({ current: done, total: files.length }))
+
+        // Persist what was just measured on the files' import records.
+        const fileByName = new Map(qualityFilterFiles.map(f => [f.name, f]))
+        const items = raw
+          .filter(r => r.snr != null && fileByName.get(r.fileName)?.recordName)
+          .map(r => ({ filename: fileByName.get(r.fileName)!.recordName!, psfsw: r.snr, fwhm: r.fwhm }))
+        if (items.length) { try { await saveImportedAnalysis(items) } catch {} }
       }
-      const weights = raw.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
-      const median = weights.length ? weights[weights.length >> 1] : 0
-      const normed = median > 0
-        ? raw.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
-        : raw
-      setQualityResults(new Map(normed.map(r => [r.fileName, r])))
-      const snrs = normed.map(r => r.snr).filter((v): v is number => v != null)
-      setQualityThreshold(snrs.length ? Math.min(...snrs) : null)
+
+      const all = [...stored, ...raw]
+      if (all.length) {
+        const weights = all.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
+        const median = weights.length ? weights[weights.length >> 1] : 0
+        const normed = median > 0
+          ? all.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
+          : all
+        setQualityResults(new Map(normed.map(r => [r.fileName, r])))
+        setQualityThreshold(defaultThreshold(normed, qualityMetric))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Quality analysis failed')
     } finally {
+      qualityAbortRef.current = null
       setQualityAnalyzing(false); setQualityProgress(null)
     }
   }
 
   const handleDeleteBelowLimit = async () => {
-    if (!syncPreview?.obj.folder || !belowLimitFiles.length) return
+    if (!syncPreview?.obj.folder || !cullFiles.length) return
     setQualityDeleting(true); setError(null)
     try {
       let stats: { deleted: number; failed: number }
       if (importFileMode === 'backend') {
-        stats = await deleteObjectFilesViaBackend(syncPreview.obj.folder, belowLimitFiles)
+        stats = await deleteObjectFilesViaBackend(syncPreview.obj.folder, cullFiles)
       } else {
         const dir = await ensureImagesFolderAccess()
         if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
-        stats = await deleteObjectFolderFiles(dir, syncPreview.obj.folder, belowLimitFiles)
+        stats = await deleteObjectFolderFiles(dir, syncPreview.obj.folder, cullFiles)
       }
       if (stats.failed > 0) setError(`${stats.failed} file${stats.failed !== 1 ? 's' : ''} could not be deleted`)
       setQualityResults(prev => {
         const m = new Map(prev)
-        for (const n of belowLimitFiles) m.delete(n)
+        for (const n of cullFiles) m.delete(n)
         return m
       })
       setConfirmDeleteSubs(false)
@@ -651,11 +709,11 @@ export default function ObjectsPage() {
       )}
 
       {syncPreview !== null && (
-        <div className="modal-backdrop" onClick={() => setSyncPreview(null)}>
+        <div className="modal-backdrop" onClick={closeSyncPreview}>
           <div className="modal-dialog" onClick={e => e.stopPropagation()} style={{ maxWidth: '42rem' }}>
             <div className="modal-dialog__header">
               <span className="modal-dialog__title">Sync files — {syncPreview.obj.name}</span>
-              <button className="btn btn-ghost" onClick={() => setSyncPreview(null)}>✕</button>
+              <button className="btn btn-ghost" onClick={closeSyncPreview}>✕</button>
             </div>
             <p className="cell-muted" style={{ margin: '0 0 0.75rem', fontSize: '0.85rem' }}>
               {syncPreview.scan.presentCount} file{syncPreview.scan.presentCount !== 1 ? 's' : ''} in folder
@@ -733,15 +791,30 @@ export default function ObjectsPage() {
                       </option>
                     ))}
                   </select>
-                  <button className="btn btn-secondary" onClick={handleAnalyzeQuality}
-                    disabled={qualityAnalyzing || qualityDeleting || syncApplying || syncingId !== null || !qualityFilterFiles.length}>
+                  <button className="btn btn-secondary" onClick={() => handleAnalyzeQuality(qualityResults.size > 0)}
+                    disabled={qualityAnalyzing || qualityDeleting || syncApplying || syncingId !== null || !qualityFilterFiles.length}
+                    title={qualityResults.size ? 'Measure all subs again and refresh the saved analysis' : 'Uses saved analysis where available; measures only new subs'}>
                     {qualityAnalyzing
                       ? `Analyzing… ${qualityProgress ? `${qualityProgress.current}/${qualityProgress.total}` : ''}`
                       : qualityResults.size ? '↻ Re-analyze quality' : '📈 Analyze quality'}
                   </button>
+                  {qualityAnalyzing && (
+                    <button className="btn btn-ghost" onClick={() => qualityAbortRef.current?.abort()}>■ Stop</button>
+                  )}
+                  <select
+                    className="select-dark"
+                    value={qualityMetric}
+                    onChange={e => handleQualityMetricChange(e.target.value as 'psfsw' | 'fwhm')}
+                    disabled={qualityAnalyzing || qualityDeleting}
+                    title="Both metrics are measured in one pass — this selects which one is shown"
+                  >
+                    <option value="psfsw">Signal (PSFSW)</option>
+                    <option value="fwhm">Star size (FWHM)</option>
+                  </select>
                   {qualityResults.size > 0 && (
                     <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
-                      {analyzableFilters.find(f => f.id === activeQualityFilterId)?.name}: {qualityPoints.length} measured · median ≈ 1.0 · {belowLimitFiles.length} below the limit
+                      {analyzableFilters.find(f => f.id === activeQualityFilterId)?.name}: {qualityPoints.length} measured
+                      {qualityMetric === 'psfsw' ? ' · median ≈ 1.0' : ' · px'} · {cullFiles.length} {qualityMetric === 'psfsw' ? 'below' : 'above'} the limit
                       {qualityUnmeasured > 0 ? ` · ${qualityUnmeasured} not measurable (kept)` : ''}
                     </span>
                   )}
@@ -749,15 +822,20 @@ export default function ObjectsPage() {
                 {qualityResults.size > 0 && qualityThreshold != null && qualityPoints.length > 0 && (
                   <>
                     <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.5rem 0' }}>
-                      Drag the ▸ handle to set the limit — subs below it (including derived copies) are deleted from disk.
+                      Drag the ▸ handle to set the limit — subs {qualityMetric === 'psfsw' ? 'below' : 'above'} it (including derived copies) are deleted from disk.
                     </p>
-                    <SnrChart points={qualityPoints} threshold={qualityThreshold} onThresholdChange={setQualityThreshold} />
-                    {belowLimitFiles.length > 0 && (
+                    <SnrChart points={qualityPoints} threshold={qualityThreshold} onThresholdChange={setQualityThreshold}
+                      metricLabel={qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM (px)'}
+                      goodDirection={qualityMetric === 'psfsw' ? 'above' : 'below'} />
+                    {cullFiles.length > 0 && (
                       <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <button className="btn btn-ghost" onClick={() => setShowCullList(true)}>
+                          📋 View {cullFiles.length} excluded…
+                        </button>
                         {confirmDeleteSubs ? (
                           <>
                             <span style={{ color: '#f87171', fontSize: '0.85rem' }}>
-                              Permanently delete {belowLimitFiles.length} sub{belowLimitFiles.length !== 1 ? 's' : ''} from disk?
+                              Permanently delete {cullFiles.length} sub{cullFiles.length !== 1 ? 's' : ''} from disk?
                             </span>
                             <button className="btn btn-danger" onClick={handleDeleteBelowLimit} disabled={qualityDeleting}>
                               {qualityDeleting ? 'Deleting…' : 'Yes, delete'}
@@ -767,7 +845,7 @@ export default function ObjectsPage() {
                         ) : (
                           <button className="btn btn-danger" onClick={() => setConfirmDeleteSubs(true)}
                             disabled={qualityDeleting || qualityAnalyzing || syncingId !== null}>
-                            🗑 Delete {belowLimitFiles.length} low-quality sub{belowLimitFiles.length !== 1 ? 's' : ''}
+                            🗑 Delete {cullFiles.length} low-quality sub{cullFiles.length !== 1 ? 's' : ''}
                           </button>
                         )}
                       </div>
@@ -775,6 +853,14 @@ export default function ObjectsPage() {
                   </>
                 )}
               </div>
+            )}
+
+            {showCullList && (
+              <FileListDialog
+                title={`Subs excluded by the ${qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM'} limit — ${syncPreview.obj.name}`}
+                files={cullFiles}
+                onClose={() => setShowCullList(false)}
+              />
             )}
 
             <div className="form-actions">
@@ -785,7 +871,7 @@ export default function ObjectsPage() {
                     syncPreview.scan.missingCount > 0 ? ` · drop ${syncPreview.scan.missingCount}` : ''}`}
                 </button>
               )}
-              <button className="btn btn-ghost" onClick={() => setSyncPreview(null)}>
+              <button className="btn btn-ghost" onClick={closeSyncPreview}>
                 {syncPreview.scan.changes.length > 0 || syncPreview.scan.unadjustable.length > 0 ? 'Cancel' : 'Close'}
               </button>
             </div>

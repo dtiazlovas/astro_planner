@@ -77,7 +77,17 @@ export interface SyncScanResult {
   // Unique attributable subs on disk (one file per sub), with the capture time
   // and filter parsed from the filename — the input for quality analysis,
   // which runs per filter since quality scales differ between filters.
-  analyzableFiles: { name: string; time: number; filterId: number; filterName: string }[]
+  // `recordName` links back to the import record (for persisting analysis);
+  // stored values are the previously persisted analysis, if any.
+  analyzableFiles: {
+    name: string
+    time: number
+    filterId: number
+    filterName: string
+    recordName: string | null
+    storedPsfsw: number | null
+    storedFwhm: number | null
+  }[]
 }
 
 export async function scanObjectFiles(
@@ -110,16 +120,18 @@ export async function scanObjectFiles(
     } catch { return null }
   }).filter((r): r is RegExp => r !== null)
 
-  const recordStems = new Set(imported.map(r => stem(r.filename)))
-  const isRegistered = (diskStem: string): boolean => {
+  const recordByStem = new Map(imported.map(r => [stem(r.filename), r]))
+  const findRecord = (diskStem: string): ImportedRecord | null => {
     let s = diskStem
     while (true) {
-      if (recordStems.has(s)) return true
+      const r = recordByStem.get(s)
+      if (r) return r
       const t = stripSuffix(s)
-      if (t === s) return false
+      if (t === s) return null
       s = t
     }
   }
+  const isRegistered = (diskStem: string): boolean => findRecord(diskStem) !== null
 
   // Slot bookkeeping: one slot per (observing date, filter, exposure).
   interface Slot {
@@ -147,7 +159,7 @@ export async function scanObjectFiles(
   // ── 1. Attribute every disk file to a slot (unique subs only) ─────────────
   let unattributable = 0
   const seenBases = new Set<string>()
-  const analyzableFiles: { name: string; time: number; filterId: number; filterName: string }[] = []
+  const analyzableFiles: SyncScanResult['analyzableFiles'] = []
   for (const fileName of presentFileNames) {
     const p = parseCandidates(fileName, tolerantRegexes).find(c => matchObject(c.target, allObjects)?.id === obj.id)
     const filt = p ? matchFilter(p.filter, filters) : null
@@ -156,7 +168,11 @@ export async function scanObjectFiles(
     const base = baseStem(stem(fileName))
     if (seenBases.has(base)) continue // original + derived copy of the same sub
     seenBases.add(base)
-    analyzableFiles.push({ name: fileName, time: p.datetime.getTime(), filterId: filt.id, filterName: filt.name ?? p.filter })
+    const rec = findRecord(stem(fileName))
+    analyzableFiles.push({
+      name: fileName, time: p.datetime.getTime(), filterId: filt.id, filterName: filt.name ?? p.filter,
+      recordName: rec?.filename ?? null, storedPsfsw: rec?.psfsw ?? null, storedFwhm: rec?.fwhm ?? null,
+    })
     const slot = slotFor(dateKey(p.datetime, dayStartHour), filt.id, filt.name ?? p.filter, exp.id, exp.duration)
     slot.disk++
     if (slot.earliest === null || p.datetime < slot.earliest) slot.earliest = p.datetime
