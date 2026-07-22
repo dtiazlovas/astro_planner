@@ -6,7 +6,7 @@ import {
   updateFilter, createFilter,
   checkImported, recordImported,
   getPlans, setPlanSession, createPlan, createPlanDetail,
-  analyzeFitsViaBackend, copyFilesViaBackend, saveImportedAnalysis,
+  analyzeFitsViaBackend, copyFilesViaBackend, saveImportedAnalysis, getImportedRecords,
 } from '../api'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
 import type { FitsAnalysis } from '../utils/fits'
@@ -28,7 +28,7 @@ interface ImportResult {
   copyWarning: string | null
 }
 import {
-  DEFAULT_PATTERN, fetchPatterns, parseFileMulti, dateKey, toDatetimeLocal,
+  DEFAULT_PATTERN, fetchPatterns, parseFileMulti, parseFile, patternToRegex, dateKey, toDatetimeLocal,
   matchObject, matchFilter, matchExposure, getPatternAcceptMulti,
   fetchDayStartHour, fetchImportFileMode, type ImportFileMode,
 } from '../utils/filePattern'
@@ -186,8 +186,17 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [resultExpanded, setResultExpanded] = useState<'failed' | 'skipped' | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // ── SNR analysis / frame approval ─────────────────────────────
+  // ── quality analysis / frame approval ─────────────────────────
   const [snrResults, setSnrResults] = useState<Map<string, FitsAnalysis>>(new Map())
+  // Both metrics are measured in one pass; this selects which is shown and
+  // culled against. PSFSW: higher is better (normalized to median ≈ 1.0);
+  // FWHM: lower is better (raw pixels).
+  const [qualityMetric, setQualityMetric] = useState<'psfsw' | 'fwhm'>('psfsw')
+  // Values of previously-analyzed subs sharing this batch's target+filter
+  // (different files), time-ordered — background context for the chart.
+  // PSFSW is normalized to the live median; FWHM is raw px.
+  const [snrHistorical, setSnrHistorical] = useState<number[]>([])
+  const [fwhmHistorical, setFwhmHistorical] = useState<number[]>([])
   const [snrThreshold, setSnrThreshold] = useState<number | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [showRejectedList, setShowRejectedList] = useState(false)
@@ -195,6 +204,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
   const analyzeAbortRef = useRef<AbortController | null>(null)
+  // Mirrors qualityMetric so the streaming commit() can pick the right
+  // approve-line default without stale closure state.
+  const qualityMetricRef = useRef<'psfsw' | 'fwhm'>('psfsw')
   // Raw (un-normalized) analysis values, persisted onto the import records on import.
   const rawAnalysisRef = useRef<Map<string, { psfsw: number | null; fwhm: number | null }>>(new Map())
 
@@ -235,7 +247,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setError(null); setImportResult(null)
     setTargetOverrides({}); setTargetAliasTo({}); setIgnoredTargets([])
     setFilterOverrides({}); setFilterAliasTo({}); setIgnoredFilters([])
-    setSnrResults(new Map()); setSnrThreshold(null)
+    setSnrResults(new Map()); setSnrThreshold(null); setSnrHistorical([]); setFwhmHistorical([])
 
     let alreadyImported: string[] = []
     try { alreadyImported = await checkImported(all.map(f => f.name)) } catch {}
@@ -418,51 +430,109 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const handleAnalyzeSnr = async () => {
     if (!importableFileNames.length) return
     setAnalyzing(true); setError(null)
+    setSnrResults(new Map()); setSnrThreshold(null); setSnrHistorical([]); setFwhmHistorical([])
     const ctrl = new AbortController()
     analyzeAbortRef.current = ctrl
-    try {
-      // Raw PSFSW values in both modes; normalized across the full set below.
-      // On stop, whatever finished so far is still used.
-      let raw: FitsAnalysis[]
-      if (importFileMode === 'backend') {
-        // Server mode: the backend locates files by name near its images
-        // folder. Analyze in batches so we can show progress.
-        const total = importableFileNames.length
-        const BATCH = 6
-        raw = []
-        setImportProgress({ step: 'Analyzing frame quality…', current: 0, total })
-        for (let i = 0; i < total; i += BATCH) {
-          if (ctrl.signal.aborted) break
-          try {
-            raw.push(...await analyzeFitsViaBackend(importableFileNames.slice(i, i + BATCH), false, ctrl.signal))
-          } catch (err) {
-            if (err instanceof DOMException && err.name === 'AbortError') break
-            throw err
-          }
-          setImportProgress({ step: 'Analyzing frame quality…', current: Math.min(i + BATCH, total), total })
-        }
-      } else {
-        // Browser mode: analyze the picked File objects directly, in a worker.
-        const fileByName = new Map(rawFiles.map(f => [f.name, f]))
-        const files = importableFileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined)
-        setImportProgress({ step: 'Analyzing frame quality…', current: 0, total: files.length })
-        raw = await analyzeFitsFiles(files, done =>
-          setImportProgress({ step: 'Analyzing frame quality…', current: done, total: files.length }), ctrl.signal)
-      }
-      if (!raw.length) return
-      for (const r of raw) rawAnalysisRef.current.set(r.fileName, { psfsw: r.snr, fwhm: r.fwhm })
 
-      // Unit-median normalization over every analyzed frame (PixInsight's K).
+    // Accumulated raw frames, re-normalized and pushed to the chart after each
+    // batch / frame so results render live while analysis is still running.
+    const raw: FitsAnalysis[] = []
+    // Historical subs matched to this batch's target+filter, time-ordered.
+    let historicalMatched: { psfsw: number | null; fwhm: number | null; time: number }[] = []
+    const commit = () => {
+      if (!raw.length) return
+      // Unit-median normalization of PSFSW over every frame so far (PixInsight's
+      // K). FWHM is kept raw (pixels).
       const weights = raw.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
       const median = weights.length ? weights[weights.length >> 1] : 0
       const normed = median > 0
         ? raw.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
         : raw
-
       setSnrResults(new Map(normed.map(r => [r.fileName, r])))
-      // Default the approve line at the minimum measured weight (everything approved).
-      const snrs = normed.map(r => r.snr).filter((v): v is number => v != null)
-      setSnrThreshold(snrs.length ? Math.min(...snrs) : null)
+      // Keep the approve line at the "approve everything" default for the active
+      // metric until analysis finishes and the user drags it.
+      if (qualityMetricRef.current === 'psfsw') {
+        const snrs = normed.map(r => r.snr).filter((v): v is number => v != null)
+        setSnrThreshold(snrs.length ? Math.min(...snrs) : null)
+      } else {
+        const fwhms = normed.map(r => r.fwhm).filter((v): v is number => v != null)
+        setSnrThreshold(fwhms.length ? Math.max(...fwhms) : null)
+      }
+      // Historical spread. PSFSW is re-normalized by the same live median so it
+      // shares the axis with the incoming frames; FWHM stays raw.
+      setSnrHistorical(historicalMatched
+        .filter(h => h.psfsw != null)
+        .map(h => median > 0 ? Math.round((h.psfsw! / median) * 1000) / 1000 : h.psfsw!))
+      setFwhmHistorical(historicalMatched.filter(h => h.fwhm != null).map(h => h.fwhm!))
+    }
+
+    try {
+      setImportProgress({ step: 'Analyzing frame quality…', current: 0, total: importableFileNames.length })
+
+      // Gather the historical spread up front: PSFSW + FWHM of previously-analyzed
+      // subs (different files) whose parsed target+filter matches an entry in
+      // this batch. Fetched before the loop so the context can render live.
+      try {
+        const analyzedSet = new Set(importableFileNames)
+        const pairSet = new Set(
+          (preview ?? []).flatMap(s => s.entries
+            .filter(e => e.canImport && e.objectId != null && e.filterId != null)
+            .map(e => `${e.objectId}|${e.filterId}`))
+        )
+        // Try every configured pattern per record, not just the first that
+        // matches: a greedy pattern can swallow a token like a rotation angle
+        // ("nessy_270deg") into the target and miss the real object, while a
+        // more specific pattern parses it correctly. A record counts if any
+        // pattern resolves it to an object+filter pair in this batch.
+        const regexes = patterns.map(patternToRegex)
+        const records = await getImportedRecords()
+        for (const rec of records) {
+          if ((rec.psfsw == null && rec.fwhm == null) || analyzedSet.has(rec.filename)) continue
+          for (const rx of regexes) {
+            const parsed = parseFile(rec.filename, rx)
+            if (!parsed) continue
+            const obj = matchObject(parsed.target, objects)
+            const filt = matchFilter(parsed.filter, filters)
+            if (obj && filt && pairSet.has(`${obj.id}|${filt.id}`)) {
+              historicalMatched.push({ psfsw: rec.psfsw, fwhm: rec.fwhm, time: parsed.datetime.getTime() })
+              break
+            }
+          }
+        }
+        historicalMatched.sort((a, b) => a.time - b.time)
+      } catch { historicalMatched = [] }
+
+      if (importFileMode === 'backend') {
+        // Server mode: the backend locates files by name near its images
+        // folder. Analyze in batches so results stream in.
+        const total = importableFileNames.length
+        const BATCH = 6
+        for (let i = 0; i < total; i += BATCH) {
+          if (ctrl.signal.aborted) break
+          try {
+            const batch = await analyzeFitsViaBackend(importableFileNames.slice(i, i + BATCH), false, ctrl.signal)
+            raw.push(...batch)
+            for (const r of batch) rawAnalysisRef.current.set(r.fileName, { psfsw: r.snr, fwhm: r.fwhm })
+          } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') break
+            throw err
+          }
+          setImportProgress({ step: 'Analyzing frame quality…', current: Math.min(i + BATCH, total), total })
+          commit()
+        }
+      } else {
+        // Browser mode: analyze the picked File objects directly, in a worker,
+        // committing each frame as the worker returns it.
+        const fileByName = new Map(rawFiles.map(f => [f.name, f]))
+        const files = importableFileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined)
+        await analyzeFitsFiles(files, (done, total, result) => {
+          if (result) { raw.push(result); rawAnalysisRef.current.set(result.fileName, { psfsw: result.snr, fwhm: result.fwhm }) }
+          setImportProgress({ step: 'Analyzing frame quality…', current: done, total })
+          commit()
+        }, ctrl.signal)
+      }
+
+      commit() // final normalization over the full set
     } catch {
       setError(importFileMode === 'backend'
         ? 'Quality analysis failed — is the images folder set and reachable on the server?'
@@ -481,26 +551,52 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     return parseFileMulti(fileName, patterns)?.datetime.getTime() ?? 0
   }
 
-  const snrPoints: SnrPoint[] = [...snrResults.values()]
-    .filter(r => r.snr != null)
-    .map(r => ({ fileName: r.fileName, snr: r.snr as number, time: timeForFile(r.fileName) }))
-    .sort((a, b) => a.time - b.time)
+  // PSFSW is plotted normalized (higher is better); FWHM raw px (lower is better).
+  const metricValue = (r: FitsAnalysis): number | null => qualityMetric === 'psfsw' ? r.snr : r.fwhm
+  const goodDirection: 'above' | 'below' = qualityMetric === 'psfsw' ? 'above' : 'below'
+  const metricLabel = qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM (px)'
+  const historicalForMetric = qualityMetric === 'psfsw' ? snrHistorical : fwhmHistorical
 
-  const analyzedCount = snrPoints.length
-  const analysisErrors = [...snrResults.values()].filter(r => r.snr == null).length
+  const measuredPoints: SnrPoint[] = [...snrResults.values()]
+    .filter(r => metricValue(r) != null)
+    .map(r => ({ fileName: r.fileName, snr: metricValue(r) as number, time: timeForFile(r.fileName) }))
+  // While analysis is running, seed a baseline point for every importable file
+  // not yet measured so the chart lays out its full x-axis immediately and each
+  // point rises in place as its value arrives.
+  const pendingPoints: SnrPoint[] = analyzing
+    ? importableFileNames
+        .filter(n => !snrResults.has(n))
+        .map(n => ({ fileName: n, snr: 0, time: timeForFile(n), pending: true }))
+    : []
+  const snrPoints: SnrPoint[] = [...measuredPoints, ...pendingPoints].sort((a, b) => a.time - b.time)
+
+  const analyzedCount = measuredPoints.length
+  const analysisErrors = [...snrResults.values()].filter(r => metricValue(r) == null).length
   const avgStars = (() => {
     const counts = [...snrResults.values()].map(r => r.stars ?? 0).filter(n => n > 0)
     return counts.length ? Math.round(counts.reduce((a, b) => a + b, 0) / counts.length) : 0
   })()
-  const rejectedFiles = snrThreshold == null ? [] : snrPoints.filter(p => p.snr < snrThreshold).map(p => p.fileName)
+  const rejectedFiles = snrThreshold == null ? [] : measuredPoints
+    .filter(p => goodDirection === 'above' ? p.snr < snrThreshold : p.snr > snrThreshold)
+    .map(p => p.fileName)
   const rejectedCount = rejectedFiles.length
 
   // A file is approved if we couldn't measure it (unknown → keep) or it clears the line.
   const isApproved = (fileName: string): boolean => {
     if (snrThreshold == null) return true
     const r = snrResults.get(fileName)
-    if (!r || r.snr == null) return true
-    return r.snr >= snrThreshold
+    const v = r ? metricValue(r) : null
+    if (v == null) return true
+    return goodDirection === 'above' ? v >= snrThreshold : v <= snrThreshold
+  }
+
+  // Reset the approve line to "keep everything" for the newly selected metric.
+  const handleMetricChange = (m: 'psfsw' | 'fwhm') => {
+    qualityMetricRef.current = m
+    setQualityMetric(m)
+    setShowRejectedList(false)
+    const vals = [...snrResults.values()].map(r => m === 'psfsw' ? r.snr : r.fwhm).filter((v): v is number => v != null)
+    setSnrThreshold(vals.length ? (m === 'psfsw' ? Math.min(...vals) : Math.max(...vals)) : null)
   }
 
   // ── import ───────────────────────────────────────────────────
@@ -710,26 +806,59 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                   </button>
                 )}
                 {importableCount > 0 && (
-                  <button className="btn btn-primary" onClick={handleImport} disabled={importing}>
+                  <button className="btn btn-primary" onClick={handleImport} disabled={importing || analyzing}>
                     {importing ? 'Importing…' : `Import ${importableCount} entr${importableCount !== 1 ? 'ies' : 'y'}`}
                   </button>
                 )}
               </div>
 
-              {snrResults.size > 0 && snrThreshold != null && analyzedCount > 0 && (
+              {(analyzing || (snrResults.size > 0 && snrThreshold != null && analyzedCount > 0)) && (
                 <div className="import-session-block">
                   <div className="import-session-header">
-                    <span className="cell-name">Frame quality (PSF Signal Weight)</span>
+                    <span className="cell-name">Frame quality</span>
+                    <select
+                      className="select-dark"
+                      value={qualityMetric}
+                      onChange={e => handleMetricChange(e.target.value as 'psfsw' | 'fwhm')}
+                      style={{ fontSize: '0.85rem' }}
+                      title="Both metrics are measured in one pass — this selects which one is shown"
+                    >
+                      <option value="psfsw">Signal (PSFSW)</option>
+                      <option value="fwhm">Star size (FWHM)</option>
+                    </select>
                     <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
-                      {analyzedCount} analyzed{avgStars > 0 ? ` · ~${avgStars} stars/frame` : ''} · median frame ≈ 1.0 · {rejectedCount} below approve line will be skipped
-                      {analysisErrors > 0 ? ` · ${analysisErrors} not measurable (kept)` : ''}
+                      {analyzing && importProgress
+                        ? `Analyzing… ${importProgress.current} / ${importProgress.total}${analyzedCount > 0 ? ` · ${analyzedCount} measured so far` : ''}`
+                        : <>
+                            {analyzedCount} analyzed{avgStars > 0 ? ` · ~${avgStars} stars/frame` : ''}{qualityMetric === 'psfsw' ? ' · median frame ≈ 1.0' : ' · px'} · {rejectedCount} {goodDirection === 'above' ? 'below' : 'above'} approve line will be skipped
+                            {analysisErrors > 0 ? ` · ${analysisErrors} not measurable (kept)` : ''}
+                            {historicalForMetric.length > 0 ? ` · band + dots = ${historicalForMetric.length} past sub${historicalForMetric.length !== 1 ? 's' : ''} (same target/filter)` : ''}
+                          </>}
                     </span>
                   </div>
+                  {analyzing && importProgress && importProgress.total > 0 && (
+                    <div className="progress-bar" style={{ margin: '0.25rem 0 0.5rem' }}>
+                      <div className="progress-bar__fill" style={{ width: `${Math.round((importProgress.current / importProgress.total) * 100)}%` }} />
+                    </div>
+                  )}
                   <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.25rem 0 0.5rem' }}>
-                    Drag the ▸ handle to set the approve line — only frames above it are copied.
+                    {analyzing
+                      ? 'Results appear as each frame is measured — the approve line unlocks when analysis finishes.'
+                      : `Drag the ▸ handle to set the approve line — only frames ${goodDirection === 'above' ? 'above' : 'below'} it are copied.`}
                   </p>
-                  <SnrChart points={snrPoints} threshold={snrThreshold} onThresholdChange={setSnrThreshold} />
-                  {rejectedCount > 0 && (
+                  {snrPoints.length > 0 ? (
+                    <SnrChart points={snrPoints} threshold={snrThreshold ?? 0} onThresholdChange={setSnrThreshold}
+                      metricLabel={metricLabel} goodDirection={goodDirection} historical={historicalForMetric} disabled={analyzing} />
+                  ) : (
+                    <p className="cell-muted" style={{ fontSize: '0.85rem', padding: '2rem 0', textAlign: 'center' }}>
+                      Waiting for frames…
+                    </p>
+                  )}
+                  {analyzing ? (
+                    <button className="btn btn-ghost" style={{ marginTop: '0.5rem' }} onClick={() => analyzeAbortRef.current?.abort()}>
+                      ■ Stop analysis
+                    </button>
+                  ) : rejectedCount > 0 && (
                     <button className="btn btn-ghost" style={{ marginTop: '0.5rem' }} onClick={() => setShowRejectedList(true)}>
                       📋 View {rejectedCount} rejected…
                     </button>
@@ -743,7 +872,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                   )}
                 </div>
               )}
-              {snrResults.size > 0 && analyzedCount === 0 && (
+              {!analyzing && snrResults.size > 0 && analyzedCount === 0 && (
                 <div className="import-warnings">
                   {importFileMode === 'backend'
                     ? 'No SNR could be measured — files may be missing from the images folder, or not mono FITS.'
@@ -977,7 +1106,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         </div>
       )}
 
-      {importProgress !== null && (
+      {/* Analysis reports progress inline in the chart block; only the import
+          step uses this blocking modal. */}
+      {importProgress !== null && !analyzing && (
         <div className="modal-backdrop">
           <div className="progress-dialog">
             <p className="progress-dialog__step">{importProgress.step}</p>
@@ -990,12 +1121,6 @@ export default function ImportPanel({ onImported, onClose }: Props) {
               </>
             ) : (
               <div className="progress-bar progress-bar--indeterminate" />
-            )}
-            {analyzing && (
-              <button className="btn btn-ghost" style={{ marginTop: '0.75rem' }}
-                onClick={() => analyzeAbortRef.current?.abort()}>
-                ■ Stop analysis
-              </button>
             )}
           </div>
         </div>

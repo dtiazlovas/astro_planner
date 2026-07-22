@@ -827,29 +827,30 @@ export default function ObjectsPage() {
                     <SnrChart points={qualityPoints} threshold={qualityThreshold} onThresholdChange={setQualityThreshold}
                       metricLabel={qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM (px)'}
                       goodDirection={qualityMetric === 'psfsw' ? 'above' : 'below'} />
-                    {cullFiles.length > 0 && (
-                      <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                        <button className="btn btn-ghost" onClick={() => setShowCullList(true)}>
-                          📋 View {cullFiles.length} excluded…
-                        </button>
-                        {confirmDeleteSubs ? (
-                          <>
-                            <span style={{ color: '#f87171', fontSize: '0.85rem' }}>
-                              Permanently delete {cullFiles.length} sub{cullFiles.length !== 1 ? 's' : ''} from disk?
-                            </span>
-                            <button className="btn btn-danger" onClick={handleDeleteBelowLimit} disabled={qualityDeleting}>
-                              {qualityDeleting ? 'Deleting…' : 'Yes, delete'}
-                            </button>
-                            <button className="btn btn-ghost" onClick={() => setConfirmDeleteSubs(false)} disabled={qualityDeleting}>Cancel</button>
-                          </>
-                        ) : (
-                          <button className="btn btn-danger" onClick={() => setConfirmDeleteSubs(true)}
-                            disabled={qualityDeleting || qualityAnalyzing || syncingId !== null}>
-                            🗑 Delete {cullFiles.length} low-quality sub{cullFiles.length !== 1 ? 's' : ''}
+                    {/* Always rendered (disabled when nothing is culled) so dragging
+                        the limit across the 0-excluded boundary doesn't resize the
+                        panel and jerk the handle. */}
+                    <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button className="btn btn-ghost" onClick={() => setShowCullList(true)} disabled={cullFiles.length === 0}>
+                        📋 View {cullFiles.length} excluded…
+                      </button>
+                      {confirmDeleteSubs && cullFiles.length > 0 ? (
+                        <>
+                          <span style={{ color: '#f87171', fontSize: '0.85rem' }}>
+                            Permanently delete {cullFiles.length} sub{cullFiles.length !== 1 ? 's' : ''} from disk?
+                          </span>
+                          <button className="btn btn-danger" onClick={handleDeleteBelowLimit} disabled={qualityDeleting}>
+                            {qualityDeleting ? 'Deleting…' : 'Yes, delete'}
                           </button>
-                        )}
-                      </div>
-                    )}
+                          <button className="btn btn-ghost" onClick={() => setConfirmDeleteSubs(false)} disabled={qualityDeleting}>Cancel</button>
+                        </>
+                      ) : (
+                        <button className="btn btn-danger" onClick={() => setConfirmDeleteSubs(true)}
+                          disabled={cullFiles.length === 0 || qualityDeleting || qualityAnalyzing || syncingId !== null}>
+                          🗑 Delete {cullFiles.length} low-quality sub{cullFiles.length !== 1 ? 's' : ''}
+                        </button>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
