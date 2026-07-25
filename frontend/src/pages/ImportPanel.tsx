@@ -439,6 +439,17 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     const raw: FitsAnalysis[] = []
     // Historical subs matched to this batch's target+filter, time-ordered.
     let historicalMatched: { psfsw: number | null; fwhm: number | null; time: number }[] = []
+    // Renders the historical band/dots. PSFSW is normalized by the supplied
+    // median so it shares the axis with the incoming frames; FWHM stays raw px.
+    // Called once as soon as the historical set is gathered (with the
+    // historical's own median as a stand-in) so the band never lags behind the
+    // live dots, then again from commit() with the live median.
+    const pushHistorical = (median: number) => {
+      setSnrHistorical(historicalMatched
+        .filter(h => h.psfsw != null)
+        .map(h => median > 0 ? Math.round((h.psfsw! / median) * 1000) / 1000 : h.psfsw!))
+      setFwhmHistorical(historicalMatched.filter(h => h.fwhm != null).map(h => h.fwhm!))
+    }
     const commit = () => {
       if (!raw.length) return
       // Unit-median normalization of PSFSW over every frame so far (PixInsight's
@@ -458,12 +469,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         const fwhms = normed.map(r => r.fwhm).filter((v): v is number => v != null)
         setSnrThreshold(fwhms.length ? Math.max(...fwhms) : null)
       }
-      // Historical spread. PSFSW is re-normalized by the same live median so it
-      // shares the axis with the incoming frames; FWHM stays raw.
-      setSnrHistorical(historicalMatched
-        .filter(h => h.psfsw != null)
-        .map(h => median > 0 ? Math.round((h.psfsw! / median) * 1000) / 1000 : h.psfsw!))
-      setFwhmHistorical(historicalMatched.filter(h => h.fwhm != null).map(h => h.fwhm!))
+      // Historical spread, re-normalized by the live median now that frames exist.
+      pushHistorical(median)
     }
 
     try {
@@ -500,6 +507,13 @@ export default function ImportPanel({ onImported, onClose }: Props) {
           }
         }
         historicalMatched.sort((a, b) => a.time - b.time)
+        // Render the band straight away, before the first new frame is measured,
+        // so it never trails the live dots. PSFSW is normalized by the
+        // historical's own median as a stand-in; commit() re-normalizes by the
+        // live median once frames arrive (same target/filter, so the two medians
+        // nearly coincide — no visible jump).
+        const hpsf = historicalMatched.map(h => h.psfsw).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
+        pushHistorical(hpsf.length ? hpsf[hpsf.length >> 1] : 0)
       } catch { historicalMatched = [] }
 
       if (importFileMode === 'backend') {
