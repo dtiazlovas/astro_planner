@@ -306,6 +306,10 @@ export default function ObjectsPage() {
 
   const typeMap = new Map(types.map(t => [t.id, t.name]))
 
+  // Display order: active objects first, inactive below. Array.sort is stable,
+  // so each group keeps its underlying priority order (drag-reorder ordering).
+  const displayObjects = [...objects].sort((a, b) => Number(b.active) - Number(a.active))
+
   const getTypeIcon = (name: string): { icon: React.ReactNode; color: string } => {
     const n = name.toLowerCase()
     if (n.includes('star cluster') || n.includes('cluster')) return { icon: '⁂', color: '#93c5fd' }
@@ -346,7 +350,7 @@ export default function ObjectsPage() {
     setDragOverId(null)
     const sourceId = Number(e.dataTransfer.getData('text/plain'))
     if (!sourceId || sourceId === targetId) return
-    const newOrder = [...objects]
+    const newOrder = [...displayObjects]
     const sourceIdx = newOrder.findIndex(o => o.id === sourceId)
     const targetIdx = newOrder.findIndex(o => o.id === targetId)
     if (sourceIdx === -1 || targetIdx === -1) return
@@ -524,7 +528,7 @@ export default function ObjectsPage() {
               </tr>
             </thead>
             <tbody>
-              {objects.map(obj => {
+              {displayObjects.map(obj => {
                 const progress = planProgress.get(obj.id)
                 return (
                   <Fragment key={obj.id}>

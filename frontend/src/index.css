@@ -1309,3 +1309,404 @@ body {
   text-align: center;
   padding: 3rem 0;
 }
+
+/* ── Calendar ─────────────────────────────────────────────── */
+
+.cal-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.cal-period-label {
+  margin-left: 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+/* All-months column chart */
+.cal-months {
+  margin-bottom: 1.25rem;
+}
+
+.cal-months__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.cal-months__title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #c4b5fd;
+}
+
+.cal-months__legend {
+  display: flex;
+  gap: 1rem;
+}
+
+.cal-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.cal-legend__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.cal-legend__swatch--used { background: linear-gradient(180deg, #8b5cf6, #5b21b6); }
+.cal-legend__swatch--missed { background: #383650; }
+
+.cal-months__bars {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.cal-month-col {
+  flex: 1 0 auto;
+  min-width: 30px;
+  max-width: 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.cal-month-col__track {
+  height: 130px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: #101020;
+  border: 1px solid #23233f;
+  border-radius: 6px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.cal-month-col:hover .cal-month-col__track { border-color: #7c3aed; }
+
+.cal-month-col--selected .cal-month-col__track {
+  border-color: #a78bfa;
+  box-shadow: 0 0 0 1px #a78bfa inset;
+}
+
+.cal-month-col__missed { background: #383650; }
+.cal-month-col__used {
+  background: linear-gradient(180deg, #8b5cf6, #5b21b6);
+  border-top: 1px solid rgba(196, 181, 253, 0.6);
+}
+
+.cal-month-col__label {
+  text-align: center;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.cal-month-col__year {
+  font-size: 0.6rem;
+  color: #64748b;
+}
+
+.cal-summary {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.cal-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  background: #14142a;
+  border: 1px solid #23233f;
+  border-radius: 8px;
+  padding: 0.6rem 1rem;
+  min-width: 100px;
+}
+
+.cal-stat__value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #c4b5fd;
+  line-height: 1.1;
+}
+
+.cal-stat__label {
+  font-size: 0.75rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Month grid */
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.cal-grid__weekday {
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-bottom: 0.25rem;
+}
+
+.cal-cell {
+  position: relative;
+  min-height: 88px;
+  border: 1px solid #23233f;
+  border-radius: 7px;
+  background: #101020;
+  padding: 0.35rem 0.4rem;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  color: #e8e8f0;
+}
+
+.cal-cell--out { opacity: 0.4; }
+
+.cal-cell--today {
+  border-color: #a78bfa;
+  box-shadow: 0 0 0 1px #a78bfa inset;
+}
+
+/* Colored column: height encodes % of astronomical darkness used. The darker
+   band above it is the darkness that went unused ("missed") that night. */
+.cal-cell__fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(180deg, #8b5cf6, #5b21b6);
+  border-top: 1px solid rgba(196, 181, 253, 0.6);
+  border-radius: 0 0 6px 6px;
+  opacity: 0.6;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.cal-cell__missed {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  /* Brighter than the cell background, but dimmer and far less saturated than
+     the used-time column — the unused ("missed") darkness. */
+  background: #383650;
+  border-radius: 6px 6px 0 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.cal-cell__top,
+.cal-cell__body {
+  position: relative;
+  z-index: 1;
+}
+
+.cal-cell__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.cal-cell__num {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.cal-cell__body {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cal-cell__dur {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #e9e4ff;
+}
+
+.cal-cell__pct {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #7dd3fc;
+}
+
+.cal-cell__count {
+  font-size: 0.68rem;
+  color: #a78bfa;
+}
+
+.cal-caption {
+  margin-top: 0.75rem;
+  font-size: 0.78rem;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.cal-caption strong { color: #7dd3fc; font-weight: 600; }
+.cal-caption__missed { color: #9694b3; }
+
+@media (max-width: 640px) {
+  .cal-cell { min-height: 62px; }
+  .cal-cell__dur { font-size: 0.75rem; }
+  .cal-cell__pct { font-size: 0.62rem; }
+}
+
+/* ── Latitude picker ──────────────────────────────────────── */
+.lat-picker__map {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  aspect-ratio: 2 / 1; /* equirectangular — matches the 360×180 geometry, no stretch */
+  border: 1px solid #2a2a48;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  /* Meridians (faint verticals) over latitude climate bands. */
+  background-color: #141b2e;
+  background-image:
+    repeating-linear-gradient(to right, rgba(255, 255, 255, 0.05) 0 1px, transparent 1px 8.3333%),
+    linear-gradient(to bottom,
+      #141b2e 0%, #141b2e 13.02%,
+      #17273f 13.02%, #17273f 36.98%,
+      #143a4d 36.98%, #143a4d 63.02%,
+      #17273f 63.02%, #17273f 86.98%,
+      #141b2e 86.98%, #141b2e 100%);
+}
+
+.lat-picker__map--dragging { cursor: grabbing; }
+
+/* Simplified continent outlines, stretched to fill the map. */
+.lat-picker__geo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.lat-picker__geo path {
+  fill: #33463a;
+  fill-opacity: 0.7;
+  stroke: rgba(150, 190, 160, 0.35);
+  stroke-width: 0.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.lat-picker__hemi {
+  position: absolute;
+  left: 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #64748b;
+  pointer-events: none;
+}
+.lat-picker__hemi--n { top: 6px; }
+.lat-picker__hemi--s { bottom: 6px; }
+.lat-picker__hemi { z-index: 1; }
+
+.lat-picker__ref {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed rgba(255, 255, 255, 0.16);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.lat-picker__ref-label {
+  position: absolute;
+  right: 8px;
+  top: 0;
+  transform: translateY(-50%);
+  font-size: 0.62rem;
+  color: #8a97b3;
+  background: rgba(5, 5, 12, 0.55);
+  padding: 0 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.lat-picker__line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #fbbf24;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.lat-picker__badge {
+  position: absolute;
+  left: 8px;
+  top: 0;
+  transform: translateY(-50%);
+  background: #fbbf24;
+  color: #1a1400;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.lat-picker__handle {
+  position: absolute;
+  right: 6px;
+  top: 0;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  background: #fbbf24;
+  border: 2px solid #1a1400;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.lat-picker__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.lat-picker__controls label {
+  font-size: 0.85rem;
+  color: #cbd5e1;
+}

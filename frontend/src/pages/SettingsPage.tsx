@@ -3,6 +3,8 @@ import { getFilters, createFilter, updateFilter, deleteFilter } from '../api'
 import type { ApFilter } from '../types'
 import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour, fetchImagesFolder, saveImagesFolder, pickFolder, fetchImportFileMode, saveImportFileMode, type ImportFileMode } from '../utils/filePattern'
 import { getStoredImagesFolder, pickImagesFolder, isFolderAccessSupported } from '../utils/imagesFolder'
+import { fetchLatitude, saveLatitude, DEFAULT_LATITUDE } from '../utils/astro'
+import LatitudePicker from '../components/LatitudePicker'
 
 const emptyFilterForm = { name: '', aliases: '', folder: '' }
 
@@ -17,6 +19,7 @@ export default function SettingsPage() {
   const [importFileMode, setImportFileMode] = useState<ImportFileMode>('frontend')
   const [imagesFolder, setImagesFolder] = useState('')
   const [imagesFolderSaving, setImagesFolderSaving] = useState(false)
+  const [latitude, setLatitude] = useState(DEFAULT_LATITUDE)
 
   const [filters, setFilters] = useState<ApFilter[]>([])
   const [loadingFilters, setLoadingFilters] = useState(true)
@@ -33,6 +36,7 @@ export default function SettingsPage() {
   useEffect(() => { getStoredImagesFolder().then(h => setImagesFolderName(h?.name ?? null)) }, [])
   useEffect(() => { fetchImportFileMode().then(setImportFileMode) }, [])
   useEffect(() => { fetchImagesFolder().then(setImagesFolder) }, [])
+  useEffect(() => { fetchLatitude().then(setLatitude) }, [])
 
   const handleModeChange = async (mode: ImportFileMode) => {
     setImportFileMode(mode)
@@ -363,6 +367,20 @@ export default function SettingsPage() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* ── Location ── */}
+      <div className="settings-card">
+        <p className="settings-card__title">Location</p>
+        <p className="cell-muted" style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
+          Observer latitude used to compute astronomical darkness (Sun below −18°) on the Calendar.
+          Drag the line on the map or type degrees below. Longitude isn't needed — it doesn't affect the length of darkness.
+        </p>
+        <LatitudePicker
+          value={latitude}
+          onChange={setLatitude}
+          onCommit={lat => { saveLatitude(lat).catch(() => {}) }}
+        />
       </div>
 
       {/* ── Session Grouping ── */}
