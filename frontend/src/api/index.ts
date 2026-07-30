@@ -140,7 +140,7 @@ export interface ImportedRecord {
 }
 
 export const getImportedRecords = (): Promise<ImportedRecord[]> =>
-  fetch(`${BASE}/imported`).then(json<ImportedRecord[]>)
+  fetch(`${BASE}/imported`, { cache: 'no-store' }).then(json<ImportedRecord[]>)
 
 export const saveImportedAnalysis = (items: { filename: string; psfsw: number | null; fwhm: number | null }[]): Promise<{ updated: number }> =>
   fetch(`${BASE}/imported/analysis`, {

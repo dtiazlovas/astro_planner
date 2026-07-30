@@ -7,6 +7,7 @@ import {
   checkImported, recordImported,
   getPlans, setPlanSession, createPlan, createPlanDetail,
   analyzeFitsViaBackend, copyFilesViaBackend, saveImportedAnalysis, getImportedRecords,
+  type ImportedRecord,
 } from '../api'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
 import type { FitsAnalysis } from '../utils/fits'
@@ -209,6 +210,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const qualityMetricRef = useRef<'psfsw' | 'fwhm'>('psfsw')
   // Raw (un-normalized) analysis values, persisted onto the import records on import.
   const rawAnalysisRef = useRef<Map<string, { psfsw: number | null; fwhm: number | null }>>(new Map())
+  // All import records, prefetched when files are selected so the chart's
+  // historical band can be matched synchronously the instant Analyze is clicked
+  // — fetching them behind the click raced the chart's first mount, so the band
+  // was missing on the first analyze and only appeared on re-analyze.
+  const importedRecordsRef = useRef<ImportedRecord[] | null>(null)
 
   // Closing the panel stops a running analysis instead of letting it keep
   // hammering the worker / server in the background.
@@ -248,6 +254,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setTargetOverrides({}); setTargetAliasTo({}); setIgnoredTargets([])
     setFilterOverrides({}); setFilterAliasTo({}); setIgnoredFilters([])
     setSnrResults(new Map()); setSnrThreshold(null); setSnrHistorical([]); setFwhmHistorical([])
+
+    // Prefetch the import records now so the historical band is ready to match
+    // the moment Analyze is clicked (no fetch racing the chart's first mount).
+    try { importedRecordsRef.current = await getImportedRecords() } catch { importedRecordsRef.current = [] }
 
     let alreadyImported: string[] = []
     try { alreadyImported = await checkImported(all.map(f => f.name)) } catch {}
@@ -427,6 +437,44 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     (preview ?? []).flatMap(s => s.entries.filter(e => e.canImport)).flatMap(e => e.fileNames)
   )]
 
+  // Previously-analyzed subs (persisted psfsw/fwhm, different files) whose parsed
+  // target+filter matches an importable entry in this batch — the chart's
+  // historical context. Matched synchronously from the prefetched records so the
+  // band is available immediately when analysis starts. Returns raw values,
+  // time-ordered; PSFSW is normalized against a median by the caller.
+  const matchHistoricalRecords = (): { psfsw: number | null; fwhm: number | null; time: number }[] => {
+    const records = importedRecordsRef.current
+    if (!records?.length) return []
+    const analyzedSet = new Set(importableFileNames)
+    const pairSet = new Set(
+      (preview ?? []).flatMap(s => s.entries
+        .filter(e => e.canImport && e.objectId != null && e.filterId != null)
+        .map(e => `${e.objectId}|${e.filterId}`))
+    )
+    if (!pairSet.size) return []
+    // Try every configured pattern per record, not just the first that matches: a
+    // greedy pattern can swallow a token like a rotation angle ("nessy_270deg")
+    // into the target and miss the real object, while a more specific pattern
+    // parses it correctly. A record counts if any pattern resolves it to a pair.
+    const regexes = patterns.map(patternToRegex)
+    const matched: { psfsw: number | null; fwhm: number | null; time: number }[] = []
+    for (const rec of records) {
+      if ((rec.psfsw == null && rec.fwhm == null) || analyzedSet.has(rec.filename)) continue
+      for (const rx of regexes) {
+        const parsed = parseFile(rec.filename, rx)
+        if (!parsed) continue
+        const obj = matchObject(parsed.target, objects)
+        const filt = matchFilter(parsed.filter, filters)
+        if (obj && filt && pairSet.has(`${obj.id}|${filt.id}`)) {
+          matched.push({ psfsw: rec.psfsw, fwhm: rec.fwhm, time: parsed.datetime.getTime() })
+          break
+        }
+      }
+    }
+    matched.sort((a, b) => a.time - b.time)
+    return matched
+  }
+
   const handleAnalyzeSnr = async () => {
     if (!importableFileNames.length) return
     setAnalyzing(true); setError(null)
@@ -476,37 +524,15 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     try {
       setImportProgress({ step: 'Analyzing frame quality…', current: 0, total: importableFileNames.length })
 
-      // Gather the historical spread up front: PSFSW + FWHM of previously-analyzed
+      // Match the historical spread up front: PSFSW + FWHM of previously-analyzed
       // subs (different files) whose parsed target+filter matches an entry in
-      // this batch. Fetched before the loop so the context can render live.
+      // this batch. The records were prefetched on file selection, so this is a
+      // synchronous match with no fetch racing the chart's first mount — the
+      // band is present on the very first analyze, not only on re-analyze. The
+      // prefetch may not have run (or may have failed), so fetch as a fallback.
       try {
-        const analyzedSet = new Set(importableFileNames)
-        const pairSet = new Set(
-          (preview ?? []).flatMap(s => s.entries
-            .filter(e => e.canImport && e.objectId != null && e.filterId != null)
-            .map(e => `${e.objectId}|${e.filterId}`))
-        )
-        // Try every configured pattern per record, not just the first that
-        // matches: a greedy pattern can swallow a token like a rotation angle
-        // ("nessy_270deg") into the target and miss the real object, while a
-        // more specific pattern parses it correctly. A record counts if any
-        // pattern resolves it to an object+filter pair in this batch.
-        const regexes = patterns.map(patternToRegex)
-        const records = await getImportedRecords()
-        for (const rec of records) {
-          if ((rec.psfsw == null && rec.fwhm == null) || analyzedSet.has(rec.filename)) continue
-          for (const rx of regexes) {
-            const parsed = parseFile(rec.filename, rx)
-            if (!parsed) continue
-            const obj = matchObject(parsed.target, objects)
-            const filt = matchFilter(parsed.filter, filters)
-            if (obj && filt && pairSet.has(`${obj.id}|${filt.id}`)) {
-              historicalMatched.push({ psfsw: rec.psfsw, fwhm: rec.fwhm, time: parsed.datetime.getTime() })
-              break
-            }
-          }
-        }
-        historicalMatched.sort((a, b) => a.time - b.time)
+        if (importedRecordsRef.current == null) importedRecordsRef.current = await getImportedRecords()
+        historicalMatched = matchHistoricalRecords()
         // Render the band straight away, before the first new frame is measured,
         // so it never trails the live dots. PSFSW is normalized by the
         // historical's own median as a stand-in; commit() re-normalizes by the
