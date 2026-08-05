@@ -1045,6 +1045,20 @@ body {
   margin-bottom: 0.25rem;
 }
 
+/* Quality header: label + selects on one row, stats on their own line. The
+   stats sentence is long enough to squeeze the selects and run into the copy
+   below when it shares the row. */
+.import-session-header--quality {
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.import-session-header--quality .import-quality-stats {
+  flex-basis: 100%;
+  line-height: 1.5;
+}
+
 .snr-chart {
   width: 100%;
 }
@@ -1110,6 +1124,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+/* Dialogs with tables/charts inside — `width` above is fixed, so an inline
+   max-width alone has no effect and the content overflows. */
+.modal-dialog--wide {
+  width: min(60rem, 95vw);
 }
 
 .modal-dialog form {
@@ -1520,7 +1540,7 @@ body {
   top: 0;
   /* Brighter than the cell background, but dimmer and far less saturated than
      the used-time column — the unused ("missed") darkness. */
-  background: #383650;
+  background: #282640;
   border-radius: 6px 6px 0 0;
   pointer-events: none;
   z-index: 0;

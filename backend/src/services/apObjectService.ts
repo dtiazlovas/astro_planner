@@ -124,11 +124,24 @@ export const updateApObject = async (id: number, data: UpdateApObjectDto): Promi
   return getApObjectById(id)
 }
 
+// Deleting an object means taking down everything hanging off it, innermost
+// first — with foreign keys on, anything left pointing at a row makes its
+// delete fail. Two chains reference the object: its session entries (which
+// carry import records and plan links) and its plans (which carry details and
+// plan links of their own).
 export const deleteApObject = async (id: number): Promise<boolean> => {
   const db = connectToDatabase()
-  db.prepare('DELETE FROM ap_object_session WHERE object = @id').run({ id })
-  const { changes } = db.prepare('DELETE FROM ap_object WHERE id = @id').run({ id })
-  return changes > 0
+  return db.transaction((): boolean => {
+    const entries = 'SELECT id FROM ap_object_session WHERE object = @id'
+    const plans = 'SELECT id FROM ap_plan WHERE object = @id'
+    db.prepare(`DELETE FROM ap_imported WHERE object_session_id IN (${entries})`).run({ id })
+    db.prepare(`DELETE FROM ap_plan_session WHERE session IN (${entries}) OR planid IN (${plans})`).run({ id })
+    db.prepare(`DELETE FROM ap_plan_details WHERE planid IN (${plans})`).run({ id })
+    db.prepare('DELETE FROM ap_object_session WHERE object = @id').run({ id })
+    db.prepare('DELETE FROM ap_plan WHERE object = @id').run({ id })
+    const { changes } = db.prepare('DELETE FROM ap_object WHERE id = @id').run({ id })
+    return changes > 0
+  })()
 }
 
 export const reorderAllApObjects = async (ids: number[]): Promise<void> => {

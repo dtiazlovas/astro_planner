@@ -10,15 +10,48 @@ export const checkImported = async (names: string[]): Promise<string[]> => {
   return (db.prepare(`SELECT filename FROM ap_imported WHERE filename IN (${placeholders})`).all(params) as { filename: string }[]).map(r => r.filename)
 }
 
-export const recordImported = async (names: string[], sessionId: number): Promise<void> => {
+// `objectSessionId` ties each file to the session entry it was imported under,
+// so deleting that entry can take its records with it. Re-recording a known
+// file re-points it rather than leaving the old link in place.
+export const recordImported = async (names: string[], sessionId: number, objectSessionId: number | null = null): Promise<void> => {
   if (!names.length) return
   const db = connectToDatabase()
-  const stmt = db.prepare('INSERT OR IGNORE INTO ap_imported (filename, session_id) VALUES (@filename, @sessionId)')
-  db.transaction((ns: string[]) => { for (const filename of ns) stmt.run({ filename, sessionId }) })(names)
+  const insert = db.prepare('INSERT OR IGNORE INTO ap_imported (filename, session_id, object_session_id) VALUES (@filename, @sessionId, @objectSessionId)')
+  const update = db.prepare('UPDATE ap_imported SET session_id = @sessionId, object_session_id = @objectSessionId WHERE filename = @filename')
+  db.transaction((ns: string[]) => {
+    for (const filename of ns) {
+      const params = { filename, sessionId, objectSessionId }
+      if (insert.run(params).changes === 0) update.run(params)
+    }
+  })(names)
 }
 
-export const getAllImported = async (): Promise<{ filename: string; session_id: number | null; psfsw: number | null; fwhm: number | null }[]> => {
-  return connectToDatabase().prepare('SELECT filename, session_id, psfsw, fwhm FROM ap_imported').all() as { filename: string; session_id: number | null; psfsw: number | null; fwhm: number | null }[]
+// Points records at an existing entry, taking the session from the entry itself
+// so the two can't disagree. Used by the object file sync to attribute records
+// predating the link, and to move them off entries it is about to merge away.
+export const relinkImported = async (names: string[], objectSessionId: number): Promise<number> => {
+  if (!names.length) return 0
+  const db = connectToDatabase()
+  const entry = db.prepare('SELECT session FROM ap_object_session WHERE id = @id').get({ id: objectSessionId }) as { session: number } | undefined
+  if (!entry) return 0
+  const stmt = db.prepare('UPDATE ap_imported SET object_session_id = @objectSessionId, session_id = @sessionId WHERE filename = @filename')
+  let relinked = 0
+  db.transaction((ns: string[]) => {
+    for (const filename of ns) relinked += stmt.run({ filename, objectSessionId, sessionId: entry.session }).changes
+  })(names)
+  return relinked
+}
+
+export interface ImportedRow {
+  filename: string
+  session_id: number | null
+  object_session_id: number | null
+  psfsw: number | null
+  fwhm: number | null
+}
+
+export const getAllImported = async (): Promise<ImportedRow[]> => {
+  return connectToDatabase().prepare('SELECT filename, session_id, object_session_id, psfsw, fwhm FROM ap_imported').all() as ImportedRow[]
 }
 
 // Persists per-file quality analysis (raw PSFSW + FWHM) on existing records.

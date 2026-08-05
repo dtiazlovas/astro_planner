@@ -103,6 +103,47 @@ function initSchema(database: Database.Database): void {
   // Migrate: persist per-file quality analysis (raw PSFSW + FWHM in pixels)
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN psfsw REAL') } catch {}
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN fwhm REAL') } catch {}
+  // Migrate: link each import record to the session entry it was imported
+  // under. session_id alone can't say which entry of a multi-filter session a
+  // file belongs to, so deleting one entry couldn't take its records with it.
+  // No ON DELETE CASCADE: entry deletion is handled explicitly, and a cascade
+  // would silently drop records (and their saved analysis) when a file sync
+  // merges duplicate entries.
+  try { database.exec('ALTER TABLE ap_imported ADD COLUMN object_session_id INTEGER REFERENCES ap_object_session(id)') } catch {}
+  // One row per file. Without this, `INSERT OR IGNORE` was a plain insert and
+  // a file could sit in two rows — the entry link is only authoritative if a
+  // second, unlinked row for the same file can't exist. Fold any duplicates
+  // into the newest row first, keeping whatever the older ones knew.
+  try {
+    const dupes = (database.prepare(
+      'SELECT COUNT(*) AS c FROM (SELECT filename FROM ap_imported GROUP BY filename HAVING COUNT(*) > 1)'
+    ).get() as { c: number }).c
+    if (dupes > 0) {
+      database.transaction(() => {
+        database.exec(`
+          UPDATE ap_imported AS t SET
+            psfsw      = COALESCE(t.psfsw,      (SELECT MAX(o.psfsw)      FROM ap_imported o WHERE o.filename = t.filename)),
+            fwhm       = COALESCE(t.fwhm,       (SELECT MAX(o.fwhm)       FROM ap_imported o WHERE o.filename = t.filename)),
+            session_id = COALESCE(t.session_id, (SELECT MAX(o.session_id) FROM ap_imported o WHERE o.filename = t.filename))
+        `)
+        database.exec('DELETE FROM ap_imported WHERE rowid NOT IN (SELECT MAX(rowid) FROM ap_imported GROUP BY filename)')
+      })()
+    }
+    database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_imported_filename ON ap_imported(filename)')
+  } catch {}
+  // Backfill the link where it is unambiguous: a session with exactly one entry
+  // leaves no doubt which entry its records belong to. Records of multi-entry
+  // sessions need the filename patterns to attribute, so an object file sync
+  // links those as it re-attributes files to entries.
+  try {
+    database.exec(`
+      UPDATE ap_imported SET object_session_id = (
+        SELECT os.id FROM ap_object_session os WHERE os.session = ap_imported.session_id
+      )
+      WHERE object_session_id IS NULL AND session_id IS NOT NULL
+        AND (SELECT COUNT(*) FROM ap_object_session os WHERE os.session = ap_imported.session_id) = 1
+    `)
+  } catch {}
   for (const [name, folder] of [['Luminance','Lum'],['Red','R'],['Green','G'],['Blue','B'],['H-alpha','Ha'],['Oxygen','Oiii'],['Sulphur','Sii']]) {
     database.prepare('UPDATE ap_filter SET folder = @folder WHERE name = @name AND folder IS NULL').run({ folder, name })
   }

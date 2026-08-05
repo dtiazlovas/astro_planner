@@ -1,6 +1,6 @@
 import {
   getObjectSessionsForObject, updateObjectSession, deleteObjectSession, createObjectSession,
-  createSession, recordImported, removeImported, getPlans, setPlanSession,
+  createSession, recordImported, removeImported, relinkImported, getPlans, setPlanSession,
   type ImportedRecord,
 } from '../api'
 import { parseFile, patternToRegex, matchObject, matchFilter, matchExposure, dateKey, toDatetimeLocal, type ParsedFile } from './filePattern'
@@ -60,6 +60,7 @@ export interface SyncChange {
   diskFiles: number             // unique subs on disk for this slot
   addFiles: string[]            // unregistered files → import records created
   missingFiles: string[]        // stale import records → removed
+  linkFiles: string[]           // record names of this slot's registered files
   entryIds: number[]            // existing session entries for this slot
   currentFrames: number         // sum over those entries
   newFrames: number             // = diskFiles
@@ -72,6 +73,12 @@ export interface SyncScanResult {
   missingCount: number    // recorded but no longer present
   addCount: number        // present but not recorded
   changes: SyncChange[]
+  // Records of already-correct slots that aren't linked to their session entry
+  // — imported before the link existed, or by a build that only knew the
+  // session. Applying the sync attributes them, so deleting that entry can
+  // take them with it. Only emitted where the slot has exactly one entry.
+  relinks: { objectSessionId: number; names: string[] }[]
+  relinkCount: number
   unadjustable: string[]  // stale records that fit no slot — removed, stats untouched
   unattributable: number  // present files matching no pattern/this object (e.g. masters) — ignored
   // Unique attributable subs on disk (one file per sub), with the capture time
@@ -131,7 +138,6 @@ export async function scanObjectFiles(
       s = t
     }
   }
-  const isRegistered = (diskStem: string): boolean => findRecord(diskStem) !== null
 
   // Slot bookkeeping: one slot per (observing date, filter, exposure).
   interface Slot {
@@ -143,6 +149,7 @@ export async function scanObjectFiles(
     disk: number
     addFiles: string[]
     missingFiles: string[]
+    linkFiles: string[]
     earliest: Date | null
   }
   const slots = new Map<string, Slot>()
@@ -150,7 +157,7 @@ export async function scanObjectFiles(
     const key = `${dk}|${filterId}|${exposureId}`
     let s = slots.get(key)
     if (!s) {
-      s = { dateKey: dk, filterId, filterName, exposureId, duration, disk: 0, addFiles: [], missingFiles: [], earliest: null }
+      s = { dateKey: dk, filterId, filterName, exposureId, duration, disk: 0, addFiles: [], missingFiles: [], linkFiles: [], earliest: null }
       slots.set(key, s)
     }
     return s
@@ -176,7 +183,10 @@ export async function scanObjectFiles(
     const slot = slotFor(dateKey(p.datetime, dayStartHour), filt.id, filt.name ?? p.filter, exp.id, exp.duration)
     slot.disk++
     if (slot.earliest === null || p.datetime < slot.earliest) slot.earliest = p.datetime
-    if (!isRegistered(stem(fileName))) slot.addFiles.push(fileName)
+    // The record's own name, not the disk name: processing appends suffixes and
+    // changes the extension, so the two often differ.
+    if (rec) slot.linkFiles.push(rec.filename)
+    else slot.addFiles.push(fileName)
   }
 
   // ── 2. Import records: find stale ones, attributed by filename date ───────
@@ -221,11 +231,22 @@ export async function scanObjectFiles(
   }
 
   // ── 4. Emit a change for every slot that differs from disk ────────────────
+  const recordByName = new Map(imported.map(r => [r.filename, r]))
   const changes: SyncChange[] = []
+  const relinks: SyncScanResult['relinks'] = []
   for (const [key, slot] of slots) {
     const rows = entriesByKey.get(key) ?? []
     const currentFrames = rows.reduce((n, r) => n + r.frames, 0)
-    if (currentFrames === slot.disk && slot.addFiles.length === 0 && slot.missingFiles.length === 0) continue
+    if (currentFrames === slot.disk && slot.addFiles.length === 0 && slot.missingFiles.length === 0) {
+      // Counts already agree, but the records may still not name the entry they
+      // belong to. Attributable only when the slot has a single entry — with
+      // several, there is no telling which of them a file was imported under.
+      if (rows.length === 1) {
+        const names = slot.linkFiles.filter(n => recordByName.get(n)?.object_session_id !== rows[0].id)
+        if (names.length) relinks.push({ objectSessionId: rows[0].id, names })
+      }
+      continue
+    }
     // Prefer the entry's own session; else this rig's session for the date.
     const session = (rows.length ? sessionById.get(rows[0].session) : undefined) ?? sessionByDate.get(slot.dateKey) ?? null
     const dk = slot.dateKey
@@ -240,6 +261,7 @@ export async function scanObjectFiles(
       diskFiles: slot.disk,
       addFiles: slot.addFiles,
       missingFiles: slot.missingFiles,
+      linkFiles: slot.linkFiles,
       entryIds: rows.map(r => r.id),
       currentFrames,
       newFrames: slot.disk,
@@ -254,6 +276,8 @@ export async function scanObjectFiles(
     missingCount,
     addCount: changes.reduce((n, c) => n + c.addFiles.length, 0),
     changes,
+    relinks,
+    relinkCount: relinks.reduce((n, r) => n + r.names.length, 0),
     unadjustable,
     unattributable,
     analyzableFiles,
@@ -266,6 +290,7 @@ export interface SyncApplyResult {
   removedRecords: number
   addedFiles: number
   createdSessions: number
+  relinkedRecords: number
 }
 
 // Each change is applied independently, and import records are only removed
@@ -276,6 +301,7 @@ export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equip
   let failedGroups = 0
   let addedFiles = 0
   let createdSessions = 0
+  let relinkedRecords = 0
 
   // New entries join the object's single active plan, as import does.
   let planId: number | null = null
@@ -301,6 +327,25 @@ export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equip
         createdSessions++
       }
 
+      // The entry this slot's files end up under: the first existing one, or a
+      // new one. Deleting an entry now deletes its import records, so the
+      // records are moved onto the survivor *before* any entry is removed —
+      // otherwise merging duplicate entries would destroy the records (and the
+      // saved quality analysis) of every entry but the first.
+      let entryId: number | null = null
+      if (c.newFrames > 0) {
+        if (c.entryIds.length > 0) {
+          entryId = c.entryIds[0]
+        } else if (sessionId != null) {
+          const created = await createObjectSession({ session: sessionId, object: obj.id, filter: c.filterId, exposure: c.exposureId, frames: c.newFrames })
+          entryId = created.id
+          if (planId) { try { await setPlanSession({ session: created.id, planid: planId }) } catch {} }
+        }
+      }
+      if (entryId != null && c.linkFiles.length) {
+        relinkedRecords += (await relinkImported(c.linkFiles, entryId)).relinked
+      }
+
       if (c.entryIds.length > 0) {
         if (c.newFrames > 0) {
           if (c.currentFrames !== c.newFrames || c.entryIds.length > 1) {
@@ -308,15 +353,14 @@ export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equip
             for (const extra of c.entryIds.slice(1)) await deleteObjectSession(extra)
           }
         } else {
+          // No files left for this slot — the entry goes, and with it the
+          // records of the subs that are no longer on disk.
           for (const id of c.entryIds) await deleteObjectSession(id)
         }
-      } else if (c.newFrames > 0 && sessionId != null) {
-        const created = await createObjectSession({ session: sessionId, object: obj.id, filter: c.filterId, exposure: c.exposureId, frames: c.newFrames })
-        if (planId) { try { await setPlanSession({ session: created.id, planid: planId }) } catch {} }
       }
 
       if (c.addFiles.length && sessionId != null) {
-        await recordImported(c.addFiles, sessionId)
+        await recordImported(c.addFiles, sessionId, entryId)
         addedFiles += c.addFiles.length
       }
       removeNames.push(...c.missingFiles)
@@ -326,7 +370,14 @@ export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equip
     }
   }
 
+  // Slots that needed no recount can still hold records that predate the entry
+  // link; attributing them is what lets a later entry deletion clean up after
+  // itself. Failures here don't fail the sync — the next one retries.
+  for (const r of scan.relinks) {
+    try { relinkedRecords += (await relinkImported(r.names, r.objectSessionId)).relinked } catch {}
+  }
+
   let removedRecords = 0
   if (removeNames.length) removedRecords = (await removeImported(removeNames)).removed
-  return { adjusted, failedGroups, removedRecords, addedFiles, createdSessions }
+  return { adjusted, failedGroups, removedRecords, addedFiles, createdSessions, relinkedRecords }
 }

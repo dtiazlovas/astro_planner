@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, Fragment } from 'react'
-import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend, saveImportedAnalysis } from '../api'
+import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend, saveImportedAnalysis, openFitsFile } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
 import { fetchPatterns, fetchImportFileMode, fetchDayStartHour, type ImportFileMode } from '../utils/filePattern'
 import { ensureImagesFolderAccess, listObjectFolderFiles, getObjectFolderFiles, deleteObjectFolderFiles } from '../utils/imagesFolder'
@@ -25,6 +25,9 @@ const fmtDuration = (s: number): string => {
 }
 
 const fmtMinsH = (minutes: number): string => `${(minutes / 60).toFixed(1)}h`
+
+// Stand-in for a filter with nothing analyzed yet — never written to.
+const NO_RESULTS: Map<string, FitsAnalysis> = new Map()
 
 export default function ObjectsPage() {
   const { activeId } = useEquipment()
@@ -59,8 +62,16 @@ export default function ObjectsPage() {
   // Both metrics are measured in one pass; this only selects which one is
   // shown and culled against. PSFSW: higher is better; FWHM: lower is better.
   const [qualityMetric, setQualityMetric] = useState<'psfsw' | 'fwhm'>('psfsw')
-  const [qualityResults, setQualityResults] = useState<Map<string, FitsAnalysis>>(new Map())
-  const [qualityThreshold, setQualityThreshold] = useState<number | null>(null)
+  // Results and limit are held per filter, not per pane: switching the filter
+  // selector must not throw away what the pane is showing, and switching back
+  // has to restore that filter's own measurements and limit unchanged.
+  const [qualityResultsByFilter, setQualityResultsByFilter] = useState<Map<number, Map<string, FitsAnalysis>>>(new Map())
+  const [qualityThresholdByFilter, setQualityThresholdByFilter] = useState<Map<number, number>>(new Map())
+  // Filters actually measured in this dialog — a filter seeded from saved
+  // analysis alone hasn't been, so its button still offers the cheap pass.
+  const [qualityMeasuredFilters, setQualityMeasuredFilters] = useState<Set<number>>(new Set())
+  // Once the first analysis opens the chart it stays open across filter changes.
+  const [qualityPaneOpen, setQualityPaneOpen] = useState(false)
   const [qualityAnalyzing, setQualityAnalyzing] = useState(false)
   const [qualityProgress, setQualityProgress] = useState<{ current: number; total: number } | null>(null)
   const [qualityDeleting, setQualityDeleting] = useState(false)
@@ -111,7 +122,9 @@ export default function ObjectsPage() {
     if (!obj.folder) return
     setSyncingId(obj.id); setError(null)
     if (!keepQuality) {
-      setQualityResults(new Map()); setQualityThreshold(null); setConfirmDeleteSubs(false); setQualityFilterId(null)
+      setQualityResultsByFilter(new Map()); setQualityThresholdByFilter(new Map())
+      setQualityMeasuredFilters(new Set()); setQualityPaneOpen(false)
+      setConfirmDeleteSubs(false); setQualityFilterId(null)
     }
     try {
       let present: string[]
@@ -177,6 +190,28 @@ export default function ObjectsPage() {
     return metric === 'psfsw' ? Math.min(...vals) : Math.max(...vals)
   }
 
+  // What the pane shows: the active filter's slice of the per-filter state.
+  const qualityResults = (activeQualityFilterId != null ? qualityResultsByFilter.get(activeQualityFilterId) : null) ?? NO_RESULTS
+  const qualityThreshold = (activeQualityFilterId != null ? qualityThresholdByFilter.get(activeQualityFilterId) : null) ?? null
+  const setQualityThreshold = (v: number) => {
+    if (activeQualityFilterId != null) setQualityThresholdByFilter(prev => new Map(prev).set(activeQualityFilterId, v))
+  }
+
+  // Saved analysis for one filter's subs, normalized to unit median exactly as
+  // a fresh run is — enough to keep the chart populated when the filter is
+  // switched, without measuring anything.
+  const storedResultsFor = (filterId: number): Map<string, FitsAnalysis> => {
+    const files = (syncPreview?.scan.analyzableFiles ?? []).filter(f => f.filterId === filterId && f.storedPsfsw != null)
+    const weights = files.map(f => f.storedPsfsw!).filter(v => v > 0).sort((a, b) => a - b)
+    const median = weights.length ? weights[weights.length >> 1] : 0
+    return new Map(files.map(f => [f.name, {
+      fileName: f.name,
+      snr: median > 0 ? Math.round((f.storedPsfsw! / median) * 1000) / 1000 : f.storedPsfsw,
+      fwhm: f.storedFwhm,
+      dateObs: null, width: null, height: null,
+    }]))
+  }
+
   const qualityTimeByName = new Map((syncPreview?.scan.analyzableFiles ?? []).map(f => [f.name, f.time]))
   const qualityPoints: SnrPoint[] = [...qualityResults.values()]
     .filter(r => metricValue(r) != null)
@@ -189,12 +224,30 @@ export default function ObjectsPage() {
 
   const handleQualityFilterChange = (id: number) => {
     setQualityFilterId(id)
-    setQualityResults(new Map()); setQualityThreshold(null); setConfirmDeleteSubs(false)
+    setConfirmDeleteSubs(false)
+    // The pane follows the selector instead of collapsing: the filter being
+    // left keeps its own results, and the one arriving shows whatever this
+    // dialog already measured for it, else its saved analysis.
+    if (qualityPaneOpen && !qualityResultsByFilter.has(id)) {
+      const seeded = storedResultsFor(id)
+      if (seeded.size) {
+        setQualityResultsByFilter(prev => new Map(prev).set(id, seeded))
+        const t = defaultThreshold(seeded.values(), qualityMetric)
+        if (t != null) setQualityThresholdByFilter(prev => new Map(prev).set(id, t))
+      }
+    }
   }
 
   const handleQualityMetricChange = (metric: 'psfsw' | 'fwhm') => {
     setQualityMetric(metric)
-    setQualityThreshold(defaultThreshold(qualityResults.values(), metric))
+    // Every filter's limit is metric-specific — a PSFSW limit is meaningless on
+    // an FWHM axis — so reset them all, not just the one on screen.
+    const next = new Map<number, number>()
+    for (const [id, results] of qualityResultsByFilter) {
+      const t = defaultThreshold(results.values(), metric)
+      if (t != null) next.set(id, t)
+    }
+    setQualityThresholdByFilter(next)
     setConfirmDeleteSubs(false)
   }
 
@@ -202,7 +255,10 @@ export default function ObjectsPage() {
   // only files without a saved analysis are measured (and then persisted).
   const handleAnalyzeQuality = async (force: boolean) => {
     if (!syncPreview?.obj.folder) return
-    if (!qualityFilterFiles.length) return
+    if (!qualityFilterFiles.length || activeQualityFilterId == null) return
+    // The filter can't change mid-run (its selector is disabled while
+    // analyzing), but the results are filed under the one we started on.
+    const filterId = activeQualityFilterId
     setQualityAnalyzing(true); setError(null); setConfirmDeleteSubs(false)
     const ctrl = new AbortController()
     qualityAbortRef.current = ctrl
@@ -252,8 +308,15 @@ export default function ObjectsPage() {
         const normed = median > 0
           ? all.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
           : all
-        setQualityResults(new Map(normed.map(r => [r.fileName, r])))
-        setQualityThreshold(defaultThreshold(normed, qualityMetric))
+        setQualityResultsByFilter(prev => new Map(prev).set(filterId, new Map(normed.map(r => [r.fileName, r]))))
+        const t = defaultThreshold(normed, qualityMetric)
+        setQualityThresholdByFilter(prev => {
+          const next = new Map(prev)
+          if (t != null) next.set(filterId, t); else next.delete(filterId)
+          return next
+        })
+        setQualityMeasuredFilters(prev => new Set(prev).add(filterId))
+        setQualityPaneOpen(true)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Quality analysis failed')
@@ -276,10 +339,13 @@ export default function ObjectsPage() {
         stats = await deleteObjectFolderFiles(dir, syncPreview.obj.folder, cullFiles)
       }
       if (stats.failed > 0) setError(`${stats.failed} file${stats.failed !== 1 ? 's' : ''} could not be deleted`)
-      setQualityResults(prev => {
-        const m = new Map(prev)
+      const filterId = activeQualityFilterId
+      if (filterId != null) setQualityResultsByFilter(prev => {
+        const results = prev.get(filterId)
+        if (!results) return prev
+        const m = new Map(results)
         for (const n of cullFiles) m.delete(n)
-        return m
+        return new Map(prev).set(filterId, m)
       })
       setConfirmDeleteSubs(false)
       // Re-scan so the DB cleanup for the deleted subs lands in this preview.
@@ -714,7 +780,7 @@ export default function ObjectsPage() {
 
       {syncPreview !== null && (
         <div className="modal-backdrop" onClick={closeSyncPreview}>
-          <div className="modal-dialog" onClick={e => e.stopPropagation()} style={{ maxWidth: '42rem' }}>
+          <div className="modal-dialog modal-dialog--wide" onClick={e => e.stopPropagation()}>
             <div className="modal-dialog__header">
               <span className="modal-dialog__title">Sync files — {syncPreview.obj.name}</span>
               <button className="btn btn-ghost" onClick={closeSyncPreview}>✕</button>
@@ -725,7 +791,14 @@ export default function ObjectsPage() {
               {' '}<span title="Files are matched by name with the extension ignored">(extensions ignored)</span>
             </p>
             {syncPreview.scan.changes.length === 0 && syncPreview.scan.unadjustable.length === 0 ? (
-              <p style={{ color: '#4ade80', margin: 0 }}>✓ Everything in sync — session counts match the files on disk.</p>
+              <>
+                <p style={{ color: '#4ade80', margin: 0 }}>✓ Everything in sync — session counts match the files on disk.</p>
+                {syncPreview.scan.relinkCount > 0 && (
+                  <p className="cell-muted" style={{ fontSize: '0.85rem', margin: '0.5rem 0 0' }}>
+                    {syncPreview.scan.relinkCount} import record{syncPreview.scan.relinkCount !== 1 ? 's' : ''} aren't tied to their session entry yet — apply to link them, so deleting an entry also frees its subs for re-import.
+                  </p>
+                )}
+              </>
             ) : (
               <>
                 {syncPreview.scan.changes.length > 0 && (
@@ -733,36 +806,38 @@ export default function ObjectsPage() {
                     <p style={{ color: '#cbd5e1', margin: '0 0 0.5rem' }}>
                       Session entries will be set to the number of subs actually on disk:
                     </p>
-                    <table className="data-table" style={{ marginBottom: '0.75rem' }}>
-                      <thead>
-                        <tr><th>Session</th><th>Filter</th><th>Exposure</th><th>On disk</th><th>Frames</th><th></th></tr>
-                      </thead>
-                      <tbody>
-                        {syncPreview.scan.changes.map(c => (
-                          <tr key={`${c.dateKey}|${c.filterId}|${c.exposureId}`}>
-                            <td>
-                              {c.sessionName}
-                              {c.sessionId === null && <span className="type-badge" style={{ marginLeft: '0.4rem' }}>new session</span>}
-                            </td>
-                            <td><span className="type-badge">{c.filterName}</span></td>
-                            <td>{c.duration}s</td>
-                            <td>{c.diskFiles}</td>
-                            <td>
-                              {c.entryIds.length > 0 ? `${c.currentFrames} → ${c.newFrames}` : c.newFrames}
-                              {c.entryIds.length === 0 && <span className="cell-muted"> (new entry)</span>}
-                              {c.entryIds.length > 0 && c.newFrames === 0 && <span className="cell-muted"> (entry removed)</span>}
-                              {c.entryIds.length > 1 && c.newFrames > 0 && <span className="cell-muted"> (merges {c.entryIds.length} entries)</span>}
-                            </td>
-                            <td className="cell-muted" style={{ fontSize: '0.8rem' }}>
-                              {[
-                                c.addFiles.length ? `+${c.addFiles.length} file${c.addFiles.length !== 1 ? 's' : ''} registered` : null,
-                                c.missingFiles.length ? `−${c.missingFiles.length} stale record${c.missingFiles.length !== 1 ? 's' : ''}` : null,
-                              ].filter(Boolean).join(' · ')}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <div style={{ overflowX: 'auto', marginBottom: '0.75rem' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr><th>Session</th><th>Filter</th><th>Exposure</th><th>On disk</th><th>Frames</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                          {syncPreview.scan.changes.map(c => (
+                            <tr key={`${c.dateKey}|${c.filterId}|${c.exposureId}`}>
+                              <td>
+                                {c.sessionName}
+                                {c.sessionId === null && <span className="type-badge" style={{ marginLeft: '0.4rem' }}>new session</span>}
+                              </td>
+                              <td><span className="type-badge">{c.filterName}</span></td>
+                              <td>{c.duration}s</td>
+                              <td>{c.diskFiles}</td>
+                              <td>
+                                {c.entryIds.length > 0 ? `${c.currentFrames} → ${c.newFrames}` : c.newFrames}
+                                {c.entryIds.length === 0 && <span className="cell-muted"> (new entry)</span>}
+                                {c.entryIds.length > 0 && c.newFrames === 0 && <span className="cell-muted"> (entry removed)</span>}
+                                {c.entryIds.length > 1 && c.newFrames > 0 && <span className="cell-muted"> (merges {c.entryIds.length} entries)</span>}
+                              </td>
+                              <td className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                                {[
+                                  c.addFiles.length ? `+${c.addFiles.length} file${c.addFiles.length !== 1 ? 's' : ''} registered` : null,
+                                  c.missingFiles.length ? `−${c.missingFiles.length} stale record${c.missingFiles.length !== 1 ? 's' : ''}` : null,
+                                ].filter(Boolean).join(' · ')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </>
                 )}
                 {syncPreview.scan.unadjustable.length > 0 && (
@@ -795,13 +870,21 @@ export default function ObjectsPage() {
                       </option>
                     ))}
                   </select>
-                  <button className="btn btn-secondary" onClick={() => handleAnalyzeQuality(qualityResults.size > 0)}
-                    disabled={qualityAnalyzing || qualityDeleting || syncApplying || syncingId !== null || !qualityFilterFiles.length}
-                    title={qualityResults.size ? 'Measure all subs again and refresh the saved analysis' : 'Uses saved analysis where available; measures only new subs'}>
-                    {qualityAnalyzing
-                      ? `Analyzing… ${qualityProgress ? `${qualityProgress.current}/${qualityProgress.total}` : ''}`
-                      : qualityResults.size ? '↻ Re-analyze quality' : '📈 Analyze quality'}
-                  </button>
+                  {/* Force a re-measure only for a filter this dialog actually
+                      measured — one merely showing its saved analysis still
+                      gets the cheap pass. */}
+                  {(() => {
+                    const measured = activeQualityFilterId != null && qualityMeasuredFilters.has(activeQualityFilterId)
+                    return (
+                      <button className="btn btn-secondary" onClick={() => handleAnalyzeQuality(measured)}
+                        disabled={qualityAnalyzing || qualityDeleting || syncApplying || syncingId !== null || !qualityFilterFiles.length}
+                        title={measured ? 'Measure all subs again and refresh the saved analysis' : 'Uses saved analysis where available; measures only new subs'}>
+                        {qualityAnalyzing
+                          ? `Analyzing… ${qualityProgress ? `${qualityProgress.current}/${qualityProgress.total}` : ''}`
+                          : measured ? '↻ Re-analyze quality' : '📈 Analyze quality'}
+                      </button>
+                    )
+                  })()}
                   {qualityAnalyzing && (
                     <button className="btn btn-ghost" onClick={() => qualityAbortRef.current?.abort()}>■ Stop</button>
                   )}
@@ -823,14 +906,24 @@ export default function ObjectsPage() {
                     </span>
                   )}
                 </div>
-                {qualityResults.size > 0 && qualityThreshold != null && qualityPoints.length > 0 && (
+                {/* Open from the first analysis onward. A filter with nothing to
+                    plot yet shows why, rather than collapsing the pane shut. */}
+                {qualityPaneOpen && !(qualityThreshold != null && qualityPoints.length > 0) && (
+                  <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.5rem 0' }}>
+                    {qualityResults.size > 0
+                      ? `No ${qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM'} values for this filter — its subs couldn't be measured.`
+                      : `No saved analysis for this filter — analyze quality to measure its ${qualityFilterFiles.length} sub${qualityFilterFiles.length !== 1 ? 's' : ''}.`}
+                  </p>
+                )}
+                {qualityPaneOpen && qualityThreshold != null && qualityPoints.length > 0 && (
                   <>
                     <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.5rem 0' }}>
                       Drag the ▸ handle to set the limit — subs {qualityMetric === 'psfsw' ? 'below' : 'above'} it (including derived copies) are deleted from disk.
                     </p>
                     <SnrChart points={qualityPoints} threshold={qualityThreshold} onThresholdChange={setQualityThreshold}
                       metricLabel={qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM (px)'}
-                      goodDirection={qualityMetric === 'psfsw' ? 'above' : 'below'} />
+                      goodDirection={qualityMetric === 'psfsw' ? 'above' : 'below'}
+                      onOpenFile={p => openFitsFile(p.fileName)} />
                     {/* Always rendered (disabled when nothing is culled) so dragging
                         the limit across the 0-excluded boundary doesn't resize the
                         panel and jerk the handle. */}
@@ -869,11 +962,12 @@ export default function ObjectsPage() {
             )}
 
             <div className="form-actions">
-              {(syncPreview.scan.changes.length > 0 || syncPreview.scan.unadjustable.length > 0) && (
+              {(syncPreview.scan.changes.length > 0 || syncPreview.scan.unadjustable.length > 0 || syncPreview.scan.relinkCount > 0) && (
                 <button className="btn btn-primary" onClick={handleApplySync} disabled={syncApplying || syncingId !== null || qualityDeleting}>
                   {syncApplying ? 'Applying…' : `Apply ${syncPreview.scan.changes.length} change${syncPreview.scan.changes.length !== 1 ? 's' : ''}${
                     syncPreview.scan.addCount > 0 ? ` · register ${syncPreview.scan.addCount}` : ''}${
-                    syncPreview.scan.missingCount > 0 ? ` · drop ${syncPreview.scan.missingCount}` : ''}`}
+                    syncPreview.scan.missingCount > 0 ? ` · drop ${syncPreview.scan.missingCount}` : ''}${
+                    syncPreview.scan.relinkCount > 0 ? ` · link ${syncPreview.scan.relinkCount}` : ''}`}
                 </button>
               )}
               <button className="btn btn-ghost" onClick={closeSyncPreview}>
@@ -893,7 +987,9 @@ export default function ObjectsPage() {
                 <span className="modal-dialog__title">Delete object?</span>
               </div>
               <p style={{ color: '#cbd5e1', margin: 0 }}>
-                <strong style={{ color: '#e2e8f0' }}>{obj?.name}</strong> will be permanently deleted.
+                <strong style={{ color: '#e2e8f0' }}>{obj?.name}</strong> will be permanently deleted, along with its
+                session entries, plans and import records. Subs already on disk are left alone — and stop counting as
+                imported, so they can be imported again.
               </p>
               <div className="form-actions">
                 <button className="btn btn-danger" onClick={() => handleDelete(confirmingId)} disabled={deletingId === confirmingId}>

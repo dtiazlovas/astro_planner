@@ -53,9 +53,16 @@ export const updateApObjectSession = async (id: number, data: UpdateApObjectSess
   return (db.prepare(`${SELECT_JOINED} WHERE os.id = @id`).get({ id }) as ApObjectSessionRow) ?? null
 }
 
+// The entry's import records go with it, so the subs it covered stop counting
+// as imported and can be imported again. Records predating the entry link
+// (object_session_id IS NULL) can't be attributed to one entry of a session and
+// are left alone — an object file sync links those.
 export const deleteApObjectSession = async (id: number): Promise<boolean> => {
   const db = connectToDatabase()
-  db.prepare('DELETE FROM ap_plan_session WHERE session = @id').run({ id })
-  const { changes } = db.prepare('DELETE FROM ap_object_session WHERE id = @id').run({ id })
-  return changes > 0
+  return db.transaction((): boolean => {
+    db.prepare('DELETE FROM ap_plan_session WHERE session = @id').run({ id })
+    db.prepare('DELETE FROM ap_imported WHERE object_session_id = @id').run({ id })
+    const { changes } = db.prepare('DELETE FROM ap_object_session WHERE id = @id').run({ id })
+    return changes > 0
+  })()
 }

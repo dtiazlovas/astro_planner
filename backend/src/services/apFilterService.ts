@@ -18,9 +18,16 @@ export const updateApFilter = async (id: number, name: string, aliases: string |
   return db.prepare('SELECT id, name, aliases, folder FROM ap_filter WHERE id = @id').get({ id }) as ApFilter
 }
 
+// As with objects: the entries being removed are referenced by import records
+// and plan links, which have to go first or the delete fails on the foreign key.
 export const deleteApFilter = async (id: number): Promise<boolean> => {
   const db = connectToDatabase()
-  db.prepare('DELETE FROM ap_object_session WHERE filter = @id').run({ id })
-  const { changes } = db.prepare('DELETE FROM ap_filter WHERE id = @id').run({ id })
-  return changes > 0
+  return db.transaction((): boolean => {
+    const entries = 'SELECT id FROM ap_object_session WHERE filter = @id'
+    db.prepare(`DELETE FROM ap_imported WHERE object_session_id IN (${entries})`).run({ id })
+    db.prepare(`DELETE FROM ap_plan_session WHERE session IN (${entries})`).run({ id })
+    db.prepare('DELETE FROM ap_object_session WHERE filter = @id').run({ id })
+    const { changes } = db.prepare('DELETE FROM ap_filter WHERE id = @id').run({ id })
+    return changes > 0
+  })()
 }

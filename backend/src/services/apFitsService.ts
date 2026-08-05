@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { connectToDatabase } from '../db.js'
 import { buildFileIndex } from './apImportedService.js'
 
@@ -345,4 +346,91 @@ export const analyzeFitsFiles = async (fileNames: string[], normalize = true): P
     }
   }
   return results
+}
+
+// ── Opening a sub in the OS default application ─────────────────────────────
+
+export type OpenFileResult =
+  | { ok: true; path: string }
+  | { ok: false; reason: 'invalid-name' | 'no-images-folder' | 'not-found' | 'launch-failed'; detail?: string }
+
+// explorer.exe hands the file to its registered handler and always exits 1, so
+// its exit code is not a success signal — only a spawn error is.
+const openCommand = (target: string): [string, string[]] => {
+  switch (process.platform) {
+    case 'win32':  return ['explorer.exe', [target]]
+    case 'darwin': return ['open', [target]]
+    default:       return ['xdg-open', [target]]
+  }
+}
+
+const isWithin = (root: string, target: string): boolean => {
+  const rel = path.relative(root, target)
+  // path.relative gives '' for the root itself, '..'-prefixed or absolute when outside.
+  return rel === '' || (!rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel))
+}
+
+// Breadth-first walk that stops at the first match. Unlike buildFileIndex this
+// doesn't index the whole tree — the search root can be a drive root, and one
+// click shouldn't pay for a full scan of it.
+const findFileByName = async (root: string, fileName: string): Promise<string | null> => {
+  const queue = [root]
+  while (queue.length) {
+    const current = queue.shift() as string
+    let entries
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true })
+    } catch {
+      continue // unreadable dir (permissions, disconnected drive) — keep going
+    }
+    const subdirs: string[] = []
+    for (const entry of entries) {
+      if (entry.isDirectory()) subdirs.push(path.join(current, entry.name))
+      else if (entry.name === fileName) return path.join(current, entry.name)
+    }
+    queue.push(...subdirs)
+  }
+  return null
+}
+
+// Opens a single sub in whatever app the OS has registered for it. Callers pass
+// a bare file name; it is resolved the same way the analysis resolves files, so
+// only what lives under the images folder's parent tree is reachable.
+export const openFileInDefaultApp = async (fileName: string): Promise<OpenFileResult> => {
+  // Basename only — no separators, no traversal, no absolute paths from the client.
+  if (!fileName || fileName !== path.basename(fileName) || fileName === '.' || fileName === '..')
+    return { ok: false, reason: 'invalid-name' }
+
+  const db = connectToDatabase()
+  const setting = db.prepare("SELECT value FROM ap_settings WHERE name = 'images_folder'").get() as { value: string } | undefined
+  const imagesFolder = setting?.value?.trim()
+  if (!imagesFolder) return { ok: false, reason: 'no-images-folder' }
+
+  // Synced subs live inside the images folder, so look there first; import
+  // sources sit in sibling folders, which the parent scan then covers.
+  const imagesRoot = path.resolve(imagesFolder)
+  const searchRoot = path.dirname(imagesRoot)
+  const srcPath = await findFileByName(imagesRoot, fileName) ?? await findFileByName(searchRoot, fileName)
+  if (!srcPath) return { ok: false, reason: 'not-found' }
+
+  // Belt and braces: the walk starts at searchRoot, so this only trips on a symlink out.
+  const resolved = path.resolve(srcPath)
+  if (!isWithin(searchRoot, resolved)) return { ok: false, reason: 'not-found' }
+
+  const [cmd, args] = openCommand(resolved)
+  try {
+    // Detached so the viewer outlives this request; stdio ignored so a long-lived
+    // app (PixInsight, DS9) can't fill and block the pipes.
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' })
+    const failure = await new Promise<Error | null>(resolve => {
+      child.once('error', resolve)
+      // A spawn error surfaces on the next tick; anything later is the app's own business.
+      setImmediate(() => resolve(null))
+    })
+    if (failure) return { ok: false, reason: 'launch-failed', detail: failure.message }
+    child.unref()
+    return { ok: true, path: resolved }
+  } catch (err: any) {
+    return { ok: false, reason: 'launch-failed', detail: err?.message ?? 'Failed to launch viewer' }
+  }
 }

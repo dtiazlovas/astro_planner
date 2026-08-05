@@ -6,7 +6,7 @@ import {
   updateFilter, createFilter,
   checkImported, recordImported,
   getPlans, setPlanSession, createPlan, createPlanDetail,
-  analyzeFitsViaBackend, copyFilesViaBackend, saveImportedAnalysis, getImportedRecords,
+  analyzeFitsViaBackend, copyFilesViaBackend, saveImportedAnalysis, getImportedRecords, openFitsFile,
   type ImportedRecord,
 } from '../api'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
@@ -53,6 +53,18 @@ interface ImportSession {
   startTime: Date
   entries: ImportEntry[]
 }
+
+// One target+filter combination within a batch. Quality analysis is scoped to
+// these: PSFSW is normalized to the median of the group, and each group gets its
+// own approve line, so importing two targets at once can't cull one against the
+// other's signal level.
+interface QualityGroup {
+  key: string
+  label: string
+  fileNames: string[]
+}
+
+interface HistoricalRecord { psfsw: number | null; fwhm: number | null; time: number }
 
 interface Props {
   onImported: () => void
@@ -193,12 +205,14 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   // culled against. PSFSW: higher is better (normalized to median ≈ 1.0);
   // FWHM: lower is better (raw pixels).
   const [qualityMetric, setQualityMetric] = useState<'psfsw' | 'fwhm'>('psfsw')
-  // Values of previously-analyzed subs sharing this batch's target+filter
-  // (different files), time-ordered — background context for the chart.
-  // PSFSW is normalized to the live median; FWHM is raw px.
-  const [snrHistorical, setSnrHistorical] = useState<number[]>([])
-  const [fwhmHistorical, setFwhmHistorical] = useState<number[]>([])
-  const [snrThreshold, setSnrThreshold] = useState<number | null>(null)
+  // Previously-analyzed subs (different files) grouped by the target+filter they
+  // belong to, time-ordered — background context for the chart. Raw values;
+  // PSFSW is normalized against the active group's median when rendered.
+  const [historicalByGroup, setHistoricalByGroup] = useState<Map<string, HistoricalRecord[]>>(new Map())
+  // Approve line per target+filter group. A single line across groups would be
+  // meaningless: PSFSW is relative to each group's own median.
+  const [thresholds, setThresholds] = useState<Record<string, number>>({})
+  const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [showRejectedList, setShowRejectedList] = useState(false)
 
@@ -253,7 +267,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setError(null); setImportResult(null)
     setTargetOverrides({}); setTargetAliasTo({}); setIgnoredTargets([])
     setFilterOverrides({}); setFilterAliasTo({}); setIgnoredFilters([])
-    setSnrResults(new Map()); setSnrThreshold(null); setSnrHistorical([]); setFwhmHistorical([])
+    setSnrResults(new Map()); setThresholds({}); setHistoricalByGroup(new Map()); setActiveGroupKey(null)
 
     // Prefetch the import records now so the historical band is ready to match
     // the moment Analyze is clicked (no fetch racing the chart's first mount).
@@ -437,27 +451,48 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     (preview ?? []).flatMap(s => s.entries.filter(e => e.canImport)).flatMap(e => e.fileNames)
   )]
 
+  // Importable frames split by target+filter, merged across sessions and
+  // exposures. Every quality figure below is scoped to one of these.
+  const qualityGroups: QualityGroup[] = (() => {
+    const byKey = new Map<string, QualityGroup>()
+    for (const session of preview ?? []) {
+      for (const e of session.entries) {
+        if (!e.canImport || e.objectId == null || e.filterId == null) continue
+        const key = `${e.objectId}|${e.filterId}`
+        const group = byKey.get(key) ?? { key, label: `${e.objectName ?? e.target} · ${e.filterName ?? e.filter}`, fileNames: [] }
+        group.fileNames.push(...e.fileNames)
+        byKey.set(key, group)
+      }
+    }
+    for (const g of byKey.values()) g.fileNames = [...new Set(g.fileNames)]
+    return [...byKey.values()]
+  })()
+
+  const groupKeyOfFile = new Map<string, string>()
+  for (const g of qualityGroups) for (const name of g.fileNames) groupKeyOfFile.set(name, g.key)
+
+  // Falls back to the first group so a key left over from a previous batch
+  // never leaves the chart pointing at nothing.
+  const activeGroup = qualityGroups.find(g => g.key === activeGroupKey) ?? qualityGroups[0] ?? null
+  const activeThreshold = activeGroup ? thresholds[activeGroup.key] ?? null : null
+
   // Previously-analyzed subs (persisted psfsw/fwhm, different files) whose parsed
   // target+filter matches an importable entry in this batch — the chart's
   // historical context. Matched synchronously from the prefetched records so the
   // band is available immediately when analysis starts. Returns raw values,
   // time-ordered; PSFSW is normalized against a median by the caller.
-  const matchHistoricalRecords = (): { psfsw: number | null; fwhm: number | null; time: number }[] => {
+  const matchHistoricalRecords = (): Map<string, HistoricalRecord[]> => {
+    const out = new Map<string, HistoricalRecord[]>()
     const records = importedRecordsRef.current
-    if (!records?.length) return []
+    if (!records?.length) return out
     const analyzedSet = new Set(importableFileNames)
-    const pairSet = new Set(
-      (preview ?? []).flatMap(s => s.entries
-        .filter(e => e.canImport && e.objectId != null && e.filterId != null)
-        .map(e => `${e.objectId}|${e.filterId}`))
-    )
-    if (!pairSet.size) return []
+    const pairSet = new Set(qualityGroups.map(g => g.key))
+    if (!pairSet.size) return out
     // Try every configured pattern per record, not just the first that matches: a
     // greedy pattern can swallow a token like a rotation angle ("nessy_270deg")
     // into the target and miss the real object, while a more specific pattern
     // parses it correctly. A record counts if any pattern resolves it to a pair.
     const regexes = patterns.map(patternToRegex)
-    const matched: { psfsw: number | null; fwhm: number | null; time: number }[] = []
     for (const rec of records) {
       if ((rec.psfsw == null && rec.fwhm == null) || analyzedSet.has(rec.filename)) continue
       for (const rx of regexes) {
@@ -465,82 +500,81 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         if (!parsed) continue
         const obj = matchObject(parsed.target, objects)
         const filt = matchFilter(parsed.filter, filters)
-        if (obj && filt && pairSet.has(`${obj.id}|${filt.id}`)) {
-          matched.push({ psfsw: rec.psfsw, fwhm: rec.fwhm, time: parsed.datetime.getTime() })
+        const key = obj && filt ? `${obj.id}|${filt.id}` : null
+        if (key && pairSet.has(key)) {
+          const list = out.get(key)
+          const entry = { psfsw: rec.psfsw, fwhm: rec.fwhm, time: parsed.datetime.getTime() }
+          if (list) list.push(entry); else out.set(key, [entry])
           break
         }
       }
     }
-    matched.sort((a, b) => a.time - b.time)
-    return matched
+    for (const list of out.values()) list.sort((a, b) => a.time - b.time)
+    return out
   }
 
   const handleAnalyzeSnr = async () => {
     if (!importableFileNames.length) return
     setAnalyzing(true); setError(null)
-    setSnrResults(new Map()); setSnrThreshold(null); setSnrHistorical([]); setFwhmHistorical([])
+    setSnrResults(new Map()); setThresholds({}); setHistoricalByGroup(new Map())
+    setActiveGroupKey(qualityGroups[0]?.key ?? null)
     const ctrl = new AbortController()
     analyzeAbortRef.current = ctrl
 
     // Accumulated raw frames, re-normalized and pushed to the chart after each
     // batch / frame so results render live while analysis is still running.
     const raw: FitsAnalysis[] = []
-    // Historical subs matched to this batch's target+filter, time-ordered.
-    let historicalMatched: { psfsw: number | null; fwhm: number | null; time: number }[] = []
-    // Renders the historical band/dots. PSFSW is normalized by the supplied
-    // median so it shares the axis with the incoming frames; FWHM stays raw px.
-    // Called once as soon as the historical set is gathered (with the
-    // historical's own median as a stand-in) so the band never lags behind the
-    // live dots, then again from commit() with the live median.
-    const pushHistorical = (median: number) => {
-      setSnrHistorical(historicalMatched
-        .filter(h => h.psfsw != null)
-        .map(h => median > 0 ? Math.round((h.psfsw! / median) * 1000) / 1000 : h.psfsw!))
-      setFwhmHistorical(historicalMatched.filter(h => h.fwhm != null).map(h => h.fwhm!))
-    }
+    // Captured now: the groups can't change mid-analysis, and commit() would
+    // otherwise close over whatever `preview` was at render time.
+    const fileGroup = groupKeyOfFile
+
     const commit = () => {
       if (!raw.length) return
-      // Unit-median normalization of PSFSW over every frame so far (PixInsight's
-      // K). FWHM is kept raw (pixels).
-      const weights = raw.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
-      const median = weights.length ? weights[weights.length >> 1] : 0
-      const normed = median > 0
-        ? raw.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
-        : raw
-      setSnrResults(new Map(normed.map(r => [r.fileName, r])))
-      // Keep the approve line at the "approve everything" default for the active
-      // metric until analysis finishes and the user drags it.
-      if (qualityMetricRef.current === 'psfsw') {
-        const snrs = normed.map(r => r.snr).filter((v): v is number => v != null)
-        setSnrThreshold(snrs.length ? Math.min(...snrs) : null)
-      } else {
-        const fwhms = normed.map(r => r.fwhm).filter((v): v is number => v != null)
-        setSnrThreshold(fwhms.length ? Math.max(...fwhms) : null)
+      // Frames are normalized within their own target+filter group: PSFSW is
+      // relative to a median, so one median across two targets would rank a
+      // faint target's frames against a bright one's. FWHM stays raw (pixels).
+      const byGroup = new Map<string, FitsAnalysis[]>()
+      for (const r of raw) {
+        const key = fileGroup.get(r.fileName) ?? ''
+        const list = byGroup.get(key)
+        if (list) list.push(r); else byGroup.set(key, [r])
       }
-      // Historical spread, re-normalized by the live median now that frames exist.
-      pushHistorical(median)
+
+      const normedAll: FitsAnalysis[] = []
+      // Keep each approve line at its "approve everything" default until analysis
+      // finishes and the user drags it (dragging is disabled while analyzing).
+      const defaults: Record<string, number> = {}
+      for (const [key, items] of byGroup) {
+        const weights = items.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
+        const median = weights.length ? weights[weights.length >> 1] : 0
+        const normed = median > 0
+          ? items.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
+          : items
+        normedAll.push(...normed)
+        const vals = normed
+          .map(r => qualityMetricRef.current === 'psfsw' ? r.snr : r.fwhm)
+          .filter((v): v is number => v != null)
+        if (vals.length) defaults[key] = qualityMetricRef.current === 'psfsw' ? Math.min(...vals) : Math.max(...vals)
+      }
+      setSnrResults(new Map(normedAll.map(r => [r.fileName, r])))
+      setThresholds(defaults)
     }
 
     try {
       setImportProgress({ step: 'Analyzing frame quality…', current: 0, total: importableFileNames.length })
 
-      // Match the historical spread up front: PSFSW + FWHM of previously-analyzed
-      // subs (different files) whose parsed target+filter matches an entry in
-      // this batch. The records were prefetched on file selection, so this is a
-      // synchronous match with no fetch racing the chart's first mount — the
-      // band is present on the very first analyze, not only on re-analyze. The
-      // prefetch may not have run (or may have failed), so fetch as a fallback.
+      // Match the historical spread up front, per target+filter: PSFSW + FWHM of
+      // previously-analyzed subs (different files) whose parsed target+filter
+      // matches a group in this batch. The records were prefetched on file
+      // selection, so this is a synchronous match with no fetch racing the
+      // chart's first mount — the band is present on the very first analyze, not
+      // only on re-analyze. The prefetch may not have run (or may have failed),
+      // so fetch as a fallback. Rendering normalizes each group's band against
+      // that group's own median, so no median is needed here.
       try {
         if (importedRecordsRef.current == null) importedRecordsRef.current = await getImportedRecords()
-        historicalMatched = matchHistoricalRecords()
-        // Render the band straight away, before the first new frame is measured,
-        // so it never trails the live dots. PSFSW is normalized by the
-        // historical's own median as a stand-in; commit() re-normalizes by the
-        // live median once frames arrive (same target/filter, so the two medians
-        // nearly coincide — no visible jump).
-        const hpsf = historicalMatched.map(h => h.psfsw).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
-        pushHistorical(hpsf.length ? hpsf[hpsf.length >> 1] : 0)
-      } catch { historicalMatched = [] }
+        setHistoricalByGroup(matchHistoricalRecords())
+      } catch { setHistoricalByGroup(new Map()) }
 
       if (importFileMode === 'backend') {
         // Server mode: the backend locates files by name near its images
@@ -595,65 +629,118 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const metricValue = (r: FitsAnalysis): number | null => qualityMetric === 'psfsw' ? r.snr : r.fwhm
   const goodDirection: 'above' | 'below' = qualityMetric === 'psfsw' ? 'above' : 'below'
   const metricLabel = qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM (px)'
-  const historicalForMetric = qualityMetric === 'psfsw' ? snrHistorical : fwhmHistorical
 
-  const measuredPoints: SnrPoint[] = [...snrResults.values()]
+  // The chart shows one group at a time; everything below it is scoped to that
+  // group, while the import-wide totals are computed separately.
+  const activeResults = [...snrResults.values()].filter(r => groupKeyOfFile.get(r.fileName) === activeGroup?.key)
+
+  // Past subs for this group. PSFSW is normalized by the group's own raw median
+  // (snrResults already holds group-normalized values, so the raw figures come
+  // from rawAnalysisRef) to share the axis with the live frames; FWHM is raw px.
+  const historicalForMetric: number[] = (() => {
+    const records = activeGroup ? historicalByGroup.get(activeGroup.key) ?? [] : []
+    if (qualityMetric === 'fwhm') return records.map(h => h.fwhm).filter((v): v is number => v != null)
+    const raws = (activeGroup?.fileNames ?? [])
+      .map(n => rawAnalysisRef.current.get(n)?.psfsw)
+      .filter((v): v is number => v != null && v > 0)
+      .sort((a, b) => a - b)
+    // Before any frame of this group is measured, fall back to the historical
+    // set's own median so the band renders in place rather than off-scale.
+    const live = raws.length ? raws[raws.length >> 1] : 0
+    const hist = records.map(h => h.psfsw).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
+    const median = live > 0 ? live : hist.length ? hist[hist.length >> 1] : 0
+    return records
+      .filter(h => h.psfsw != null)
+      .map(h => median > 0 ? Math.round((h.psfsw! / median) * 1000) / 1000 : h.psfsw!)
+  })()
+
+  const measuredPoints: SnrPoint[] = activeResults
     .filter(r => metricValue(r) != null)
     .map(r => ({ fileName: r.fileName, snr: metricValue(r) as number, time: timeForFile(r.fileName) }))
-  // While analysis is running, seed a baseline point for every importable file
+  // While analysis is running, seed a baseline point for every file in this group
   // not yet measured so the chart lays out its full x-axis immediately and each
   // point rises in place as its value arrives.
   const pendingPoints: SnrPoint[] = analyzing
-    ? importableFileNames
+    ? (activeGroup?.fileNames ?? [])
         .filter(n => !snrResults.has(n))
         .map(n => ({ fileName: n, snr: 0, time: timeForFile(n), pending: true }))
     : []
   const snrPoints: SnrPoint[] = [...measuredPoints, ...pendingPoints].sort((a, b) => a.time - b.time)
 
   const analyzedCount = measuredPoints.length
-  const analysisErrors = [...snrResults.values()].filter(r => metricValue(r) == null).length
+  const analyzedCountAll = [...snrResults.values()].filter(r => metricValue(r) != null).length
+  const analysisErrors = activeResults.filter(r => metricValue(r) == null).length
   const avgStars = (() => {
-    const counts = [...snrResults.values()].map(r => r.stars ?? 0).filter(n => n > 0)
+    const counts = activeResults.map(r => r.stars ?? 0).filter(n => n > 0)
     return counts.length ? Math.round(counts.reduce((a, b) => a + b, 0) / counts.length) : 0
   })()
-  const rejectedFiles = snrThreshold == null ? [] : measuredPoints
-    .filter(p => goodDirection === 'above' ? p.snr < snrThreshold : p.snr > snrThreshold)
-    .map(p => p.fileName)
-  const rejectedCount = rejectedFiles.length
 
-  // A file is approved if we couldn't measure it (unknown → keep) or it clears the line.
+  // A file is approved if we couldn't measure it (unknown → keep) or it clears
+  // the approve line of its own group.
   const isApproved = (fileName: string): boolean => {
-    if (snrThreshold == null) return true
+    const key = groupKeyOfFile.get(fileName)
+    const threshold = key != null ? thresholds[key] : undefined
+    if (threshold == null) return true
     const r = snrResults.get(fileName)
     const v = r ? metricValue(r) : null
     if (v == null) return true
-    return goodDirection === 'above' ? v >= snrThreshold : v <= snrThreshold
+    return goodDirection === 'above' ? v >= threshold : v <= threshold
   }
 
-  // Reset the approve line to "keep everything" for the newly selected metric.
+  const rejectedFiles = measuredPoints.filter(p => !isApproved(p.fileName)).map(p => p.fileName)
+  const rejectedCount = rejectedFiles.length
+  // Every group's own line applied — this is what the import will actually skip.
+  const rejectedCountAll = [...snrResults.values()].filter(r => metricValue(r) != null && !isApproved(r.fileName)).length
+
+  // Reset every group's approve line to "keep everything" for the newly selected
+  // metric — a PSFSW line means nothing once the axis is FWHM.
   const handleMetricChange = (m: 'psfsw' | 'fwhm') => {
     qualityMetricRef.current = m
     setQualityMetric(m)
     setShowRejectedList(false)
-    const vals = [...snrResults.values()].map(r => m === 'psfsw' ? r.snr : r.fwhm).filter((v): v is number => v != null)
-    setSnrThreshold(vals.length ? (m === 'psfsw' ? Math.min(...vals) : Math.max(...vals)) : null)
+    const byGroup = new Map<string, number[]>()
+    for (const r of snrResults.values()) {
+      const key = groupKeyOfFile.get(r.fileName)
+      const v = m === 'psfsw' ? r.snr : r.fwhm
+      if (key == null || v == null) continue
+      const list = byGroup.get(key)
+      if (list) list.push(v); else byGroup.set(key, [v])
+    }
+    const next: Record<string, number> = {}
+    for (const [key, vals] of byGroup) next[key] = m === 'psfsw' ? Math.min(...vals) : Math.max(...vals)
+    setThresholds(next)
   }
 
   // ── import ───────────────────────────────────────────────────
-  const importableCount = preview?.flatMap(s => s.entries).filter(e => e.canImport).length ?? 0
-  const importableSessions = preview?.filter(s => s.entries.some(e => e.canImport)) ?? []
+  // Frames an entry contributes once the approve line is applied — what the
+  // import actually writes, and what the preview shows.
+  const approvedFrames = (entry: ImportEntry): number => entry.fileNames.filter(isApproved).length
+  const importableCount = preview?.flatMap(s => s.entries).filter(e => e.canImport && approvedFrames(e) > 0).length ?? 0
 
   const handleImport = async () => {
     setImporting(true); setError(null); setImportResult(null); setResultExpanded(null)
+
+    // Culled frames are never copied, so they must not reach the DB either:
+    // counting them would overstate every entry's frames and leave import
+    // records for files that aren't on disk — exactly the drift an object file
+    // sync then has to undo. Every write below uses this approved set, resolved
+    // once so the approve lines can't shift underneath a half-finished import.
+    const approvedByEntry = new Map<ImportEntry, string[]>()
+    for (const s of preview ?? [])
+      for (const e of s.entries) approvedByEntry.set(e, e.fileNames.filter(isApproved))
+    const approvedOf = (e: ImportEntry): string[] => approvedByEntry.get(e) ?? e.fileNames
+    // An entry whose every frame was culled has nothing to import — creating a
+    // zero-frame entry for it would be the same stale row in another guise.
+    const entriesToImport = (s: ImportSession) => s.entries.filter(e => e.canImport && approvedOf(e).length > 0)
+    const sessionsToImport = (preview ?? []).filter(s => entriesToImport(s).length > 0)
 
     // In browser mode files are copied via the File System Access API. Acquire
     // folder access first: a permission prompt needs this click's transient
     // user activation, which would be long expired once copying starts.
     const fileByName = new Map(rawFiles.map(f => [f.name, f]))
-    const wantsCopy = importableSessions.some(s => s.entries.some(e => {
-      if (!e.canImport) return false
+    const wantsCopy = sessionsToImport.some(s => entriesToImport(s).some(e => {
       const obj = objects.find(o => o.id === e.objectId)
-      return !!obj?.folder && e.fileNames.some(isApproved)
+      return !!obj?.folder
     }))
     let imagesDir: FileSystemDirectoryHandle | null = null
     let copyWarning: string | null = null
@@ -662,9 +749,17 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       if (!imagesDir) copyWarning = 'Images folder not accessible — no files were copied. Choose it in Settings and grant access.'
     }
 
-    const totalEntries = importableSessions.reduce((n, s) => n + s.entries.filter(e => e.canImport).length, 0)
+    const totalEntries = sessionsToImport.reduce((n, s) => n + entriesToImport(s).length, 0)
     const entriesSkipped = (preview ?? []).flatMap(s =>
-      s.entries.filter(e => !e.canImport).map(e => ({ target: e.target, filter: e.filter, reason: e.warning ?? 'Unresolved' }))
+      s.entries
+        .filter(e => !e.canImport || approvedOf(e).length === 0)
+        .map(e => ({
+          target: e.target,
+          filter: e.filter,
+          reason: e.canImport
+            ? `All ${e.frames} frame${e.frames !== 1 ? 's' : ''} below the approve line`
+            : e.warning ?? 'Unresolved',
+        }))
     )
     const entriesFailed: Array<{ target: string; filter: string }> = []
     let entryCount = 0, sessionsCreated = 0
@@ -681,7 +776,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
     try {
       setImportProgress({ step: 'Importing entries…', current: 0, total: totalEntries })
-      for (const s of importableSessions) {
+      for (const s of sessionsToImport) {
         let sessionId: number
         try {
           if (sessionByDate.has(s.dateKey)) {
@@ -697,33 +792,34 @@ export default function ImportPanel({ onImported, onClose }: Props) {
             sessionsCreated++
           }
         } catch {
-          for (const entry of s.entries.filter(e => e.canImport))
+          for (const entry of entriesToImport(s))
             entriesFailed.push({ target: entry.target, filter: entry.filter })
           continue
         }
 
-        const sessionFileNames: string[] = []
-        for (const entry of s.entries.filter(e => e.canImport)) {
+        for (const entry of entriesToImport(s)) {
+          const approved = approvedOf(entry)
           try {
             const created = await createObjectSession({
               session: sessionId, object: entry.objectId!,
-              filter: entry.filterId!, exposure: entry.exposureId!, frames: entry.frames,
+              filter: entry.filterId!, exposure: entry.exposureId!, frames: approved.length,
             })
             const planId = getEntryPlanId(s.dateKey, entry)
             if (planId) { try { await setPlanSession({ session: created.id, planid: planId }) } catch {} }
             const objId = entry.objectId!
             createdObjSessionsByObject.set(objId, [...(createdObjSessionsByObject.get(objId) ?? []), created.id])
             entriesByObject.set(objId, [...(entriesByObject.get(objId) ?? []), entry])
-            sessionFileNames.push(...entry.fileNames)
+            // Only approved subs get an import record: a record for a culled
+            // file would read as a sub that went missing from the object folder.
+            // Recorded per entry, tied to the entry just created — deleting that
+            // entry later takes exactly these files' records with it.
+            try { await recordImported(approved, sessionId, created.id) } catch {}
+            allRecordedNames.push(...approved)
             entryCount++
             setImportProgress({ step: 'Importing entries…', current: entryCount, total: totalEntries })
           } catch {
             entriesFailed.push({ target: entry.target, filter: entry.filter })
           }
-        }
-        if (sessionFileNames.length) {
-          try { await recordImported(sessionFileNames, sessionId) } catch {}
-          allRecordedNames.push(...sessionFileNames)
         }
       }
 
@@ -742,7 +838,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
           const newPlan = await createPlan({ object: objectId, name: entries[0].objectName ?? String(objectId), active: true, equipment: activeId })
           const byFilter = new Map<number, number>()
           for (const e of entries) {
-            if (e.filterId) byFilter.set(e.filterId, (byFilter.get(e.filterId) ?? 0) + e.frames * e.duration)
+            if (e.filterId) byFilter.set(e.filterId, (byFilter.get(e.filterId) ?? 0) + approvedOf(e).length * e.duration)
           }
           for (const [filterId, totalSeconds] of byFilter.entries()) {
             const durationMinutes = Math.ceil(totalSeconds / 36000) * 600
@@ -756,10 +852,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
       // Approved files per entry that map to an object folder + filter folder.
       const copyGroups: { fileNames: string[]; objectFolder: string; filterName: string }[] = []
-      for (const s of importableSessions) {
-        for (const entry of s.entries.filter(e => e.canImport)) {
+      for (const s of sessionsToImport) {
+        for (const entry of entriesToImport(s)) {
           const obj = objects.find(o => o.id === entry.objectId)
-          const approvedNames = entry.fileNames.filter(isApproved)
+          const approvedNames = approvedOf(entry)
           if (obj?.folder && approvedNames.length) {
             const filt = filters.find(f => f.id === entry.filterId)
             const filterFolder = filt?.folder ?? filt?.name ?? entry.filterName ?? ''
@@ -852,10 +948,23 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                 )}
               </div>
 
-              {(analyzing || (snrResults.size > 0 && snrThreshold != null && analyzedCount > 0)) && (
+              {/* Gated on the batch, not the active group, so a group with no
+                  measurable frames doesn't hide the picker for the others. */}
+              {(analyzing || (snrResults.size > 0 && analyzedCountAll > 0)) && (
                 <div className="import-session-block">
-                  <div className="import-session-header">
+                  <div className="import-session-header import-session-header--quality">
                     <span className="cell-name">Frame quality</span>
+                    <select
+                      className="select-dark"
+                      value={activeGroup?.key ?? ''}
+                      onChange={e => { setActiveGroupKey(e.target.value); setShowRejectedList(false) }}
+                      style={{ fontSize: '0.85rem' }}
+                      title="Each target/filter is measured and culled on its own — PSFSW is relative to the group's own median"
+                    >
+                      {qualityGroups.map(g => (
+                        <option key={g.key} value={g.key}>{g.label} ({g.fileNames.length})</option>
+                      ))}
+                    </select>
                     <select
                       className="select-dark"
                       value={qualityMetric}
@@ -866,9 +975,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                       <option value="psfsw">Signal (PSFSW)</option>
                       <option value="fwhm">Star size (FWHM)</option>
                     </select>
-                    <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                    <span className="cell-muted import-quality-stats" style={{ fontSize: '0.8rem' }}>
                       {analyzing && importProgress
-                        ? `Analyzing… ${importProgress.current} / ${importProgress.total}${analyzedCount > 0 ? ` · ${analyzedCount} measured so far` : ''}`
+                        ? `Analyzing… ${importProgress.current} / ${importProgress.total}${analyzedCountAll > 0 ? ` · ${analyzedCountAll} measured so far` : ''}`
                         : <>
                             {analyzedCount} analyzed{avgStars > 0 ? ` · ~${avgStars} stars/frame` : ''}{qualityMetric === 'psfsw' ? ' · median frame ≈ 1.0' : ' · px'} · {rejectedCount} {goodDirection === 'above' ? 'below' : 'above'} approve line will be skipped
                             {analysisErrors > 0 ? ` · ${analysisErrors} not measurable (kept)` : ''}
@@ -884,11 +993,16 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                   <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.25rem 0 0.5rem' }}>
                     {analyzing
                       ? 'Results appear as each frame is measured — the approve line unlocks when analysis finishes.'
-                      : `Drag the ▸ handle to set the approve line — only frames ${goodDirection === 'above' ? 'above' : 'below'} it are copied.`}
+                      : `Drag the ▸ handle to set the approve line for ${qualityGroups.length > 1 ? 'this target/filter' : 'this batch'} — only frames ${goodDirection === 'above' ? 'above' : 'below'} it are copied.`}
+                    {!analyzing && qualityGroups.length > 1 && (
+                      <> Each target/filter keeps its own line: {rejectedCountAll} of {analyzedCountAll} frames will be skipped across all {qualityGroups.length} groups.</>
+                    )}
                   </p>
                   {snrPoints.length > 0 ? (
-                    <SnrChart points={snrPoints} threshold={snrThreshold ?? 0} onThresholdChange={setSnrThreshold}
-                      metricLabel={metricLabel} goodDirection={goodDirection} historical={historicalForMetric} disabled={analyzing} />
+                    <SnrChart points={snrPoints} threshold={activeThreshold ?? 0}
+                      onThresholdChange={v => activeGroup && setThresholds(t => ({ ...t, [activeGroup.key]: v }))}
+                      metricLabel={metricLabel} goodDirection={goodDirection} historical={historicalForMetric} disabled={analyzing}
+                      onOpenFile={p => openFitsFile(p.fileName)} />
                   ) : (
                     <p className="cell-muted" style={{ fontSize: '0.85rem', padding: '2rem 0', textAlign: 'center' }}>
                       Waiting for frames…
@@ -905,14 +1019,14 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                   )}
                   {showRejectedList && (
                     <FileListDialog
-                      title="Frames below the approve line"
+                      title={`Frames below the approve line — ${activeGroup?.label ?? ''}`}
                       files={rejectedFiles}
                       onClose={() => setShowRejectedList(false)}
                     />
                   )}
                 </div>
               )}
-              {!analyzing && snrResults.size > 0 && analyzedCount === 0 && (
+              {!analyzing && snrResults.size > 0 && analyzedCountAll === 0 && (
                 <div className="import-warnings">
                   {importFileMode === 'backend'
                     ? 'No SNR could be measured — files may be missing from the images folder, or not mono FITS.'
@@ -943,7 +1057,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                               </span>
                             </td>
                             <td>{entry.duration}s</td>
-                            <td>{entry.frames}</td>
+                            <td>
+                              {entry.canImport && approvedFrames(entry) !== entry.frames
+                                ? <>{approvedFrames(entry)} <span className="cell-muted">of {entry.frames}</span></>
+                                : entry.frames}
+                            </td>
                             <td>
                               {activePlans.length > 0 ? (
                                 <select

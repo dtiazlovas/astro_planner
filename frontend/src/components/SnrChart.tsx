@@ -25,6 +25,11 @@ interface Props {
   historical?: number[]
   /** When true (e.g. while analysis is still streaming), the threshold handle can't be dragged. */
   disabled?: boolean
+  /**
+   * When supplied, subs become clickable: the chart asks for confirmation and
+   * then calls this. Rejecting with an Error shows its message in the dialog.
+   */
+  onOpenFile?: (point: SnrPoint) => Promise<void> | void
 }
 
 const H = 300
@@ -35,7 +40,7 @@ const REJECTED = '#6b7280'
 const LINE = '#f59e0b'
 const BAND = '#818cf8'
 
-export default function SnrChart({ points, threshold, onThresholdChange, metricLabel = 'PSFSW', goodDirection = 'above', historical, disabled = false }: Props) {
+export default function SnrChart({ points, threshold, onThresholdChange, metricLabel = 'PSFSW', goodDirection = 'above', historical, disabled = false, onOpenFile }: Props) {
   const isApproved = (v: number) => goodDirection === 'above' ? v >= threshold : v <= threshold
   const wrapRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
@@ -46,6 +51,13 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
   const dragRectRef = useRef<{ top: number; height: number } | null>(null)
   const [w, setW] = useState(720)
   const [dragging, setDragging] = useState(false)
+  /** index into `sorted` of the sub under the cursor, null when not hovering */
+  const [hover, setHover] = useState<number | null>(null)
+  /** last cursor x in SVG user units — kept in a ref so re-snapping costs no render */
+  const hoverXRef = useRef<number | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState<SnrPoint | null>(null)
+  const [opening, setOpening] = useState(false)
+  const [openError, setOpenError] = useState<string | null>(null)
 
   useEffect(() => {
     const el = wrapRef.current
@@ -80,6 +92,22 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
   const measured = sorted.filter(p => !p.pending)
   const pendingCount = sorted.length - measured.length
   const approvedCount = measured.filter(p => isApproved(p.snr)).length
+  // Indexed lookup, so a stale index from a shrinking series just clears the hover.
+  const hoverPoint = hover != null ? sorted[hover] ?? null : null
+
+  const idxAt = (ux: number) => {
+    const t = sorted.length <= 1 ? 0 : ((ux - M.left) / plotW) * (sorted.length - 1)
+    return Math.max(0, Math.min(sorted.length - 1, Math.round(t)))
+  }
+
+  // Points stream in while analysis runs, which re-spreads every x position. Without
+  // this the crosshair would drift away from a stationary cursor until the next move.
+  useEffect(() => {
+    const ux = hoverXRef.current
+    if (ux == null || !sorted.length) return
+    const i = idxAt(ux)
+    setHover(h => h === i ? h : i)
+  }, [sorted.length, plotW]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Kernel-density gradient stops for the historical spread. Offset runs 0→1
   // top→bottom of the plot (high→low value), opacity tracks relative density.
@@ -211,6 +239,67 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
           </circle>
         ))}
 
+        {/* hover capture over the plot area — snaps to the nearest sub in capture order */}
+        <rect
+          x={M.left} y={M.top} width={plotW} height={plotH} fill="transparent"
+          onPointerMove={e => {
+            const svg = svgRef.current
+            if (!svg || !sorted.length || dragging) return
+            const r = svg.getBoundingClientRect()
+            // SVG scales to its box, so convert client px to user units first.
+            const ux = ((e.clientX - r.left) / r.width) * w
+            hoverXRef.current = ux
+            const i = idxAt(ux)
+            setHover(h => h === i ? h : i) // same index → React bails out, no re-render
+          }}
+          onPointerLeave={() => { hoverXRef.current = null; setHover(null) }}
+          style={{ cursor: onOpenFile ? 'pointer' : 'default' }}
+          onClick={e => {
+            const svg = svgRef.current
+            if (!onOpenFile || !svg || !sorted.length) return
+            // Resolved from the click itself rather than hover state, so a tap
+            // that never produced a pointermove still hits the right sub.
+            const r = svg.getBoundingClientRect()
+            const p = sorted[idxAt(((e.clientX - r.left) / r.width) * w)]
+            if (!p) return
+            setOpenError(null)
+            setConfirmOpen(p)
+          }}
+        />
+
+        {/* crosshair + readout for the hovered sub (hidden mid-drag) */}
+        {hoverPoint && !dragging && (() => {
+          const i = hover as number
+          const x = xFor(i)
+          const py = hoverPoint.pending ? yFor(goodDirection === 'above' ? yMin : yMax) : yFor(hoverPoint.snr)
+          const ok = !hoverPoint.pending && isApproved(hoverPoint.snr)
+          const name = hoverPoint.fileName.length > 42 ? `…${hoverPoint.fileName.slice(-41)}` : hoverPoint.fileName
+          const value = hoverPoint.pending ? 'measuring…' : `${metricLabel} ${hoverPoint.snr.toFixed(3)}`
+          const meta = `#${i + 1}/${sorted.length}`
+          const line2 = `${value}  ·  ${meta}`
+          const hint = onOpenFile ? 'click to open in default app' : null
+          // ~6.1px per char at 11px in the default UI font — close enough to size the box.
+          const boxW = Math.max(name.length, line2.length, hint?.length ?? 0) * 6.1 + 16
+          const boxH = hint ? 53 : 38
+          const flip = x + 12 + boxW > M.left + plotW
+          const bx = Math.max(M.left + 2, flip ? x - 12 - boxW : x + 12)
+          const by = Math.max(M.top + 2, Math.min(M.top + plotH - boxH - 2, py - boxH / 2))
+          return (
+            <g pointerEvents="none">
+              <line x1={x} y1={M.top} x2={x} y2={M.top + plotH} stroke="#ffffff59" strokeWidth={1} strokeDasharray="3 3" />
+              <circle cx={x} cy={py} r={6} fill="none" stroke={hoverPoint.pending ? REJECTED : ok ? APPROVED : REJECTED} strokeWidth={1.5} />
+              <circle cx={x} cy={py} r={2} fill="#e2e8f0" />
+              <rect x={bx} y={by} width={boxW} height={boxH} rx={4} fill="#0f0f1e" fillOpacity={0.96} stroke="#3730a3" />
+              <text x={bx + 8} y={by + 15} fontSize="11" fill="#e2e8f0">{name}</text>
+              <text x={bx + 8} y={by + 30} fontSize="11">
+                <tspan fill={hoverPoint.pending ? '#9ca3af' : ok ? APPROVED : REJECTED}>{value}</tspan>
+                <tspan fill="#6b7280">{'  ·  '}{meta}</tspan>
+              </text>
+              {hint && <text x={bx + 8} y={by + 45} fontSize="10" fill="#6b7280">{hint}</text>}
+            </g>
+          )
+        })()}
+
         {/* draggable triangle handle on the right edge */}
         <g
           transform={`translate(${M.left + plotW}, ${thY})`}
@@ -226,6 +315,42 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
           {!disabled && <rect x="0" y="-9" width="22" height="18" fill="transparent" />}
         </g>
       </svg>
+
+      {confirmOpen && (
+        <div className="modal-backdrop" onClick={() => { if (!opening) setConfirmOpen(null) }}>
+          <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+            <div className="modal-dialog__header">
+              <span className="modal-dialog__title">Open this sub?</span>
+            </div>
+            <p style={{ color: '#e2e8f0', margin: 0, wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.85rem' }}>
+              {confirmOpen.fileName}
+            </p>
+            <p className="cell-muted" style={{ fontSize: '0.85rem', margin: 0 }}>
+              Opens in the default application for this file type, on the machine running the server.
+            </p>
+            {openError && <div className="error-banner">{openError}</div>}
+            <div className="form-actions">
+              <button className="btn btn-primary" onClick={async () => {
+                if (!onOpenFile) return
+                setOpening(true)
+                setOpenError(null)
+                try {
+                  await onOpenFile(confirmOpen)
+                  setConfirmOpen(null)
+                } catch (err) {
+                  // Kept open so the reason (folder not set, file not found) stays visible.
+                  setOpenError(err instanceof Error ? err.message : 'Failed to open the file')
+                } finally {
+                  setOpening(false)
+                }
+              }} disabled={opening}>
+                {opening ? 'Opening…' : 'Open'}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setConfirmOpen(null)} disabled={opening}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

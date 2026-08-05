@@ -124,16 +124,31 @@ export const checkImported = (names: string[]): Promise<string[]> =>
     body: JSON.stringify({ names }),
   }).then(json<string[]>)
 
-export const recordImported = (names: string[], sessionId: number): Promise<void> =>
+// `objectSessionId` links the files to the session entry they were imported
+// under; deleting that entry then deletes these records too.
+export const recordImported = (names: string[], sessionId: number, objectSessionId: number | null = null): Promise<void> =>
   fetch(`${BASE}/imported/record`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ names, sessionId }),
+    body: JSON.stringify({ names, sessionId, objectSessionId }),
   }).then(() => undefined)
+
+// Points existing records at a session entry — used by the object file sync to
+// attribute records that predate the link, and to move records off entries it
+// is about to merge away.
+export const relinkImported = (names: string[], objectSessionId: number): Promise<{ relinked: number }> =>
+  fetch(`${BASE}/imported/relink`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names, objectSessionId }),
+  }).then(json<{ relinked: number }>)
 
 export interface ImportedRecord {
   filename: string
   session_id: number | null
+  // the session entry this file was imported under, null for records predating
+  // the link or belonging to a multi-entry session no sync has attributed yet
+  object_session_id: number | null
   // persisted quality analysis: raw PSFSW and FWHM in pixels
   psfsw: number | null
   fwhm: number | null
@@ -193,6 +208,19 @@ export const analyzeFitsViaBackend = (fileNames: string[], normalize = true, sig
     body: JSON.stringify({ fileNames, normalize }),
     signal,
   }).then(json<FitsAnalysis[]>)
+
+// Opens a sub in the OS default app on the server machine. The server's message
+// is the useful part here (folder not set, file not found), so it's unwrapped.
+export const openFitsFile = async (fileName: string): Promise<{ path: string }> => {
+  const res = await fetch(`${BASE}/fits/open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileName }),
+  })
+  const body = await res.json().catch(() => null) as { path?: string; error?: string } | null
+  if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`)
+  return { path: body?.path ?? '' }
+}
 
 export const getPlans = (objectId?: number, equipment?: number | null): Promise<ApPlan[]> => {
   const params = [objectId !== undefined ? `object=${objectId}` : '', equipment != null ? `equipment=${equipment}` : ''].filter(Boolean)

@@ -70,7 +70,12 @@ export const updateApSession = async (id: number, data: UpdateApSessionDto): Pro
 export const deleteApSession = async (id: number): Promise<boolean> => {
   const db = connectToDatabase()
   return db.transaction((): boolean => {
+    const entries = 'SELECT id FROM ap_object_session WHERE session = @id'
     db.prepare('DELETE FROM ap_imported WHERE session_id = @id').run({ id })
+    // Also by entry: a record linked to one of these entries but carrying a
+    // different session_id would otherwise hold the foreign key open.
+    db.prepare(`DELETE FROM ap_imported WHERE object_session_id IN (${entries})`).run({ id })
+    db.prepare(`DELETE FROM ap_plan_session WHERE session IN (${entries})`).run({ id })
     db.prepare('DELETE FROM ap_object_session WHERE session = @id').run({ id })
     const { changes } = db.prepare('DELETE FROM ap_session WHERE id = @id').run({ id })
     return changes > 0
