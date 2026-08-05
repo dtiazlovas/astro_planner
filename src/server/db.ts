@@ -11,7 +11,7 @@ let db: Database.Database | null = null
 // of failing. dist/server.js is one level below the root, src/server/db.ts two.
 const appRoot = (): string => {
   const here = path.dirname(fileURLToPath(import.meta.url))
-  return process.env.NODE_ENV === 'production' ? path.join(here, '..') : path.join(here, '..', '..')
+  return process.env.NODE_ENV === 'development' ? path.join(here, '..', '..') : path.join(here, '..')
 }
 
 const resolveDbPath = (): string => {

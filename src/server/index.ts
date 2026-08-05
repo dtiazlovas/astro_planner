@@ -20,7 +20,14 @@ import { closeDatabaseConnection, connectToDatabase } from './db.js'
 
 const app = express()
 const PORT = process.env.PORT ?? 5000
-const isProduction = process.env.NODE_ENV === 'production'
+// Host matters on PaaS (Render, Fly, …): a service reachable only on loopback
+// fails their port scan. Node already listens on all interfaces when no host is
+// given, but saying so is cheaper than debugging it.
+const HOST = process.env.HOST ?? '0.0.0.0'
+// Dev is the mode you opt into; anything else is production. The other way
+// round bites on hosts that set NODE_ENV=production during the build, because
+// npm then skips devDependencies and vite/esbuild are missing at build time.
+const isProduction = process.env.NODE_ENV !== 'development'
 
 // Production: dist/server.js, with the built client beside it in dist/public.
 // Dev: src/server/index.ts, and Vite is rooted at the repo (where index.html is).
@@ -80,7 +87,7 @@ const startServer = async (): Promise<void> => {
 
     await mountClient()
 
-    app.listen(PORT, () => {
+    app.listen(Number(PORT), HOST, () => {
       console.log(`Astro Planner on http://localhost:${PORT}${isProduction ? '' : '  (dev — HMR on)'}`)
     })
   } catch (error) {
