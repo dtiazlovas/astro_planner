@@ -4,7 +4,10 @@ node_modules/
 # Build output
 dist/
 
-# SQLite database
+# SQLite database — the live file and its WAL sidecars stay local.
 data/
+# …except the seed snapshot, which is committed so a fresh host starts with
+# data. Refresh it with: sqlite3 data/astro_planner.db "VACUUM INTO 'data/seed.db'"
+!data/seed.db
 
 /.claude/settings.local.json

@@ -14,10 +14,25 @@ const appRoot = (): string => {
   return process.env.NODE_ENV === 'development' ? path.join(here, '..', '..') : path.join(here, '..')
 }
 
+// Optional starting point for a database that doesn't exist yet: a checked-in
+// data/seed.db is copied into place on first boot. That's how data reaches a
+// host whose only writable storage is a fresh mounted disk. It is strictly a
+// seed — once the real file exists it is never touched again, so a redeploy
+// can't roll live data back to whatever the repo happened to hold.
+const seedIfAbsent = (target: string): void => {
+  if (fs.existsSync(target)) return
+  const seed = [path.resolve(process.cwd(), 'data', 'seed.db'), path.resolve(appRoot(), 'data', 'seed.db')]
+    .find(candidate => fs.existsSync(candidate))
+  if (!seed) return
+  fs.copyFileSync(seed, target)
+  console.log(`Seeded database from ${seed}`)
+}
+
 const resolveDbPath = (): string => {
   const configured = process.env.SQLITE_PATH?.trim() || './data/astro_planner.db'
   const full = path.isAbsolute(configured) ? configured : path.resolve(appRoot(), configured)
   fs.mkdirSync(path.dirname(full), { recursive: true })
+  seedIfAbsent(full)
   return full
 }
 
