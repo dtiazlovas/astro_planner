@@ -5,7 +5,9 @@ node_modules/
 dist/
 
 # SQLite database — the live file and its WAL sidecars stay local.
-data/
+# `data/*` rather than `data/`: git cannot re-include a file whose parent
+# directory is excluded, so the negation below would never apply.
+data/*
 # …except the seed snapshot, which is committed so a fresh host starts with
 # data. Refresh it with: sqlite3 data/astro_planner.db "VACUUM INTO 'data/seed.db'"
 !data/seed.db
