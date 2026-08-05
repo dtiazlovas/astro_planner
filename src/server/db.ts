@@ -1,7 +1,25 @@
 import Database from 'better-sqlite3'
+import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 let db: Database.Database | null = null
+
+// A relative SQLITE_PATH is resolved against the app root, not the working
+// directory: SQLite creates a database when the file is absent, so a launch
+// from the wrong directory would silently open a brand-new empty one instead
+// of failing. dist/server.js is one level below the root, src/server/db.ts two.
+const appRoot = (): string => {
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  return process.env.NODE_ENV === 'production' ? path.join(here, '..') : path.join(here, '..', '..')
+}
+
+const resolveDbPath = (): string => {
+  const configured = process.env.SQLITE_PATH?.trim() || './data/astro_planner.db'
+  const full = path.isAbsolute(configured) ? configured : path.resolve(appRoot(), configured)
+  fs.mkdirSync(path.dirname(full), { recursive: true })
+  return full
+}
 
 function initSchema(database: Database.Database): void {
   database.exec(`
@@ -216,7 +234,8 @@ function initSchema(database: Database.Database): void {
 
 export const connectToDatabase = (): Database.Database => {
   if (!db) {
-    const dbPath = process.env.SQLITE_PATH ?? path.join(process.cwd(), 'astro-planner.db')
+    const dbPath = resolveDbPath()
+    console.log(`SQLite: ${dbPath}`)
     db = new Database(dbPath)
     db.pragma('journal_mode = WAL')
     db.pragma('foreign_keys = ON')

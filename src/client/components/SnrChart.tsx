@@ -29,7 +29,10 @@ interface Props {
    * When supplied, subs become clickable: the chart asks for confirmation and
    * then calls this. Rejecting with an Error shows its message in the dialog.
    */
-  onOpenFile?: (point: SnrPoint) => Promise<void> | void
+  // Return type is plain void so a handler may return anything (the result is
+  // awaited but discarded) — `Promise<void> | void` would reject a handler that
+  // simply forwards an API call returning a value.
+  onOpenFile?: (point: SnrPoint) => void
 }
 
 const H = 300
