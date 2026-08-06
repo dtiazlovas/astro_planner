@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { downloadDbToFile, isBlobEnabled, uploadDbFromFile } from './blobDb.js'
+import { blobActivity, blobKey, downloadDbToFile, isBlobEnabled, remoteEtag, uploadDbFromFile } from './blobDb.js'
 
 let db: Database.Database | null = null
 
@@ -278,6 +278,7 @@ export const initDatabase = async (): Promise<Database.Database> => {
 
   const dbPath = dbFilePath()
   const restored = await downloadDbToFile(dbPath)
+  restoredAtBoot = restored
   const database = connectToDatabase()
 
   if (restored) {
@@ -299,6 +300,39 @@ export const initDatabase = async (): Promise<Database.Database> => {
 // each upload ships the entire file.
 let dirty = false
 let pending: Promise<void> = Promise.resolve()
+let restoredAtBoot: boolean | null = null
+
+// On a serverless host the process logs are the only window into what happened,
+// and each instance has its own. This is the same picture over HTTP, so
+// /api/health can answer "is the blob actually being used, and by which
+// instance" without digging through Vercel's log viewer. Hitting it repeatedly
+// and seeing the instance change is itself the finding: more than one instance
+// is serving, and they hold independent copies of the database.
+const INSTANCE = `${Math.random().toString(36).slice(2, 8)}`
+const BOOTED_AT = new Date().toISOString()
+
+export const databaseStatus = (): Record<string, unknown> => ({
+  instance: INSTANCE,
+  bootedAt: BOOTED_AT,
+  path: dbFilePath(),
+  blob: isBlobEnabled()
+    ? {
+        enabled: true,
+        key: blobKey(),
+        // null means initDatabase() has not run — the entrypoint never awaited it.
+        restoredAtBoot,
+        pendingSnapshot: dirty,
+        remoteVersion: remoteEtag(),
+        ...blobActivity(),
+      }
+    : {
+        enabled: false,
+        // The single most common deployment mistake: the store exists but was
+        // never connected to the project, so the token never reaches the code
+        // and every write dies with the instance.
+        reason: 'BLOB_READ_WRITE_TOKEN is not set in this environment',
+      },
+})
 
 export const markDatabaseDirty = (): void => { dirty = true }
 

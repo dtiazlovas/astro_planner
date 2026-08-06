@@ -68,10 +68,44 @@ pick up a random suffix. `npm run db:list` prints the pathnames the store
 actually holds and flags whether `BLOB_DB_KEY` matches one; anything under a
 different pathname is invisible to the server.
 
-Which path a deployment took is in the cold-start log: `Restored database from
-Vercel Blob` means it found the key, `No database in Vercel Blob yet` means it
-did not and has just written one. Neither line appearing at all means the token
-never reached the function, and storage is still ephemeral.
+### Is it actually using the blob?
+
+`GET /api/health` answers this without going near the log viewer:
+
+```json
+{ "status": "ok",
+  "database": {
+    "instance": "j3ljce", "bootedAt": "…", "path": "/tmp/astro_planner.db",
+    "blob": { "enabled": true, "key": "astro_planner.db",
+              "restoredAtBoot": true, "pendingSnapshot": false,
+              "remoteVersion": "…", "lastUploadAt": "…", "lastError": null } } }
+```
+
+- `enabled: false` — the token is not in this environment. The store exists but
+  was never *connected to the project*. Every write is going to `/tmp` and dies
+  with the instance. This is the usual cause of "my changes disappeared".
+- `restoredAtBoot: false` — the token works, but nothing was found at `key`.
+  The instance has just uploaded its own copy there; if you expected existing
+  data, the key is wrong (`npm run db:list`).
+- `lastError` — the last upload that failed, with its message.
+- **`instance` changing across repeated calls** — more than one instance is
+  serving, and each has its own copy of the database. See below.
+
+The same picture is in the cold-start log: `Restored database from Vercel Blob`,
+or `No database in Vercel Blob yet`.
+
+### One writer at a time
+
+An instance pulls the database once, at boot, and never re-reads it. That is
+fine for a single instance, and wrong the moment there are two: a write handled
+by instance A is uploaded, but instance B — already warm, holding the copy it
+booted with — keeps serving and writing its own older version. The `ifMatch`
+guard stops B from destroying A's data (it lands as a `.conflict-` copy
+instead), but from the outside it looks exactly like changes not saving.
+
+Vercel starts instances as concurrency demands, so this is not an edge case.
+Keep the deployment to a single instance, or move to a database built to be
+shared — Turso is SQLite over the network and the smallest step from here.
 
 Blob is object storage, so the whole file moves on every read and every write.
 That is fine at this size (under a megabyte) and with one person using the app;

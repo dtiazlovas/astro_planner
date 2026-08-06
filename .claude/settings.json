@@ -91,7 +91,8 @@
       "PowerShell(node -v)",
       "PowerShell(\"--- engine warning detail ---\")",
       "Bash(nvm list *)",
-      "PowerShell(npm run typecheck 2>&1)"
+      "PowerShell(npm run typecheck 2>&1)",
+      "Bash(python -)"
     ]
   }
 }

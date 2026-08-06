@@ -10,8 +10,6 @@
 // Render disk deployment behave exactly as before and never load the SDK.
 import fs from 'node:fs'
 import path from 'node:path'
-import { Readable } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
 
 // The SDK is imported lazily rather than at module scope: it requires Node 20+
 // and is irrelevant to the disk-backed deployments, which should not have to
@@ -35,6 +33,14 @@ const blobAccess = (): 'public' | 'private' =>
 let knownEtag: string | null = null
 
 export const remoteEtag = (): string | null => knownEtag
+
+// Enough state to answer "is this actually working?" from outside the process,
+// which on a serverless host is the only way to ask. See /api/health.
+let lastUploadAt: string | null = null
+let lastError: string | null = null
+
+export const blobActivity = (): { lastUploadAt: string | null; lastError: string | null } =>
+  ({ lastUploadAt, lastError })
 
 // SQLite keeps recovery state in sidecar files next to the database. They belong
 // to the file they were created from, so leaving them beside a freshly
@@ -62,11 +68,24 @@ export const downloadDbToFile = async (target: string): Promise<boolean> => {
   }
   if (!result || result.statusCode !== 200) return false
 
-  // Downloaded beside the target and renamed into place, so an interrupted
-  // transfer leaves the previous database intact rather than a truncated one.
+  // Read the web stream directly rather than adapting it with Readable.fromWeb:
+  // that helper's signature only matches Node's own ReadableStream type, and a
+  // build that has the DOM lib in scope (which a Vercel function can) resolves
+  // the SDK's stream to the DOM one and refuses to compile. The whole file is
+  // held in memory either way — uploads already do, and it is under a megabyte.
+  const chunks: Uint8Array[] = []
+  const reader = result.stream.getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) chunks.push(value)
+  }
+
+  // Written beside the target and renamed into place, so an interrupted transfer
+  // leaves the previous database intact rather than a truncated one.
   const partial = `${target}.download`
   fs.mkdirSync(path.dirname(target), { recursive: true })
-  await pipeline(Readable.fromWeb(result.stream), fs.createWriteStream(partial))
+  fs.writeFileSync(partial, Buffer.concat(chunks))
   dropSidecars(target)
   fs.renameSync(partial, target)
 
@@ -85,6 +104,17 @@ export const downloadDbToFile = async (target: string): Promise<boolean> => {
  * recovered by hand.
  */
 export const uploadDbFromFile = async (file: string): Promise<void> => {
+  try {
+    await writeToBlob(file)
+    lastUploadAt = new Date().toISOString()
+    lastError = null
+  } catch (error) {
+    lastError = `${new Date().toISOString()} ${error instanceof Error ? error.message : String(error)}`
+    throw error
+  }
+}
+
+const writeToBlob = async (file: string): Promise<void> => {
   const { put, copy, BlobPreconditionFailedError } = await sdk()
   const body = fs.readFileSync(file)
   const options = {

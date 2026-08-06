@@ -1,4 +1,20 @@
 {
+  // A solution file: it builds nothing itself, and `npm run typecheck` reads the
+  // referenced projects, not this. The compilerOptions below exist for everyone
+  // else — Vercel's function builder, editors, any tool that finds a tsconfig by
+  // walking up from a file. Without them such a tool gets bare TypeScript
+  // defaults, and `strict: false` silently disables discriminated-union
+  // narrowing, so code that is correct under the real settings fails to compile.
+  // Keep these in step with the per-project configs.
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
   "files": [],
   "references": [
     { "path": "./tsconfig.server.json" },
