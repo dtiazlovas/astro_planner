@@ -353,19 +353,35 @@ const uploadSnapshot = async (): Promise<void> => {
 }
 
 /**
- * Push a snapshot if anything has changed since the last one. Safe to call
- * concurrently: overlapping callers await the in-flight upload rather than
- * starting a second one, and a failure re-arms the dirty flag so the next write
- * tries again.
+ * Return once the database on disk is safely in the blob — nothing queued and
+ * nothing in flight.
+ *
+ * Waiting for an upload this caller did not start is the whole point. Two
+ * callers overlap on every write (the response path and the request handler),
+ * and an earlier version returned early when it found the dirty flag already
+ * claimed — leaving the caller believing the snapshot had landed while it was
+ * still uploading. On a host that suspends the instance as soon as the handler
+ * resolves, that is a lost write.
  */
 export const flushDatabaseToBlob = async (): Promise<void> => {
   if (!isBlobEnabled()) return
-  await pending.catch(() => {})
-  if (!dirty) return
-  dirty = false
-  const run = uploadSnapshot()
-  pending = run.catch(() => { dirty = true })
-  await run
+  for (;;) {
+    if (dirty) {
+      dirty = false
+      const run = uploadSnapshot()
+      // pending must never reject: it is awaited by callers that did not start
+      // it and have no business handling its failure. The initiator below still
+      // sees the error, and the re-armed flag makes the next write retry.
+      pending = run.catch(() => { dirty = true })
+      await run
+      // A write may have arrived while that was uploading; go round again.
+      continue
+    }
+    const inFlight = pending
+    await inFlight.catch(() => {})
+    // Nothing queued while we waited, and no newer upload started behind us.
+    if (!dirty && inFlight === pending) return
+  }
 }
 
 export const closeDatabaseConnection = (): void => {

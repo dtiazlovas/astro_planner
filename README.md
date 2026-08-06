@@ -111,8 +111,12 @@ Blob is object storage, so the whole file moves on every read and every write.
 That is fine at this size (under a megabyte) and with one person using the app;
 it is not a networked database and does not pretend to be:
 
-- **Every write uploads the entire database.** A burst of writes coalesces into
-  one upload, but a write still costs a round trip to the store.
+- **Every write uploads the entire database, and waits for it.** The response is
+  held until the upload lands, so a 2xx means the change is stored, not merely
+  written to the local file. Snapshotting after the response instead would be
+  faster and wrong: a serverless instance can be suspended the moment the
+  response is flushed, and an upload still in flight never finishes — the client
+  sees success and the write is gone at the next cold start.
 - **Two instances writing at once will conflict.** Uploads are conditional on
   the version the instance started from, so the second one cannot silently
   overwrite the first — the copy it would have destroyed is preserved under a

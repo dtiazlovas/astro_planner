@@ -20,11 +20,11 @@ const app = createApiApp()
 // Before: the database has to have finished downloading, or the first request
 // on a cold instance would read an empty file.
 //
-// After: an instance can be frozen the moment the handler resolves, so a
-// snapshot left running in the background would simply never finish and the
-// write would be lost. Waiting for the response *and then* for the flush costs
-// the caller nothing — the response has already been sent — while guaranteeing
-// the upload happens while the instance is still allowed to run.
+// After: a safety net only. The snapshot itself happens inside the request,
+// before the response is sent (see snapshotBeforeResponding in api.ts), because
+// work left running after the response is not guaranteed to finish here. This
+// final flush catches anything marked dirty outside that path and is a no-op in
+// the normal case.
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   await ready
 

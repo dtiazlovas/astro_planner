@@ -1,4 +1,5 @@
 import express from 'express'
+import { isBlobEnabled } from './blobDb.js'
 import { flushDatabaseToBlob, markDatabaseDirty } from './db.js'
 import healthRouter from './routes/health.js'
 import apObjectTypesRouter from './routes/apObjectTypes.js'
@@ -24,19 +25,41 @@ import apFitsRouter from './routes/apFits.js'
 // that could have changed something — read methods are skipped, and so are
 // failures, which either rolled back or never got as far as the database.
 //
-// The upload starts here rather than being awaited: a long-running server has
-// no reason to hold the response open for it. A serverless invocation does have
-// to wait, because the instance may be frozen the moment it returns — that is
-// api/index.ts's job, and it awaits this same flush.
+// The snapshot is taken *before* the response goes out, by holding res.end()
+// until the upload lands. Doing it afterwards is the obvious design and it is
+// wrong here: a serverless instance can be suspended the instant the response
+// is flushed, and any upload still in flight simply never finishes. Nothing
+// visible fails — the client has its 200 — and the write is gone by the next
+// cold start. Paying the upload latency inside the request is what makes a 2xx
+// mean the change is actually stored.
+//
+// Costs a round trip to the store on every write. At this size, with one user,
+// that is the right trade for the guarantee.
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
-const snapshotAfterWrites: express.RequestHandler = (req, res, next) => {
-  if (READ_METHODS.has(req.method)) return next()
-  res.on('finish', () => {
-    if (res.statusCode >= 400) return
+const snapshotBeforeResponding: express.RequestHandler = (req, res, next) => {
+  if (!isBlobEnabled() || READ_METHODS.has(req.method)) return next()
+
+  const sendResponse = res.end.bind(res) as (...args: unknown[]) => express.Response
+  let holdingResponse = false
+
+  res.end = ((...args: unknown[]) => {
+    // A second end() while the first is waiting would send the response early;
+    // Node would reject the write anyway, so drop it.
+    if (holdingResponse) return res
+    if (res.statusCode >= 400) return sendResponse(...args)
+
+    holdingResponse = true
     markDatabaseDirty()
-    flushDatabaseToBlob().catch(error => { console.error('Blob DB: snapshot failed', error) })
-  })
+    flushDatabaseToBlob()
+      // The response still goes out on failure: the change is in the local
+      // database and the dirty flag is re-armed, so the next write retries.
+      // /api/health reports it as blob.lastError.
+      .catch(error => { console.error('Blob DB: snapshot failed', error) })
+      .then(() => { sendResponse(...args) })
+    return res
+  }) as typeof res.end
+
   next()
 }
 
@@ -47,7 +70,7 @@ export const createApiApp = (): express.Express => {
   // this router — our own process locally and on Render, Vercel's CDN in front
   // of the same domain there.
   app.use(express.json())
-  app.use(snapshotAfterWrites)
+  app.use(snapshotBeforeResponding)
 
   app.use('/api/health', healthRouter)
   app.use('/api/object-types', apObjectTypesRouter)
