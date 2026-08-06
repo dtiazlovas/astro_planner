@@ -1,9 +1,12 @@
 // Bundles the server into a single dist/server.js.
 //
 // Everything is bundled except better-sqlite3, which ships a prebuilt native
-// binding that can't live inside a JS bundle, and vite, which the server only
+// binding that can't live inside a JS bundle; vite, which the server only
 // imports in dev (a dynamic import esbuild would otherwise try to pull in —
-// dragging the whole dev toolchain into a production bundle).
+// dragging the whole dev toolchain into a production bundle); and @vercel/blob,
+// whose undici dependency loads a WASM parser through require() that does not
+// survive bundling. The blob SDK is imported lazily and only when a store is
+// configured, so a deployment without one never resolves it at all.
 import { build } from 'esbuild'
 
 await build({
@@ -14,7 +17,7 @@ await build({
   format: 'esm',
   target: 'node18',
   sourcemap: true,
-  external: ['better-sqlite3', 'vite'],
+  external: ['better-sqlite3', 'vite', '@vercel/blob'],
   // ESM output, but bundled CJS dependencies (express and friends) still expect
   // these to exist.
   banner: {

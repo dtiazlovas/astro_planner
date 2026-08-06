@@ -1,9 +1,10 @@
 import 'dotenv/config'
+import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import { createApiApp } from './api.js'
-import { closeDatabaseConnection, connectToDatabase } from './db.js'
+import { closeDatabaseConnection, flushDatabaseToBlob, initDatabase } from './db.js'
 
 const app = createApiApp()
 const PORT = process.env.PORT ?? 5000
@@ -26,7 +27,7 @@ const repoRoot = path.join(here, '..', '..')
 // middleware in dev so there is still one port and one command, HMR intact.
 // Vite is imported dynamically (and left external when bundling) so production
 // never loads the dev toolchain.
-const mountClient = async (): Promise<void> => {
+const mountClient = async (server: http.Server): Promise<void> => {
   if (isProduction) {
     // Asset filenames are content-hashed and can be cached hard; index.html
     // must not be, or browsers stay on the previous build after a deploy.
@@ -38,7 +39,10 @@ const mountClient = async (): Promise<void> => {
   const { createServer } = await import('vite')
   const vite = await createServer({
     root: repoRoot,
-    server: { middlewareMode: true },
+    // Handing Vite our own HTTP server makes HMR share the app's port. Without
+    // it, middleware mode opens a standalone WebSocket server on 24678, which
+    // collides with any other Vite project — or with a stale copy of this one.
+    server: { middlewareMode: true, hmr: { server } },
     appType: 'spa',
   })
   app.use(vite.middlewares)
@@ -46,12 +50,15 @@ const mountClient = async (): Promise<void> => {
 
 const startServer = async (): Promise<void> => {
   try {
-    connectToDatabase()
+    await initDatabase()
     console.log('Connected to SQLite')
 
-    await mountClient()
+    // Created up front rather than via app.listen() so Vite has something to
+    // attach its HMR socket to before we start accepting connections.
+    const server = http.createServer(app)
+    await mountClient(server)
 
-    app.listen(Number(PORT), HOST, () => {
+    server.listen(Number(PORT), HOST, () => {
       console.log(`Astro Planner on http://localhost:${PORT}${isProduction ? '' : '  (dev — HMR on)'}`)
     })
   } catch (error) {
@@ -60,9 +67,25 @@ const startServer = async (): Promise<void> => {
   }
 }
 
+// A blob snapshot may still be queued or in flight when the process is asked to
+// stop, and exiting through it would drop the last write. Bounded by a deadline,
+// because a stalled upload must not be able to keep the process alive.
+let shuttingDown = false
+
 const shutdown = (): void => {
-  closeDatabaseConnection()
-  process.exit(0)
+  if (shuttingDown) return
+  shuttingDown = true
+  const finish = (): void => {
+    closeDatabaseConnection()
+    process.exit(0)
+  }
+  setTimeout(() => {
+    console.error('Blob DB: final snapshot did not finish in time — exiting anyway')
+    finish()
+  }, 5000)
+  flushDatabaseToBlob()
+    .catch(error => { console.error('Blob DB: final snapshot failed', error) })
+    .then(finish, finish)
 }
 
 process.on('SIGINT', shutdown)

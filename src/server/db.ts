@@ -1,7 +1,9 @@
 import Database from 'better-sqlite3'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { downloadDbToFile, isBlobEnabled, uploadDbFromFile } from './blobDb.js'
 
 let db: Database.Database | null = null
 
@@ -28,11 +30,13 @@ const seedIfAbsent = (target: string): void => {
   console.log(`Seeded database from ${seed}`)
 }
 
-const resolveDbPath = (): string => {
+// Where the file lives, with its directory guaranteed to exist. Deliberately
+// free of side effects on the file itself, so the blob restore can drop a
+// database in before anything decides the file is missing and seeds one.
+export const dbFilePath = (): string => {
   const configured = process.env.SQLITE_PATH?.trim() || './data/astro_planner.db'
   const full = path.isAbsolute(configured) ? configured : path.resolve(appRoot(), configured)
   fs.mkdirSync(path.dirname(full), { recursive: true })
-  seedIfAbsent(full)
   return full
 }
 
@@ -249,7 +253,8 @@ function initSchema(database: Database.Database): void {
 
 export const connectToDatabase = (): Database.Database => {
   if (!db) {
-    const dbPath = resolveDbPath()
+    const dbPath = dbFilePath()
+    seedIfAbsent(dbPath)
     console.log(`SQLite: ${dbPath}`)
     db = new Database(dbPath)
     db.pragma('journal_mode = WAL')
@@ -257,6 +262,76 @@ export const connectToDatabase = (): Database.Database => {
     initSchema(db)
   }
   return db
+}
+
+/**
+ * Open the database, pulling it from Vercel Blob first when one is configured.
+ *
+ * Callers that only need a handle keep using the synchronous
+ * connectToDatabase() — every service does. This exists for the two entrypoints,
+ * which have to await the restore before the first request is served.
+ */
+export const initDatabase = async (): Promise<Database.Database> => {
+  if (db) return db
+
+  if (!isBlobEnabled()) return connectToDatabase()
+
+  const dbPath = dbFilePath()
+  const restored = await downloadDbToFile(dbPath)
+  const database = connectToDatabase()
+
+  if (restored) {
+    console.log('Restored database from Vercel Blob')
+  } else {
+    // Nothing stored yet. Whatever we just opened — a restored-from-seed copy on
+    // a fresh host, or a real local database — becomes the stored one, which is
+    // how data first gets into the store without a separate migration step.
+    console.log('No database in Vercel Blob yet — uploading the local one')
+    markDatabaseDirty()
+    await flushDatabaseToBlob()
+  }
+
+  return database
+}
+
+// Snapshot bookkeeping. A request marks the database dirty when it finishes
+// successfully; the flush coalesces a burst of writes into one upload, because
+// each upload ships the entire file.
+let dirty = false
+let pending: Promise<void> = Promise.resolve()
+
+export const markDatabaseDirty = (): void => { dirty = true }
+
+const uploadSnapshot = async (): Promise<void> => {
+  const database = connectToDatabase()
+  const snapshot = path.join(os.tmpdir(), `astro-planner-snapshot-${process.pid}-${Date.now()}.db`)
+  fs.rmSync(snapshot, { force: true })
+  // VACUUM INTO, not a file copy: it takes a read transaction, folds the WAL in
+  // and writes one self-contained file. Copying the live database instead would
+  // race an in-flight write and would leave the committed-but-uncheckpointed
+  // tail behind in the WAL we are not shipping.
+  database.exec(`VACUUM INTO '${snapshot.replace(/'/g, "''")}'`)
+  try {
+    await uploadDbFromFile(snapshot)
+  } finally {
+    fs.rmSync(snapshot, { force: true })
+  }
+}
+
+/**
+ * Push a snapshot if anything has changed since the last one. Safe to call
+ * concurrently: overlapping callers await the in-flight upload rather than
+ * starting a second one, and a failure re-arms the dirty flag so the next write
+ * tries again.
+ */
+export const flushDatabaseToBlob = async (): Promise<void> => {
+  if (!isBlobEnabled()) return
+  await pending.catch(() => {})
+  if (!dirty) return
+  dirty = false
+  const run = uploadSnapshot()
+  pending = run.catch(() => { dirty = true })
+  await run
 }
 
 export const closeDatabaseConnection = (): void => {

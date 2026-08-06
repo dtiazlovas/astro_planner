@@ -14,5 +14,8 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["vite.config.ts", "scripts"]
+  // blob-db.ts is server code that happens to live here: it imports src/server
+  // with NodeNext-style ".js" specifiers, so it is checked by the server project.
+  "include": ["vite.config.ts", "scripts"],
+  "exclude": ["scripts/blob-db.ts"]
 }

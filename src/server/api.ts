@@ -1,4 +1,5 @@
 import express from 'express'
+import { flushDatabaseToBlob, markDatabaseDirty } from './db.js'
 import healthRouter from './routes/health.js'
 import apObjectTypesRouter from './routes/apObjectTypes.js'
 import apObjectsRouter from './routes/apObjects.js'
@@ -18,6 +19,27 @@ import apFitsRouter from './routes/apFits.js'
 // separate from index.ts so a serverless host (Vercel) can import the routes
 // without dragging in the port binding or the Vite dev import — there the
 // platform owns the listener and a CDN serves the client.
+// When the database lives in Vercel Blob, a write that only reached the local
+// file is a write that disappears with the instance. Snapshot after any request
+// that could have changed something — read methods are skipped, and so are
+// failures, which either rolled back or never got as far as the database.
+//
+// The upload starts here rather than being awaited: a long-running server has
+// no reason to hold the response open for it. A serverless invocation does have
+// to wait, because the instance may be frozen the moment it returns — that is
+// api/index.ts's job, and it awaits this same flush.
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+const snapshotAfterWrites: express.RequestHandler = (req, res, next) => {
+  if (READ_METHODS.has(req.method)) return next()
+  res.on('finish', () => {
+    if (res.statusCode >= 400) return
+    markDatabaseDirty()
+    flushDatabaseToBlob().catch(error => { console.error('Blob DB: snapshot failed', error) })
+  })
+  next()
+}
+
 export const createApiApp = (): express.Express => {
   const app = express()
 
@@ -25,6 +47,7 @@ export const createApiApp = (): express.Express => {
   // this router — our own process locally and on Render, Vercel's CDN in front
   // of the same domain there.
   app.use(express.json())
+  app.use(snapshotAfterWrites)
 
   app.use('/api/health', healthRouter)
   app.use('/api/object-types', apObjectTypesRouter)

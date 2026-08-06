@@ -9,9 +9,14 @@
     "build:client": "vite build",
     "build:server": "node scripts/build-server.js",
     "start": "node dist/server.js",
+    "db:list": "tsx scripts/blob-db.ts list",
+    "db:push": "tsx scripts/blob-db.ts push",
+    "db:pull": "tsx scripts/blob-db.ts pull",
+    "db:info": "tsx scripts/blob-db.ts info",
     "typecheck": "tsc -b tsconfig.json"
   },
   "dependencies": {
+    "@vercel/blob": "^2.6.1",
     "better-sqlite3": "^11.10.0",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
