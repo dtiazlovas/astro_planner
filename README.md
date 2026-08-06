@@ -94,18 +94,26 @@ different pathname is invisible to the server.
 The same picture is in the cold-start log: `Restored database from Vercel Blob`,
 or `No database in Vercel Blob yet`.
 
-### One writer at a time
+### Several instances
 
-An instance pulls the database once, at boot, and never re-reads it. That is
-fine for a single instance, and wrong the moment there are two: a write handled
-by instance A is uploaded, but instance B — already warm, holding the copy it
-booted with — keeps serving and writing its own older version. The `ifMatch`
-guard stops B from destroying A's data (it lands as a `.conflict-` copy
-instead), but from the outside it looks exactly like changes not saving.
+Vercel starts instances as concurrency demands, and nothing tells one that
+another has written. An instance that only pulled at boot goes stale silently:
+reads serve old data, and a write branches off the stale copy and uploads a
+database missing the other instance's work.
 
-Vercel starts instances as concurrency demands, so this is not an edge case.
-Keep the deployment to a single instance, or move to a database built to be
-shared — Turso is SQLite over the network and the smallest step from here.
+So every request checks first. `refreshDatabaseFromBlob()` compares the store's
+version (a `head`, headers only) against the one this copy came from, and
+re-downloads when they differ. Writes always check, because a write must branch
+off the current version. Reads may be up to `BLOB_REVALIDATE_MS` behind
+(default 2000) — one page load fires a dozen API calls and a round trip on each
+is latency for a change that cannot have happened in between.
+
+That makes concurrent instances converge rather than diverge, but it is
+cooperation, not locking: two writes landing in the same instant can still
+collide, and the loser's copy is kept as a `.conflict-` blob. For one person
+using the app that window is theoretical. If the app ever gets genuinely
+concurrent writers, move to a database built to be shared — Turso is SQLite over
+the network and the smallest step from here.
 
 Blob is object storage, so the whole file moves on every read and every write.
 That is fine at this size (under a megabyte) and with one person using the app;

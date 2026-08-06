@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { blobActivity, blobKey, downloadDbToFile, isBlobEnabled, remoteEtag, uploadDbFromFile } from './blobDb.js'
+import { blobActivity, blobKey, downloadDbToFile, isBlobEnabled, remoteEtag, remoteVersion, uploadDbFromFile } from './blobDb.js'
 
 let db: Database.Database | null = null
 
@@ -382,6 +382,53 @@ export const flushDatabaseToBlob = async (): Promise<void> => {
     // Nothing queued while we waited, and no newer upload started behind us.
     if (!dirty && inFlight === pending) return
   }
+}
+
+// How long a read may serve without re-checking the store. Writes always check.
+// Zero would be correct and slow: one page load fires a dozen API calls, and a
+// round trip on each is latency for a change that cannot have happened in
+// between. A couple of seconds collapses a burst into one check.
+const READ_REVALIDATE_MS = Number(process.env.BLOB_REVALIDATE_MS ?? 2000)
+
+let lastCheckedAt = 0
+let refreshing: Promise<void> | null = null
+
+/**
+ * Make sure this instance is working from the store's current database.
+ *
+ * Instances are not told when another one writes, so a copy pulled at boot goes
+ * stale silently: reads serve old data, and — worse — a write branches off the
+ * stale copy and uploads a version missing whatever the other instance did.
+ * Checking the version before handling a request is what keeps several
+ * instances from diverging.
+ *
+ * `force` is for writes, which must branch off the current version. Reads are
+ * allowed to be up to READ_REVALIDATE_MS behind.
+ */
+export const refreshDatabaseFromBlob = async (force: boolean): Promise<void> => {
+  if (!isBlobEnabled()) return
+  if (!force && Date.now() - lastCheckedAt < READ_REVALIDATE_MS) return
+  // One check at a time; concurrent callers ride along with it.
+  if (refreshing) return refreshing
+
+  refreshing = (async () => {
+    // Our own unsent changes go up first, or replacing the file would discard
+    // them. After this the local copy and the store agree on our work.
+    await flushDatabaseToBlob()
+
+    const current = await remoteVersion()
+    lastCheckedAt = Date.now()
+    if (current === null || current === remoteEtag()) return
+
+    // The store moved on: another instance wrote. Take its version — ours is
+    // already in it, because the flush above went first.
+    console.log(`Blob DB: store changed elsewhere (${remoteEtag()} → ${current}) — reloading`)
+    closeDatabaseConnection()
+    await downloadDbToFile(dbFilePath())
+    connectToDatabase()
+  })().finally(() => { refreshing = null })
+
+  return refreshing
 }
 
 export const closeDatabaseConnection = (): void => {

@@ -1,6 +1,6 @@
 import express from 'express'
 import { isBlobEnabled } from './blobDb.js'
-import { flushDatabaseToBlob, markDatabaseDirty } from './db.js'
+import { flushDatabaseToBlob, markDatabaseDirty, refreshDatabaseFromBlob } from './db.js'
 import healthRouter from './routes/health.js'
 import apObjectTypesRouter from './routes/apObjectTypes.js'
 import apObjectsRouter from './routes/apObjects.js'
@@ -37,6 +37,21 @@ import apFitsRouter from './routes/apFits.js'
 // that is the right trade for the guarantee.
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
+// The other half of sharing a store between instances. Snapshotting on the way
+// out is pointless if this instance is working from a copy another one has
+// already superseded — the write would branch off the stale version and upload
+// a database missing the other instance's work.
+//
+// A failed check serves from the local copy rather than failing the request:
+// stale data beats an outage, and the next request tries again.
+const revalidateBeforeHandling: express.RequestHandler = (req, res, next) => {
+  if (!isBlobEnabled()) return next()
+  refreshDatabaseFromBlob(!READ_METHODS.has(req.method)).then(
+    () => next(),
+    error => { console.error('Blob DB: refresh failed, serving the local copy', error); next() }
+  )
+}
+
 const snapshotBeforeResponding: express.RequestHandler = (req, res, next) => {
   if (!isBlobEnabled() || READ_METHODS.has(req.method)) return next()
 
@@ -70,6 +85,7 @@ export const createApiApp = (): express.Express => {
   // this router — our own process locally and on Render, Vercel's CDN in front
   // of the same domain there.
   app.use(express.json())
+  app.use(revalidateBeforeHandling)
   app.use(snapshotBeforeResponding)
 
   app.use('/api/health', healthRouter)

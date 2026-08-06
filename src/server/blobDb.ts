@@ -51,6 +51,21 @@ const dropSidecars = (dbFile: string): void => {
 }
 
 /**
+ * The version the store currently holds, or null if it holds nothing. Cheap
+ * next to a download — headers only — which is what makes it usable as a
+ * per-request check that our copy is still the current one.
+ */
+export const remoteVersion = async (): Promise<string | null> => {
+  const { head, BlobNotFoundError } = await sdk()
+  try {
+    return (await head(blobKey())).etag
+  } catch (error) {
+    if (error instanceof BlobNotFoundError) return null
+    throw error
+  }
+}
+
+/**
  * Pull the stored database into `target`, replacing whatever is there.
  * Returns false when the store holds no database yet — a first boot, not an error.
  */

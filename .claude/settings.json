@@ -92,7 +92,12 @@
       "PowerShell(\"--- engine warning detail ---\")",
       "Bash(nvm list *)",
       "PowerShell(npm run typecheck 2>&1)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(cp src/server/api.ts /tmp/api.ts.bak)",
+      "Bash(sed -i 's|^  app.use\\(revalidateBeforeHandling\\)$|  // app.use\\(revalidateBeforeHandling\\)  // TEMPORARILY DISABLED FOR TEST|' src/server/api.ts)",
+      "Bash(cp /tmp/api.ts.bak src/server/api.ts)",
+      "Bash(powershell -NoProfile -Command 'foreach \\($p in 5201,5202,5203\\) { Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue; '\\\\''killed listener on '\\\\'' + $p } }')",
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter \"Name='\\\\''node.exe'\\\\''\" | Where-Object { $_.CommandLine -match '\\\\''instance.mts'\\\\'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; '\\\\''killed '\\\\'' + $_.ProcessId }')"
     ]
   }
 }
