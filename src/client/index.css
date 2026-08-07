@@ -4,11 +4,19 @@
   padding: 0;
 }
 
+:root {
+  /* Native controls (selects, date pickers, scrollbars) follow the app's dark
+     palette instead of rendering as light widgets on mobile. */
+  color-scheme: dark;
+}
+
 body {
   font-family: system-ui, -apple-system, sans-serif;
   background: #0f0f1a;
   color: #e8e8f0;
   min-height: 100vh;
+  /* Landscape→portrait rotation on iOS otherwise inflates text. */
+  -webkit-text-size-adjust: 100%;
 }
 
 /* ── Layout ─────────────────────────────────────────────── */
@@ -116,6 +124,11 @@ body {
   align-items: center;
   gap: 0.5rem;
   white-space: nowrap;
+  /* A <select> is sized by its widest option, and as a flex item its default
+     `min-width: auto` makes that width unshrinkable — one long rig name would
+     otherwise stretch the header, and with it the whole page, past the
+     viewport. */
+  min-width: 0;
 }
 
 .rig-selector__label {
@@ -135,6 +148,9 @@ body {
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
 }
 
 .rig-selector__select:hover {
@@ -147,6 +163,9 @@ body {
   max-width: 1100px;
   width: 100%;
   margin: 0 auto;
+  /* Flex item default `min-width: auto` would let a wide table push the whole
+     page wider than the viewport instead of scrolling inside .table-wrap. */
+  min-width: 0;
 }
 
 .app-footer {
@@ -419,6 +438,17 @@ body {
   overflow-x: auto;
   border-radius: 10px;
   border: 1px solid #1e1e38;
+  -webkit-overflow-scrolling: touch;
+  /* A sideways swipe on the table shouldn't hand off to the browser's
+     back-gesture once the table hits its end. */
+  overscroll-behavior-x: contain;
+}
+
+/* Borderless variant, for tables that already sit inside a bordered card. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
 }
 
 .data-table {
@@ -1729,4 +1759,393 @@ body {
 .lat-picker__controls label {
   font-size: 0.85rem;
   color: #cbd5e1;
+}
+
+/* ── Responsive ───────────────────────────────────────────────
+   The desktop layout spends a lot of width on chrome (2rem gutters, a
+   single-row header, side-by-side form columns) and lets the data tables
+   shrink to fit. On a phone that leaves the tables a few dozen pixels per
+   column. Below, the chrome collapses and the tables instead keep a readable
+   minimum width and scroll sideways inside their wrapper. */
+
+/* Small laptops / tablets — trim the gutters only. */
+@media (max-width: 900px) {
+  .app-header { padding: 0 1.25rem; gap: 1.25rem; }
+  .totals-bar { padding: 0.4rem 1.25rem; }
+  .app-main   { padding: 1.5rem 1.25rem; }
+}
+
+/* Phones and portrait tablets. */
+@media (max-width: 768px) {
+  /* ── Chrome ── */
+  .app-header {
+    height: auto;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 0.6rem 0.85rem;
+    gap: 0.5rem 0.75rem;
+  }
+
+  .app-header h1 { font-size: 1.05rem; }
+
+  /* Nav drops to its own full-width row and scrolls if the five tabs don't
+     fit, rather than squeezing the title and rig selector off-screen. */
+  .app-nav {
+    order: 3;
+    flex-basis: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-nav::-webkit-scrollbar { display: none; }
+
+  .nav-link {
+    white-space: nowrap;
+    padding: 0.4rem 0.7rem;
+  }
+
+  /* Clipped rather than `display: none` — the wrapping <label> is what names
+     the select, and hidden text is dropped from the accessible name. */
+  .rig-selector { position: relative; }
+
+  .rig-selector__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .totals-bar { padding: 0.4rem 0.85rem; gap: 0.5rem 0.75rem; }
+  .totals-bar__items { gap: 0.6rem; }
+
+  /* The colour dot alone identifies the filter here, and dropping the names
+     fits the whole strip on one row. A filter with no known colour renders no
+     dot, so :has() leaves those showing their name. */
+  .totals-bar .type-badge:has(.filter-badge-dot) {
+    position: relative;
+    padding: 0.2rem;
+  }
+
+  .totals-bar .type-badge:has(.filter-badge-dot) .filter-badge-dot {
+    width: 9px;
+    height: 9px;
+    margin-right: 0;
+  }
+
+  /* Clipped, not removed — the name stays available to screen readers. */
+  .totals-bar .type-badge:has(.filter-badge-dot) .type-badge__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .app-main { padding: 1rem 0.85rem; }
+  .app-footer { padding: 0.75rem 0.85rem; }
+
+  .page-header { flex-wrap: wrap; gap: 0.5rem 0.75rem; }
+  .page-header h2 { font-size: 1.25rem; }
+  /* The button clusters set display/gap inline but never flex-wrap. */
+  .page-header > div { flex-wrap: wrap; }
+
+  /* ── Tables ── */
+  /* Give every table a readable floor and let the wrapper scroll. Without
+     this the table honours `width: 100%` and crushes its columns to
+     min-content — the narrow-column problem this whole block exists for. */
+  .table-wrap .data-table { min-width: 40rem; }
+  .table-scroll .data-table { min-width: 32rem; }
+
+  .data-table { font-size: 0.85rem; }
+  .data-table th { padding: 0.6rem 0.7rem; }
+  .data-table td { padding: 0.7rem; overflow-wrap: anywhere; }
+
+  .cell-mono { max-width: 12rem; }
+  .cell-progress { min-width: 170px; }
+  .plan-progress-bar { min-width: 56px; }
+
+  /* Unwrapped table inside the import preview — scroll the block itself. */
+  .import-session-block { overflow-x: auto; }
+  .import-session-block .data-table { min-width: 34rem; }
+
+  /* ── Forms ── */
+  .form-grid { grid-template-columns: 1fr; }
+  .inline-form { grid-template-columns: 1fr; padding: 0.85rem; }
+  .object-form { padding: 1rem; gap: 1rem; }
+  .settings-card { padding: 1rem; }
+  .contents-panel { padding: 1rem; }
+  .contents-form-row .form-field { min-width: 140px; }
+
+  .filter-stats-panel {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+  }
+
+  /* 16px is the threshold below which iOS Safari zooms in on focus. */
+  .form-field input,
+  .form-field select,
+  .form-field textarea,
+  .select-dark,
+  .rig-selector__select,
+  .unresolved-row__actions select {
+    font-size: 16px;
+  }
+
+  .parse-result__row { flex-direction: column; gap: 0.15rem; }
+  .placeholder-row { flex-wrap: wrap; }
+  .unresolved-row__name { min-width: 0; }
+  .import-session-header { flex-wrap: wrap; gap: 0.5rem; }
+
+  .snr-chart__legend { flex-wrap: wrap; gap: 0.35rem 1rem; }
+  .snr-chart__threshold-label { margin-left: 0; }
+
+  /* ── Touch targets ── */
+  .btn { padding: 0.55rem 1rem; }
+  .btn-sm { padding: 0.35rem 0.7rem; }
+
+  .btn-icon { width: 34px; height: 34px; font-size: 0.9rem; }
+  .btn-contents { font-size: 1.1rem; }
+  .btn-sync { font-size: 1rem; }
+
+  .check-label input[type="checkbox"] { width: 18px; height: 18px; }
+
+  .toggle { width: 44px; height: 26px; }
+  .toggle::after { top: 4px; left: 4px; width: 18px; height: 18px; }
+  .toggle--on::after { transform: translateX(18px); }
+
+  /* Bigger grab area for the drag-to-reorder handle. */
+  .drag-handle { grid-template-columns: repeat(3, 7px); gap: 5px; padding: 4px 2px; }
+
+  /* ── Dialogs ── */
+  /* Near-fullscreen sheets: the fixed `width: min(Npx, Nvw)` on each dialog
+     leaves too little room once padding is accounted for. Anchored to the top
+     so a tall dialog scrolls instead of overflowing off both edges. */
+  .modal-backdrop {
+    align-items: flex-start;
+    padding: 0.75rem;
+    overflow-y: auto;
+  }
+
+  .modal-dialog,
+  .modal-dialog--wide,
+  .import-result-dialog,
+  .progress-dialog {
+    width: 100%;
+    max-width: 100%;
+    padding: 1rem;
+    max-height: calc(100vh - 1.5rem);
+    max-height: calc(100dvh - 1.5rem);
+  }
+
+  .progress-dialog { padding: 1.5rem 1.25rem; }
+  .modal-dialog .data-table { min-width: 34rem; }
+}
+
+/* ── Card lists ───────────────────────────────────────────────
+   Objects and Sessions carry too many columns to stay readable at phone
+   width even with horizontal scrolling, so at portrait widths their rows
+   re-flow into full-width cards. This restyles the existing table instead
+   of rendering a second component, so the expand / edit / plans rows that
+   follow each row keep working untouched. */
+@media (max-width: 700px) {
+  .table-wrap:has(.data-table--cards) {
+    border: none;
+    border-radius: 0;
+    overflow: visible;
+  }
+
+  /* Undo the readable-table floor from the block above — cards wrap. */
+  .table-wrap .data-table--cards { min-width: 0; }
+
+  /* Every rule below is scoped with `>` to the top-level table. The expansion
+     rows host whole nested tables (session contents, plans) — a descendant
+     selector would turn their cells into cards too. */
+  .data-table--cards,
+  .data-table--cards > tbody { display: block; }
+
+  .data-table--cards > tbody > tr { display: block; }
+
+  /* Beats the zebra striping / hover on the rows that stay full-width. */
+  .data-table--cards > tbody > tr:not(.row--card) { background: transparent; }
+
+  .data-table--cards > tbody > tr > td {
+    display: block;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border: none;
+  }
+
+  .data-table--cards > tbody > tr.row--card {
+    display: grid;
+    gap: 0.55rem 0.65rem;
+    align-items: start;
+    background: #14142a;
+    border: 1px solid #23233f;
+    border-radius: 10px;
+    padding: 0.8rem;
+  }
+
+  /* Space sits before each card, so the expansion / editor rows that follow
+     a row stay visually attached to the card they belong to. */
+  .data-table--cards > tbody > tr + tr.row--card { margin-top: 0.7rem; }
+
+  .data-table--cards > tbody > tr.row--editing {
+    outline: none;
+    border-color: #3730a3;
+  }
+
+  .data-table--cards > tbody > tr > td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.62rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #64748b;
+    margin-bottom: 0.1rem;
+  }
+
+  /* Action buttons run along the bottom of the card rather than stacking. */
+  .data-table--cards > tbody > .row--card > .cell-action .row-actions {
+    flex-direction: row;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  /* ── Objects ─────────────────────────────────────────────────
+     ┌───────────────────────────────────┐
+     │ [icon]  Name              TOTAL   │
+     │ [type]  aliases           ~12h 3m │
+     │ ───────── plan progress ───────── │
+     │ [on/off]           ☰ ⬆ ⟳ ✎ ✕     │
+     └───────────────────────────────────┘ */
+  .data-table--objects > thead { display: none; }
+
+  .data-table--objects > tbody > tr.row--card {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .data-table--objects > tbody > .row--card > .cell-type         { grid-column: 1; grid-row: 1; max-width: 5.5rem; }
+  .data-table--objects > tbody > .row--card > .cell-name-actions { grid-column: 2; grid-row: 1; }
+  .data-table--objects > tbody > .row--card > .cell-time         { grid-column: 3; grid-row: 1; text-align: right; }
+  .data-table--objects > tbody > .row--card > .cell-progress     { grid-column: 1 / -1; grid-row: 2; }
+  .data-table--objects > tbody > .row--card > .cell-toggle       { grid-column: 1; grid-row: 3; }
+  .data-table--objects > tbody > .row--card > .cell-action       { grid-column: 2 / -1; grid-row: 3; }
+
+  /* An object with no active plan renders an empty progress cell — drop it
+     out of the grid and pull the bottom row up, so the card doesn't carry a
+     blank band. */
+  .data-table--objects > tbody > .row--card > .cell-progress:empty { display: none; }
+  .data-table--objects > tbody > .row--card:has(> .cell-progress:empty) > .cell-toggle,
+  .data-table--objects > tbody > .row--card:has(> .cell-progress:empty) > .cell-action { grid-row: 2; }
+
+  /* Full type names ("Emission Nebula") only fit stacked under the icon. */
+  .data-table--objects > tbody > .row--card > .cell-type .type-badge {
+    white-space: normal;
+    font-size: 0.62rem;
+    line-height: 1.25;
+  }
+
+  .data-table--objects > tbody > .row--card > .cell-name-actions .cell-name { font-size: 0.95rem; }
+
+  /* HTML5 drag-and-drop never fires from touch, so the reorder handle is a
+     dead affordance on a phone. */
+  .data-table--objects > tbody > .row--card .drag-handle { display: none; }
+
+  /* ── Sessions ────────────────────────────────────────────────
+     ┌───────────────────────────────────┐
+     │ Name                     CONTENT  │
+     │                           ~4h 10m │
+     │ START            END              │
+     │ 7 Jun, 21:40     8 Jun, 03:15     │
+     │ comment                           │
+     │                      ≡ ✎ ✕        │
+     └───────────────────────────────────┘ */
+  /* thead is kept rather than hidden — it holds the only sort controls —
+     and reads as a strip of chips. */
+  .data-table--sessions > thead {
+    display: block;
+    background: transparent;
+    margin-bottom: 0.6rem;
+  }
+
+  .data-table--sessions > thead > tr {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .data-table--sessions > thead > tr > th {
+    border: 1px solid #23233f;
+    border-radius: 999px;
+    background: #14142a;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.68rem;
+  }
+
+  .data-table--sessions > thead > tr > th:empty { display: none; }
+
+  .data-table--sessions > tbody > tr.row--card {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .data-table--sessions > tbody > .row--card > .cell-name            { grid-column: 1; grid-row: 1; font-size: 0.95rem; }
+  .data-table--sessions > tbody > .row--card > .cell-time            { grid-column: 2; grid-row: 1; text-align: right; }
+  .data-table--sessions > tbody > .row--card > .cell-session-start   { grid-column: 1; grid-row: 2; }
+  .data-table--sessions > tbody > .row--card > .cell-session-end     { grid-column: 2; grid-row: 2; text-align: right; }
+  .data-table--sessions > tbody > .row--card > .cell-session-comment { grid-column: 1 / -1; grid-row: 3; font-size: 0.85rem; }
+  .data-table--sessions > tbody > .row--card > .cell-action          { grid-column: 1 / -1; grid-row: 4; }
+
+  .data-table--sessions > tbody > .row--card > .cell-session-start,
+  .data-table--sessions > tbody > .row--card > .cell-session-end { font-size: 0.82rem; }
+}
+
+/* Portrait phones. */
+@media (max-width: 640px) {
+  /* ── Calendar ── */
+  .cal-grid { gap: 3px; }
+
+  .cal-cell {
+    min-height: 58px;
+    padding: 0.25rem 0.3rem;
+    overflow: hidden;
+  }
+
+  .cal-cell__num { font-size: 0.72rem; }
+  .cal-cell__dur { font-size: 0.72rem; }
+  .cal-cell__pct { font-size: 0.58rem; }
+  .cal-cell__count { font-size: 0.58rem; }
+  .cal-grid__weekday { font-size: 0.62rem; letter-spacing: 0; }
+
+  .cal-nav { flex-wrap: wrap; margin: 0.75rem 0; }
+  .cal-period-label { font-size: 0.95rem; }
+
+  .cal-summary { gap: 0.5rem; }
+  .cal-stat { flex: 1 1 auto; min-width: 0; padding: 0.5rem 0.7rem; }
+  .cal-stat__value { font-size: 1.15rem; }
+
+  .cal-months__bars { gap: 4px; }
+  .cal-month-col { min-width: 26px; }
+  .cal-month-col__track { height: 96px; }
+  .cal-months__head { gap: 0.35rem; }
+  .cal-months__legend { gap: 0.75rem; }
+}
+
+/* Very narrow phones (≤360px logical px). */
+@media (max-width: 400px) {
+  .app-main { padding: 0.85rem 0.6rem; }
+  .app-header { padding: 0.55rem 0.6rem; }
+  .totals-bar { padding: 0.4rem 0.6rem; }
+  .app-header h1 { font-size: 0.95rem; }
+  .nav-link { padding: 0.35rem 0.55rem; font-size: 0.82rem; }
+  .cal-cell { min-height: 50px; padding: 0.2rem 0.25rem; }
+  .cal-cell__dur { font-size: 0.66rem; }
+  .cal-cell__pct { font-size: 0.54rem; }
 }

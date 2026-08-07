@@ -97,7 +97,11 @@
       "Bash(sed -i 's|^  app.use\\(revalidateBeforeHandling\\)$|  // app.use\\(revalidateBeforeHandling\\)  // TEMPORARILY DISABLED FOR TEST|' src/server/api.ts)",
       "Bash(cp /tmp/api.ts.bak src/server/api.ts)",
       "Bash(powershell -NoProfile -Command 'foreach \\($p in 5201,5202,5203\\) { Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue; '\\\\''killed listener on '\\\\'' + $p } }')",
-      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter \"Name='\\\\''node.exe'\\\\''\" | Where-Object { $_.CommandLine -match '\\\\''instance.mts'\\\\'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; '\\\\''killed '\\\\'' + $_.ProcessId }')"
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter \"Name='\\\\''node.exe'\\\\''\" | Where-Object { $_.CommandLine -match '\\\\''instance.mts'\\\\'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; '\\\\''killed '\\\\'' + $_.ProcessId }')",
+      "PowerShell(npm run build:client 2>&1)",
+      "PowerShell($p = @\\(\"$env:ProgramFiles \\(x86\\)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe\",\"C:\\\\Program Files \\(x86\\)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe\",\"C:\\\\Program Files\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe\"\\); $p | ForEach-Object { if \\(Test-Path $_\\) { $_ } })",
+      "PowerShell($env:PORT=\"5137\"; node dist/server.js)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:5137/\" -UseBasicParsing -TimeoutSec 10; \"HTTP $\\($r.StatusCode\\)  len=$\\($r.Content.Length\\)\" } catch { \"ERR: $_\" })"
     ]
   }
 }

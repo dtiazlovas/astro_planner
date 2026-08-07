@@ -283,51 +283,53 @@ export default function SettingsPage() {
         ) : filters.length === 0 ? (
           <p className="cell-muted">No filters yet.</p>
         ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Aliases</th>
-                <th>Folder</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filters.map(f => (
-                <tr key={f.id} className={editingFilterId === f.id ? 'row--editing' : ''}>
-                  <td className="cell-name">{f.name}</td>
-                  <td className="cell-muted" style={{ fontSize: '0.85rem' }}>
-                    {f.aliases
-                      ? f.aliases.split(';').map((a, i) => (
-                          <span key={i} className="type-badge" style={{ marginRight: '0.25rem' }}>{a.trim()}</span>
-                        ))
-                      : '—'}
-                  </td>
-                  <td className="cell-muted" style={{ fontSize: '0.85rem', fontFamily: 'monospace' }}>
-                    {f.folder ?? '—'}
-                  </td>
-                  <td className="cell-actions">
-                    {confirmingFilterId === f.id ? (
-                      <>
-                        <span className="cell-muted" style={{ fontSize: '0.85rem' }}>Delete?</span>
-                        <button className="btn btn-danger"
-                          disabled={deletingFilterId === f.id}
-                          onClick={() => handleDeleteFilter(f.id)}>
-                          {deletingFilterId === f.id ? '…' : 'Yes'}
-                        </button>
-                        <button className="btn btn-ghost" onClick={() => setConfirmingFilterId(null)}>No</button>
-                      </>
-                    ) : (
-                      <>
-                        <button className="btn btn-ghost" onClick={() => openEditFilter(f)}>✎</button>
-                        <button className="btn btn-danger" onClick={() => setConfirmingFilterId(f.id)}>✕</button>
-                      </>
-                    )}
-                  </td>
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Aliases</th>
+                  <th>Folder</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filters.map(f => (
+                  <tr key={f.id} className={editingFilterId === f.id ? 'row--editing' : ''}>
+                    <td className="cell-name">{f.name}</td>
+                    <td className="cell-muted" style={{ fontSize: '0.85rem' }}>
+                      {f.aliases
+                        ? f.aliases.split(';').map((a, i) => (
+                            <span key={i} className="type-badge" style={{ marginRight: '0.25rem' }}>{a.trim()}</span>
+                          ))
+                        : '—'}
+                    </td>
+                    <td className="cell-muted" style={{ fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                      {f.folder ?? '—'}
+                    </td>
+                    <td className="cell-actions">
+                      {confirmingFilterId === f.id ? (
+                        <>
+                          <span className="cell-muted" style={{ fontSize: '0.85rem' }}>Delete?</span>
+                          <button className="btn btn-danger"
+                            disabled={deletingFilterId === f.id}
+                            onClick={() => handleDeleteFilter(f.id)}>
+                            {deletingFilterId === f.id ? '…' : 'Yes'}
+                          </button>
+                          <button className="btn btn-ghost" onClick={() => setConfirmingFilterId(null)}>No</button>
+                        </>
+                      ) : (
+                        <>
+                          <button className="btn btn-ghost" onClick={() => openEditFilter(f)}>✎</button>
+                          <button className="btn btn-danger" onClick={() => setConfirmingFilterId(f.id)}>✕</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

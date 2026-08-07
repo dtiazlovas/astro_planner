@@ -228,7 +228,7 @@ export default function SessionsPage() {
         <p className="state-msg">No sessions yet — add one above.</p>
       ) : (
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table data-table--cards data-table--sessions">
             <thead>
               <tr>
                 <th className="th-sort" onClick={() => handleSort('name')}>Name{sortInd('name')}</th>
@@ -242,12 +242,12 @@ export default function SessionsPage() {
             <tbody>
               {sortedSessions.map(ses => (
                 <Fragment key={ses.id}>
-                  <tr className={editingId === ses.id ? 'row--editing' : ''}>
+                  <tr className={`row--card ${editingId === ses.id ? 'row--editing' : ''}`}>
                     <td className="cell-name">{ses.name}</td>
-                    <td>{fmtDate(ses.start)}</td>
-                    <td className="cell-muted">{ses.duration_set ? fmtDate(ses.duration) : '—'}</td>
-                    <td className="cell-time">{fmtCalcDuration(Number(ses.calculated_seconds))}</td>
-                    <td className="cell-muted">{ses.comment ?? '—'}</td>
+                    <td className="cell-session-start" data-label="Start">{fmtDate(ses.start)}</td>
+                    <td className="cell-muted cell-session-end" data-label="End">{ses.duration_set ? fmtDate(ses.duration) : '—'}</td>
+                    <td className="cell-time" data-label="Content">{fmtCalcDuration(Number(ses.calculated_seconds))}</td>
+                    <td className="cell-muted cell-session-comment">{ses.comment ?? '—'}</td>
                     <td className="cell-action">
                       <div className="row-actions">
                         <button className="btn-icon btn-contents" onClick={() => setSelectedIds(prev => { const s = new Set(prev); s.has(ses.id) ? s.delete(ses.id) : s.add(ses.id); return s })} title="Contents">≡</button>

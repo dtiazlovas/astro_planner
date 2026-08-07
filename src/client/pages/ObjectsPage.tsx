@@ -582,7 +582,7 @@ export default function ObjectsPage() {
         <p className="state-msg">No objects yet — add one above.</p>
       ) : (
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table data-table--cards data-table--objects">
             <thead>
               <tr>
                 <th>Name</th>
@@ -599,7 +599,7 @@ export default function ObjectsPage() {
                 return (
                   <Fragment key={obj.id}>
                     <tr
-                      className={editingId === obj.id ? 'row--editing' : dragOverId === obj.id ? 'row--drag-over' : ''}
+                      className={`row--card ${editingId === obj.id ? 'row--editing' : dragOverId === obj.id ? 'row--drag-over' : ''}`}
                       onDragOver={e => handleDragOver(e, obj.id)}
                       onDragLeave={() => setDragOverId(null)}
                       onDrop={e => handleDrop(e, obj.id)}
@@ -619,11 +619,12 @@ export default function ObjectsPage() {
                       <td className="cell-type">
                         {(() => { const typeName = typeMap.get(obj.type) ?? String(obj.type); const { icon, color } = getTypeIcon(typeName); return (<><span className="type-icon" style={{ color }}>{icon}</span><span className="type-badge">{typeName}</span></>) })()}
                       </td>
-                      <td>
+                      <td className="cell-toggle" data-label="Active">
                         <button className={`toggle ${obj.active ? 'toggle--on' : ''}`} onClick={() => handleToggleActive(obj)} disabled={togglingId === obj.id} title={obj.active ? 'Active' : 'Inactive'} />
                       </td>
                       <td
                         className={`cell-time ${obj.total_seconds > 0 ? 'cell-total--clickable' : ''}`}
+                        data-label="Total"
                         onClick={() => handleToggleExpand(obj)}
                         title={obj.total_seconds > 0 ? 'Click to see filter breakdown' : undefined}
                       >

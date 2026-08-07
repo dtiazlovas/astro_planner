@@ -56,10 +56,13 @@ export default function FilterBadge({ name }: Props) {
   return (
     <span
       className="type-badge"
+      title={name ?? undefined}
       style={color ? { background: `${color}22`, color, outline: `1.5px solid ${color}99` } : undefined}
     >
       {color && <span className="filter-badge-dot" style={{ background: dotColor ?? color, boxShadow: `0 0 0 1.5px ${color}99` }} />}
-      {name ?? '—'}
+      {/* Wrapped rather than a bare text node so the name can be dropped where
+          the colour dot alone is enough to identify the filter. */}
+      <span className="type-badge__label">{name ?? '—'}</span>
     </span>
   )
 }
