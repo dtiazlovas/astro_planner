@@ -139,6 +139,9 @@ export default function SessionsPage() {
     }
   }
 
+  const toggleContents = (id: number) =>
+    setSelectedIds(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s })
+
   const set = (field: keyof Omit<typeof emptyForm, 'duration_set'>) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => setForm(f => ({ ...f, [field]: e.target.value }))
@@ -233,7 +236,6 @@ export default function SessionsPage() {
               <tr>
                 <th className="th-sort" onClick={() => handleSort('name')}>Name{sortInd('name')}</th>
                 <th className="th-sort" onClick={() => handleSort('start')}>Start{sortInd('start')}</th>
-                <th className="th-sort" onClick={() => handleSort('duration')}>Duration / End{sortInd('duration')}</th>
                 <th className="th-sort" onClick={() => handleSort('calculated_seconds')}>Content{sortInd('calculated_seconds')}</th>
                 <th className="th-sort" onClick={() => handleSort('comment')}>Comment{sortInd('comment')}</th>
                 <th></th>
@@ -242,23 +244,34 @@ export default function SessionsPage() {
             <tbody>
               {sortedSessions.map(ses => (
                 <Fragment key={ses.id}>
-                  <tr className={`row--card ${editingId === ses.id ? 'row--editing' : ''}`}>
-                    <td className="cell-name">{ses.name}</td>
+                  {/* The whole row toggles its contents panel; the action
+                      buttons stop the click so they don't also expand it. */}
+                  <tr
+                    className={`row--card row--clickable ${editingId === ses.id ? 'row--editing' : ''}`}
+                    onClick={() => toggleContents(ses.id)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleContents(ses.id) }
+                    }}
+                    tabIndex={0}
+                    title={selectedIds.has(ses.id) ? 'Hide contents' : 'Show session contents'}
+                  >
+                    <td className="cell-name">
+                      {ses.name}
+                      <span className="expand-caret">{selectedIds.has(ses.id) ? ' ▾' : ' ▸'}</span>
+                    </td>
                     <td className="cell-session-start" data-label="Start">{fmtDate(ses.start)}</td>
-                    <td className="cell-muted cell-session-end" data-label="End">{ses.duration_set ? fmtDate(ses.duration) : '—'}</td>
                     <td className="cell-time" data-label="Content">{fmtCalcDuration(Number(ses.calculated_seconds))}</td>
                     <td className="cell-muted cell-session-comment">{ses.comment ?? '—'}</td>
                     <td className="cell-action">
                       <div className="row-actions">
-                        <button className="btn-icon btn-contents" onClick={() => setSelectedIds(prev => { const s = new Set(prev); s.has(ses.id) ? s.delete(ses.id) : s.add(ses.id); return s })} title="Contents">≡</button>
-                        <button className="btn-icon btn-edit" onClick={() => openEdit(ses)} title="Edit">✎</button>
-                        <button className="btn-icon btn-danger" onClick={() => setConfirmingId(ses.id)} title="Delete">✕</button>
+                        <button className="btn-icon btn-edit" onClick={e => { e.stopPropagation(); openEdit(ses) }} title="Edit">✎</button>
+                        <button className="btn-icon btn-danger" onClick={e => { e.stopPropagation(); setConfirmingId(ses.id) }} title="Delete">✕</button>
                       </div>
                     </td>
                   </tr>
                   {selectedIds.has(ses.id) && (
                     <tr>
-                      <td colSpan={6} style={{ padding: 0 }}>
+                      <td colSpan={5} style={{ padding: 0 }}>
                         <SessionContentsPanel
                           session={ses}
                           onClose={() => setSelectedIds(prev => { const s = new Set(prev); s.delete(ses.id); return s })}
@@ -273,7 +286,7 @@ export default function SessionsPage() {
                   )}
                   {editingId === ses.id && showForm && (
                     <tr className="row--editor">
-                      <td colSpan={6} style={{ padding: 0 }}>
+                      <td colSpan={5} style={{ padding: 0 }}>
                         <form className="object-form object-form--inline" onSubmit={handleSubmit}>
                           <div className="form-actions">
                             <button type="submit" className="btn btn-primary" disabled={submitting}>

@@ -8,6 +8,18 @@
   /* Native controls (selects, date pickers, scrollbars) follow the app's dark
      palette instead of rendering as light widgets on mobile. */
   color-scheme: dark;
+
+  /* Switching tabs unmounts the old page and the new one renders its loading
+     state for a frame or two, collapsing the document to a single screen. The
+     scrollbar would disappear and come back, shifting the whole layout ~15px
+     sideways and back each time — the tab-switch flicker.
+
+     `overflow-y: scroll` keeps the scrollbar track present no matter how short
+     the document gets, which is what actually holds the width steady;
+     `scrollbar-gutter` is the tidier modern spelling but on its own it did not
+     survive the collapsed frame here. */
+  scrollbar-gutter: stable;
+  overflow-y: scroll;
 }
 
 body {
@@ -21,10 +33,26 @@ body {
 
 /* ── Layout ─────────────────────────────────────────────── */
 
+/* Narrow layout by default — the rail stacks into a top bar. The left-rail
+   layout takes over from 900px up (see the min-width block below). */
 .app {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+}
+
+.app-side {
+  display: flex;
+  flex-direction: column;
+  background: #0b0b16;
+  border-bottom: 1px solid #1e1e35;
+}
+
+.app-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
 }
 
 .totals-bar {
@@ -72,17 +100,14 @@ body {
   white-space: nowrap;
 }
 
-.app-header {
+.app-side__brand {
   display: flex;
   align-items: center;
-  gap: 2rem;
-  padding: 0 2rem;
-  height: 56px;
-  border-bottom: 1px solid #1e1e35;
-  background: #0b0b16;
+  gap: 1rem;
+  padding: 0.7rem 1rem;
 }
 
-.app-header h1 {
+.app-side__brand h1 {
   font-size: 1.25rem;
   background: linear-gradient(135deg, #a78bfa, #60a5fa);
   -webkit-background-clip: text;
@@ -94,6 +119,7 @@ body {
 .app-nav {
   display: flex;
   gap: 0.25rem;
+  padding: 0 1rem 0.6rem;
 }
 
 .nav-link {
@@ -126,7 +152,7 @@ body {
   white-space: nowrap;
   /* A <select> is sized by its widest option, and as a flex item its default
      `min-width: auto` makes that width unshrinkable — one long rig name would
-     otherwise stretch the header, and with it the whole page, past the
+     otherwise stretch the rail, and with it the whole page, past the
      viewport. */
   min-width: 0;
 }
@@ -185,6 +211,104 @@ body {
   color: #94a3b8;
 }
 
+/* ── Left rail (wide screens) ───────────────────────────────
+   Brand, nav and totals move into a fixed-width column so the content area
+   gets the full window height and width. The rail sticks while the content
+   scrolls, and scrolls internally if the totals list outgrows the window. */
+
+@media (min-width: 900px) {
+  .app { flex-direction: row; }
+
+  .app-side {
+    width: 15.5rem;
+    flex-shrink: 0;
+    gap: 1.1rem;
+    padding: 1.15rem 0.9rem;
+    border-bottom: none;
+    border-right: 1px solid #1e1e35;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    /* Full window height so the divider runs the length of the page and the
+       totals can settle against the bottom; scrolls internally if the filter
+       list outgrows a short window. */
+    height: 100vh;
+    height: 100dvh;
+    overflow-y: auto;
+  }
+
+  .app-side__brand {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.7rem;
+    padding: 0;
+  }
+
+  .app-side__brand h1 {
+    font-size: 1.1rem;
+    white-space: normal;
+  }
+
+  .rig-selector {
+    margin-left: 0;
+    gap: 0.4rem;
+  }
+
+  .rig-selector__select { flex: 1; }
+
+  .app-nav {
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0;
+  }
+
+  .nav-link { text-align: left; }
+
+  /* Totals become a labelled column: there's vertical room here, so each
+     filter gets its own row with the name spelled out. */
+  .totals-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
+    margin-top: auto;
+    padding: 0.9rem 0 0;
+    background: none;
+    border-bottom: none;
+    border-top: 1px solid #1e1e35;
+  }
+
+  .totals-bar__items {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.3rem;
+  }
+
+  .totals-bar__item { justify-content: space-between; }
+
+  .totals-bar__grand {
+    margin-left: 0;
+    text-align: right;
+    padding-top: 0.2rem;
+    border-top: 1px solid #17172b;
+  }
+
+  /* Freed from the old 1100px box, but still capped so the cards don't spread
+     across an ultrawide display. Centred in whatever is left of the window. */
+  .app-main {
+    max-width: 1920px;
+    margin: 0 auto;
+    padding: 1.75rem;
+  }
+
+  .app-footer {
+    max-width: 1920px;
+    width: 100%;
+    margin: 0 auto;
+    text-align: right;
+    padding: 0.75rem 1.75rem;
+  }
+}
+
 /* ── Objects page ───────────────────────────────────────── */
 
 .objects-page {
@@ -203,6 +327,287 @@ body {
   font-size: 1.5rem;
   color: #c4b5fd;
 }
+
+/* ── Object cards ───────────────────────────────────────────
+   A flowing grid of same-width cards: as many per row as the container
+   fits, one filter per line inside each. Cards in a row stretch to a
+   common height and the action bar is pinned to the bottom, so a target
+   with one filter still lines up with one that has five. */
+
+.obj-list {
+  display: grid;
+  /* min() keeps the track from overflowing a container narrower than the
+     card's ideal width (small phones). */
+  grid-template-columns: repeat(auto-fill, minmax(min(24rem, 100%), 1fr));
+  gap: 1.1rem;
+}
+
+/* Paused objects get their own labelled block under the active ones. */
+.obj-group {
+  border-top: 1px solid #23233f;
+  padding-top: 1.25rem;
+}
+
+.obj-group__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.9rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.obj-group__count {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: #21212b;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* An object and whatever it has expanded (filter breakdown, plans, editor). */
+.obj-entry {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.obj-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  /* Lighter and much less saturated than the page's navy: the cards should
+     read as neutral surfaces lifted off the background, not as blue panels. */
+  background: #21212b;
+  border: 1px solid #2e2e3a;
+  border-radius: 10px;
+  padding: 1.05rem;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.obj-card:hover { border-color: #3f3f50; }
+
+.obj-card__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.6rem;
+}
+
+.obj-card__grip {
+  display: grid;
+  grid-template-columns: repeat(2, 4px);
+  gap: 3px;
+  padding: 2px;
+  margin-top: 0.3rem;
+  cursor: grab;
+  user-select: none;
+}
+
+.obj-card__grip:active { cursor: grabbing; }
+
+.obj-card__grip-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #3c3c48;
+  transition: background 0.15s;
+}
+
+.obj-card:hover .obj-card__grip-dot { background: #6b6b7d; }
+
+.obj-card__id { min-width: 0; }
+
+.obj-card__name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  overflow-wrap: anywhere;
+}
+
+.obj-card__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.55rem;
+  margin-top: 0.2rem;
+}
+
+.obj-card__aliases {
+  font-size: 0.78rem;
+  color: #64748b;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.obj-card__total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border: none;
+  border-radius: 6px;
+  background: #191921;
+  font-family: inherit;
+  color: inherit;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.obj-card__total--clickable { cursor: pointer; }
+.obj-card__total--clickable:hover { background: #24242f; }
+
+.obj-card__total-label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #64748b;
+}
+
+.obj-card__total-value {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #7dd3fc;
+  font-variant-numeric: tabular-nums;
+}
+
+.obj-card__total:disabled .obj-card__total-value { color: #475569; }
+
+/* `margin-top: auto` pins the bar to the card's bottom edge, so the action
+   rows line up across a row of cards with differing filter counts. */
+.obj-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: auto;
+  padding-top: 0.3rem;
+}
+
+/* Read as one quiet toolbar rather than five differently-coloured chips: the
+   glyphs keep their meaning-colour, the tinted background only appears on
+   hover. */
+.obj-card__actions .btn-icon { background: transparent; }
+.obj-card__actions .btn-icon:hover:not(:disabled) { background: #32323f; }
+.obj-card__actions .btn-danger:hover:not(:disabled) { background: #3b1a1a; }
+
+/* One filter per line in a normal card. The track floor only kicks in when
+   an expanded object spans the full row, where the extra width becomes
+   two or three columns instead of very long bars. */
+.obj-card__progress {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr));
+  gap: 0.4rem 1.75rem;
+  border-top: 1px solid #2e2e3a;
+  padding-top: 0.7rem;
+}
+
+/* Filter names are short, but a long one must ellipsise rather than push
+   into the bar and break the column alignment. */
+.obj-card__progress .cell-time { font-size: 0.8rem; }
+.obj-card__progress .type-badge { max-width: 100%; }
+.obj-card__progress .type-badge__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Paused objects stay legible but visibly recede; the chip and the action
+   buttons keep full contrast so they're still easy to hit. */
+.obj-entry--inactive .obj-card {
+  background: #191920;
+  border-color: #292933;
+}
+
+.obj-entry--inactive .obj-card__id,
+.obj-entry--inactive .obj-card__total,
+.obj-entry--inactive .obj-card__progress {
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+
+.obj-entry--inactive:hover .obj-card__id,
+.obj-entry--inactive:hover .obj-card__total,
+.obj-entry--inactive:hover .obj-card__progress { opacity: 0.85; }
+
+.obj-entry--editing .obj-card {
+  border-color: #3730a3;
+  background: #26263a;
+}
+
+.obj-entry--drag-over .obj-card {
+  border-color: #6366f1;
+  box-shadow: 0 3px 0 -1px #6366f1;
+}
+
+/* The filter breakdown drops out under its own card, so it stacks rather
+   than running along one line as it does on the plans page. */
+.obj-entry > .filter-stats-panel {
+  margin-top: 0.5rem;
+  border-radius: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+  padding: 0.85rem 1rem;
+}
+
+/* ── Active / paused chip ───────────────────────────────────
+   Replaces a bare switch: the state is spelled out, so there's nothing to
+   infer from the knob position. */
+
+.state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.state-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.state-chip--on {
+  background: #0d2b1b;
+  border-color: #1c5638;
+  color: #4ade80;
+}
+
+.state-chip--on:hover:not(:disabled) { background: #123a25; }
+
+.state-chip--off {
+  background: #1a1a2a;
+  border-color: #2c2c46;
+  color: #6b7280;
+}
+
+.state-chip--off:hover:not(:disabled) {
+  background: #22223a;
+  color: #94a3b8;
+}
+
+.state-chip:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── Buttons ────────────────────────────────────────────── */
 
@@ -530,33 +935,6 @@ body {
   white-space: nowrap;
 }
 
-.type-icon {
-  display: block;
-  font-size: 1.75rem;
-  line-height: 1;
-  margin-bottom: 0.25rem;
-  filter: drop-shadow(0 0 4px currentColor);
-}
-
-.type-icon-svg {
-  display: block;
-  width: 1.75rem;
-  height: 1.75rem;
-  margin: 0 auto;
-}
-
-.type-icon-img {
-  display: block;
-  width: 1.75rem;
-  height: 1.75rem;
-  margin: 0 auto;
-  filter: drop-shadow(0 0 4px #f87171);
-}
-
-.type-icon-img--reflection {
-  filter: drop-shadow(0 0 4px #67e8f9);
-}
-
 .cell-progress {
   min-width: 200px;
 }
@@ -718,6 +1096,16 @@ body {
   outline-offset: -1px;
 }
 
+/* Rows that expand on click anywhere, rather than via a dedicated button. */
+.row--clickable {
+  cursor: pointer;
+}
+
+.row--clickable:focus-visible {
+  outline: 2px solid #7c3aed;
+  outline-offset: -2px;
+}
+
 .form-title {
   font-size: 0.85rem;
   font-weight: 600;
@@ -771,16 +1159,15 @@ body {
   gap: 0.4rem;
 }
 
-.plan-progress-list {
-  display: grid;
-  grid-template-columns: max-content 1fr max-content max-content;
-  gap: 0.35rem 0.6rem;
-  align-items: center;
-  min-width: 0;
-}
-
+/* Each item is its own grid rather than `display: contents` in a shared one:
+   the progress block flows into as many columns as fit, and every item using
+   the same template keeps the bars aligned down each column. */
 .plan-progress-item {
-  display: contents;
+  display: grid;
+  grid-template-columns: 5.3rem minmax(56px, 1fr) max-content 2.2rem;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .plan-progress-bar {
@@ -1160,6 +1547,20 @@ body {
    max-width alone has no effect and the content overflows. */
 .modal-dialog--wide {
   width: min(60rem, 95vw);
+}
+
+/* Roomy enough for the two-column form grid without crowding the inputs. */
+.modal-dialog--form {
+  width: min(38rem, 94vw);
+}
+
+/* A panel dropped straight into a dialog already sits on the dialog's own
+   surface — its card chrome would just double up. */
+.modal-dialog > .contents-panel {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
 }
 
 .modal-dialog form {
@@ -1768,9 +2169,10 @@ body {
    column. Below, the chrome collapses and the tables instead keep a readable
    minimum width and scroll sideways inside their wrapper. */
 
-/* Small laptops / tablets — trim the gutters only. */
-@media (max-width: 900px) {
-  .app-header { padding: 0 1.25rem; gap: 1.25rem; }
+/* Small laptops / tablets — no rail yet, just trim the gutters. */
+@media (max-width: 899px) {
+  .app-side__brand { padding: 0.7rem 1.25rem; gap: 1.25rem; }
+  .app-nav    { padding: 0 1.25rem 0.6rem; }
   .totals-bar { padding: 0.4rem 1.25rem; }
   .app-main   { padding: 1.5rem 1.25rem; }
 }
@@ -1778,21 +2180,18 @@ body {
 /* Phones and portrait tablets. */
 @media (max-width: 768px) {
   /* ── Chrome ── */
-  .app-header {
-    height: auto;
+  .app-side__brand {
     flex-wrap: wrap;
     align-items: center;
     padding: 0.6rem 0.85rem;
     gap: 0.5rem 0.75rem;
   }
 
-  .app-header h1 { font-size: 1.05rem; }
+  .app-side__brand h1 { font-size: 1.05rem; }
 
-  /* Nav drops to its own full-width row and scrolls if the five tabs don't
-     fit, rather than squeezing the title and rig selector off-screen. */
+  /* The tabs scroll sideways rather than squeezing when all five don't fit. */
   .app-nav {
-    order: 3;
-    flex-basis: 100%;
+    padding: 0 0.85rem 0.6rem;
     overflow-x: auto;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
@@ -1864,8 +2263,7 @@ body {
   .data-table td { padding: 0.7rem; overflow-wrap: anywhere; }
 
   .cell-mono { max-width: 12rem; }
-  .cell-progress { min-width: 170px; }
-  .plan-progress-bar { min-width: 56px; }
+  .plan-progress-bar { min-width: 48px; }
 
   /* Unwrapped table inside the import preview — scroll the block itself. */
   .import-session-block { overflow-x: auto; }
@@ -2019,52 +2417,24 @@ body {
     gap: 0.4rem;
   }
 
-  /* ── Objects ─────────────────────────────────────────────────
-     ┌───────────────────────────────────┐
-     │ [icon]  Name              TOTAL   │
-     │ [type]  aliases           ~12h 3m │
-     │ ───────── plan progress ───────── │
-     │ [on/off]           ☰ ⬆ ⟳ ✎ ✕     │
-     └───────────────────────────────────┘ */
-  .data-table--objects > thead { display: none; }
+  /* ── Object cards ────────────────────────────────────────────
+     The grid collapses to one column on its own; only the details differ. */
 
-  .data-table--objects > tbody > tr.row--card {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
+  /* HTML5 drag-and-drop never fires from touch, so the reorder grip is a dead
+     affordance on a phone. */
+  .obj-card__head { grid-template-columns: minmax(0, 1fr) auto; }
+  .obj-card__grip { display: none; }
 
-  .data-table--objects > tbody > .row--card > .cell-type         { grid-column: 1; grid-row: 1; max-width: 5.5rem; }
-  .data-table--objects > tbody > .row--card > .cell-name-actions { grid-column: 2; grid-row: 1; }
-  .data-table--objects > tbody > .row--card > .cell-time         { grid-column: 3; grid-row: 1; text-align: right; }
-  .data-table--objects > tbody > .row--card > .cell-progress     { grid-column: 1 / -1; grid-row: 2; }
-  .data-table--objects > tbody > .row--card > .cell-toggle       { grid-column: 1; grid-row: 3; }
-  .data-table--objects > tbody > .row--card > .cell-action       { grid-column: 2 / -1; grid-row: 3; }
+  .obj-card__name { font-size: 0.95rem; }
 
-  /* An object with no active plan renders an empty progress cell — drop it
-     out of the grid and pull the bottom row up, so the card doesn't carry a
-     blank band. */
-  .data-table--objects > tbody > .row--card > .cell-progress:empty { display: none; }
-  .data-table--objects > tbody > .row--card:has(> .cell-progress:empty) > .cell-toggle,
-  .data-table--objects > tbody > .row--card:has(> .cell-progress:empty) > .cell-action { grid-row: 2; }
-
-  /* Full type names ("Emission Nebula") only fit stacked under the icon. */
-  .data-table--objects > tbody > .row--card > .cell-type .type-badge {
-    white-space: normal;
-    font-size: 0.62rem;
-    line-height: 1.25;
-  }
-
-  .data-table--objects > tbody > .row--card > .cell-name-actions .cell-name { font-size: 0.95rem; }
-
-  /* HTML5 drag-and-drop never fires from touch, so the reorder handle is a
-     dead affordance on a phone. */
-  .data-table--objects > tbody > .row--card .drag-handle { display: none; }
+  .modal-dialog--form { width: 100%; }
 
   /* ── Sessions ────────────────────────────────────────────────
      ┌───────────────────────────────────┐
      │ Name                     CONTENT  │
      │                           ~4h 10m │
-     │ START            END              │
-     │ 7 Jun, 21:40     8 Jun, 03:15     │
+     │ START                             │
+     │ 7 Jun 2026, 21:40                 │
      │ comment                           │
      │                      ≡ ✎ ✕        │
      └───────────────────────────────────┘ */
@@ -2098,13 +2468,9 @@ body {
 
   .data-table--sessions > tbody > .row--card > .cell-name            { grid-column: 1; grid-row: 1; font-size: 0.95rem; }
   .data-table--sessions > tbody > .row--card > .cell-time            { grid-column: 2; grid-row: 1; text-align: right; }
-  .data-table--sessions > tbody > .row--card > .cell-session-start   { grid-column: 1; grid-row: 2; }
-  .data-table--sessions > tbody > .row--card > .cell-session-end     { grid-column: 2; grid-row: 2; text-align: right; }
+  .data-table--sessions > tbody > .row--card > .cell-session-start   { grid-column: 1 / -1; grid-row: 2; font-size: 0.82rem; }
   .data-table--sessions > tbody > .row--card > .cell-session-comment { grid-column: 1 / -1; grid-row: 3; font-size: 0.85rem; }
   .data-table--sessions > tbody > .row--card > .cell-action          { grid-column: 1 / -1; grid-row: 4; }
-
-  .data-table--sessions > tbody > .row--card > .cell-session-start,
-  .data-table--sessions > tbody > .row--card > .cell-session-end { font-size: 0.82rem; }
 }
 
 /* Portrait phones. */
@@ -2141,9 +2507,10 @@ body {
 /* Very narrow phones (≤360px logical px). */
 @media (max-width: 400px) {
   .app-main { padding: 0.85rem 0.6rem; }
-  .app-header { padding: 0.55rem 0.6rem; }
+  .app-side__brand { padding: 0.55rem 0.6rem; }
+  .app-nav { padding: 0 0.6rem 0.5rem; }
   .totals-bar { padding: 0.4rem 0.6rem; }
-  .app-header h1 { font-size: 0.95rem; }
+  .app-side__brand h1 { font-size: 0.95rem; }
   .nav-link { padding: 0.35rem 0.55rem; font-size: 0.82rem; }
   .cal-cell { min-height: 50px; padding: 0.2rem 0.25rem; }
   .cal-cell__dur { font-size: 0.66rem; }

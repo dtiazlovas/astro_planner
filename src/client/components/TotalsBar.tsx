@@ -36,8 +36,7 @@ export default function TotalsBar({ refreshKey }: { refreshKey?: string | number
       <span className="totals-bar__label">Totals</span>
       <div className="totals-bar__items">
         {shown.map(s => (
-          <span key={s.filter_name ?? 'none'} className="totals-bar__item"
-            style={s.filter_name === 'Luminance' ? { margin: '0 0.5rem' } : undefined}>
+          <span key={s.filter_name ?? 'none'} className="totals-bar__item">
             <FilterBadge name={s.filter_name} />
             <span className="totals-bar__time">{fmtDuration(s.total_seconds)}</span>
           </span>

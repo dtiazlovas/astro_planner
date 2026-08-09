@@ -101,7 +101,9 @@
       "PowerShell(npm run build:client 2>&1)",
       "PowerShell($p = @\\(\"$env:ProgramFiles \\(x86\\)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe\",\"C:\\\\Program Files \\(x86\\)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe\",\"C:\\\\Program Files\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe\"\\); $p | ForEach-Object { if \\(Test-Path $_\\) { $_ } })",
       "PowerShell($env:PORT=\"5137\"; node dist/server.js)",
-      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:5137/\" -UseBasicParsing -TimeoutSec 10; \"HTTP $\\($r.StatusCode\\)  len=$\\($r.Content.Length\\)\" } catch { \"ERR: $_\" })"
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:5137/\" -UseBasicParsing -TimeoutSec 10; \"HTTP $\\($r.StatusCode\\)  len=$\\($r.Content.Length\\)\" } catch { \"ERR: $_\" })",
+      "PowerShell($env:PORT=\"5137\"; node h:\\\\astro-planner\\\\repo\\\\dist\\\\server.js)",
+      "Bash(awk '/── Object cards ──/,/── Active \\\\/ paused chip ──/' src/client/index.css)"
     ]
   }
 }

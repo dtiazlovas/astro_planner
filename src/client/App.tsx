@@ -32,9 +32,13 @@ export default function App() {
 
   return (
     <div className="app">
-      <TotalsBar refreshKey={page} />
-      <header className="app-header">
-        <h1>Astro Session Logger</h1>
+      {/* Brand, nav and totals live together so they can be a left rail on a
+          wide screen and stack back into a top bar on a narrow one. */}
+      <aside className="app-side">
+        <div className="app-side__brand">
+          <h1>Astro Session Logger</h1>
+          <RigSelector />
+        </div>
         <nav className="app-nav">
           {(['objects', 'sessions', 'calendar', 'equipment', 'settings'] as Page[]).map(p => (
             <button key={p} className={`nav-link ${page === p ? 'nav-link--active' : ''}`} onClick={() => setPage(p)}>
@@ -42,18 +46,20 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <RigSelector />
-      </header>
-      <main className="app-main">
-        {page === 'objects' && <ObjectsPage />}
-        {page === 'sessions' && <SessionsPage />}
-        {page === 'calendar' && <CalendarPage />}
-        {page === 'equipment' && <EquipmentPage />}
-        {page === 'settings' && <SettingsPage />}
-      </main>
-      <footer className="app-footer">
-        Icons by <a href="https://www.flaticon.com/" target="_blank" rel="noopener noreferrer">Flaticon</a>
-      </footer>
+        <TotalsBar refreshKey={page} />
+      </aside>
+      <div className="app-body">
+        <main className="app-main">
+          {page === 'objects' && <ObjectsPage />}
+          {page === 'sessions' && <SessionsPage />}
+          {page === 'calendar' && <CalendarPage />}
+          {page === 'equipment' && <EquipmentPage />}
+          {page === 'settings' && <SettingsPage />}
+        </main>
+        <footer className="app-footer">
+          Icons by <a href="https://www.flaticon.com/" target="_blank" rel="noopener noreferrer">Flaticon</a>
+        </footer>
+      </div>
     </div>
   )
 }

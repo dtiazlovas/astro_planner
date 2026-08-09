@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Fragment } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend, saveImportedAnalysis, openFitsFile } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
 import { fetchPatterns, fetchImportFileMode, fetchDayStartHour, type ImportFileMode } from '../utils/filePattern'
@@ -11,9 +11,6 @@ import FileListDialog from '../components/FileListDialog'
 import { useEquipment } from '../context/EquipmentContext'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
-import GalaxyIcon from '../components/GalaxyIcon'
-import nebulaImg from '../assets/nebula.png'
-import nebulaReflectionImg from '../assets/nebula-reflection.png'
 
 const emptyForm = { name: '', typeId: '', position_json: '', comment: '', aliases: '', active: true, folder: '' }
 
@@ -46,7 +43,8 @@ export default function ObjectsPage() {
   const [expandedStats, setExpandedStats] = useState<Map<number, ObjectFilterStat[]>>(new Map())
   const [planProgress, setPlanProgress] = useState<Map<number, PlanProgressItem[]>>(new Map())
   const [loadingIds, setLoadingIds] = useState<Set<number>>(new Set())
-  const [planExpandedIds, setPlanExpandedIds] = useState<Set<number>>(new Set())
+  // Plans open as a dialog, so at most one object's plans are shown at a time.
+  const [plansForId, setPlansForId] = useState<number | null>(null)
   const [activePlanObjectIds, setActivePlanObjectIds] = useState<Set<number>>(new Set())
   const [assigningIds, setAssigningIds] = useState<Set<number>>(new Set())
   const [dragOverId, setDragOverId] = useState<number | null>(null)
@@ -111,7 +109,7 @@ export default function ObjectsPage() {
     }
     load()
     // Collapse any rig-specific expanded state when switching rigs
-    setExpandedIds(new Set()); setExpandedStats(new Map()); setPlanExpandedIds(new Set())
+    setExpandedIds(new Set()); setExpandedStats(new Map()); setPlansForId(null)
   }, [activeId])
 
   // Loaded up-front so the sync click can request folder permission while the
@@ -372,33 +370,23 @@ export default function ObjectsPage() {
 
   const typeMap = new Map(types.map(t => [t.id, t.name]))
 
-  // Display order: active objects first, inactive below. Array.sort is stable,
-  // so each group keeps its underlying priority order (drag-reorder ordering).
+  // Active first, paused after. Array.sort is stable, so each group keeps its
+  // underlying priority order (the drag-reorder ordering). The combined list
+  // stays the basis for drag-and-drop, which reorders across the whole set;
+  // the two slices below are only how it gets rendered.
   const displayObjects = [...objects].sort((a, b) => Number(b.active) - Number(a.active))
-
-  const getTypeIcon = (name: string): { icon: React.ReactNode; color: string } => {
-    const n = name.toLowerCase()
-    if (n.includes('star cluster') || n.includes('cluster')) return { icon: '⁂', color: '#93c5fd' }
-    if (n.includes('star'))    return { icon: '★',  color: '#fde68a' }
-    if (n.includes('emission')) return { icon: <img src={nebulaImg} className="type-icon-img" alt="emission nebula" />, color: '#f87171' }
-    if (n.includes('reflection')) return { icon: <img src={nebulaReflectionImg} className="type-icon-img type-icon-img--reflection" alt="reflection nebula" />, color: '#67e8f9' }
-    if (n.includes('galaxy'))  return { icon: <GalaxyIcon className="type-icon-svg" />, color: '#c4b5fd' }
-    return { icon: '·', color: '#94a3b8' }
-  }
+  const activeObjects = displayObjects.filter(o => o.active)
+  const pausedObjects = displayObjects.filter(o => !o.active)
 
   const handleDragStart = (e: React.DragEvent, id: number) => {
     e.dataTransfer.setData('text/plain', String(id))
     e.dataTransfer.effectAllowed = 'move'
 
-    const tr = (e.currentTarget as HTMLElement).closest('tr')
-    if (tr) {
-      const rect = tr.getBoundingClientRect()
-      const ghost = document.createElement('table')
-      ghost.className = 'data-table'
-      ghost.style.cssText = `position:absolute;top:-9999px;left:-9999px;width:${rect.width}px;border-collapse:collapse;background:#1e1e32;opacity:0.95;`
-      const tbody = document.createElement('tbody')
-      tbody.appendChild(tr.cloneNode(true))
-      ghost.appendChild(tbody)
+    const card = (e.currentTarget as HTMLElement).closest('.obj-card')
+    if (card) {
+      const rect = card.getBoundingClientRect()
+      const ghost = card.cloneNode(true) as HTMLElement
+      ghost.style.cssText = `position:absolute;top:-9999px;left:-9999px;width:${rect.width}px;opacity:0.95;`
       document.body.appendChild(ghost)
       e.dataTransfer.setDragImage(ghost, e.clientX - rect.left, e.clientY - rect.top)
       setTimeout(() => document.body.removeChild(ghost), 0)
@@ -514,270 +502,247 @@ export default function ObjectsPage() {
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
   ) => setForm(f => ({ ...f, [field]: e.target.value }))
 
+  // One object card plus any panel it has expanded. Shared by the active and
+  // paused groups so the two lists cannot drift apart.
+  const renderObject = (obj: ApObject) => {
+    const progress = planProgress.get(obj.id)
+    const typeName = typeMap.get(obj.type) ?? String(obj.type)
+    const aliases = (obj.aliases ?? '').split(';').map(a => a.trim()).filter(Boolean)
+    const expanded = expandedIds.has(obj.id)
+    return (
+      <div
+        key={obj.id}
+        className={[
+          'obj-entry',
+          obj.active ? '' : 'obj-entry--inactive',
+          editingId === obj.id ? 'obj-entry--editing' : '',
+          dragOverId === obj.id ? 'obj-entry--drag-over' : '',
+        ].filter(Boolean).join(' ')}
+        onDragOver={e => handleDragOver(e, obj.id)}
+        onDragLeave={() => setDragOverId(null)}
+        onDrop={e => handleDrop(e, obj.id)}
+      >
+                <div className="obj-card">
+                  <div className="obj-card__head">
+                    <div
+                      className="obj-card__grip"
+                      draggable
+                      onDragStart={e => handleDragStart(e, obj.id)}
+                      title="Drag to reorder"
+                    >{Array.from({ length: 6 }).map((_, i) => <span key={i} className="obj-card__grip-dot" />)}</div>
+
+                    <div className="obj-card__id">
+                      <div className="obj-card__name">{obj.name}</div>
+                      <div className="obj-card__meta">
+                        <span className="type-badge">{typeName}</span>
+                        {aliases.length > 0 && <span className="obj-card__aliases">{aliases.join(' · ')}</span>}
+                      </div>
+                    </div>
+
+                    <button
+                      className={`state-chip ${obj.active ? 'state-chip--on' : 'state-chip--off'}`}
+                      onClick={() => handleToggleActive(obj)}
+                      disabled={togglingId === obj.id}
+                      title={obj.active ? 'Active — click to pause' : 'Paused — click to activate'}
+                    >
+                      <span className="state-chip__dot" />
+                      {obj.active ? 'Active' : 'Paused'}
+                    </button>
+                  </div>
+
+                  <button
+                    className={`obj-card__total ${obj.total_seconds > 0 ? 'obj-card__total--clickable' : ''}`}
+                    onClick={() => handleToggleExpand(obj)}
+                    disabled={obj.total_seconds <= 0}
+                    title={obj.total_seconds > 0 ? 'Show breakdown by filter' : 'Nothing captured yet'}
+                  >
+                    <span className="obj-card__total-label">Integrated</span>
+                    <span className="obj-card__total-value">
+                      {fmtDuration(Number(obj.total_seconds))}
+                      {obj.total_seconds > 0 && <span className="expand-caret">{expanded ? ' ▾' : ' ▸'}</span>}
+                    </span>
+                  </button>
+
+                  {progress && progress.length > 0 && (
+                    <div className="obj-card__progress">
+                      {progress.map(p => {
+                        const capturedMins = p.captured_seconds / 60
+                        const pct = p.target_minutes > 0 ? Math.min(100, Math.round(capturedMins / p.target_minutes * 100)) : 0
+                        const avgExp = p.total_frames > 0 ? Math.round(p.captured_seconds / p.total_frames) : null
+                        const tooltip = p.total_frames > 0
+                          ? `${p.total_frames} frame${p.total_frames !== 1 ? 's' : ''}${avgExp !== null ? ` × ${avgExp}s` : ''}`
+                          : undefined
+                        return (
+                          <div key={p.filter_id} className="plan-progress-item" title={tooltip}>
+                            <FilterBadge name={p.filter_name} />
+                            <div className="plan-progress-bar">
+                              <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className="cell-time">{fmtMinsH(capturedMins)} / {fmtMinsH(p.target_minutes)}</span>
+                            <span className="plan-progress-pct">{pct}%</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  <div className="obj-card__actions">
+                    <button className="btn-icon btn-contents" onClick={() => setPlansForId(obj.id)} title="Plans">☰</button>
+                    {activePlanObjectIds.has(obj.id) && (
+                      <button className="btn-icon btn-assign" onClick={() => handleAssignAll(obj.id)} disabled={assigningIds.has(obj.id)} title="Assign all unassigned sessions to active plan">
+                        {assigningIds.has(obj.id) ? '…' : '⬆'}
+                      </button>
+                    )}
+                    {obj.folder && (
+                      <button className="btn-icon btn-sync" onClick={() => handleSync(obj)} disabled={syncingId !== null}
+                        title="Sync stats with files present in the object folder">
+                        {syncingId === obj.id ? '…' : '⟳'}
+                      </button>
+                    )}
+                    <button className="btn-icon btn-edit" onClick={() => openEdit(obj)} title="Edit">✎</button>
+                    <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
+                  </div>
+                </div>
+
+                {expanded && (
+                  <div className="filter-stats-panel">
+                    <span className="filter-stats-panel__title">{obj.name} — by filter</span>
+                    {loadingIds.has(obj.id) ? (
+                      <span className="cell-muted">Loading…</span>
+                    ) : (expandedStats.get(obj.id)?.length ?? 0) === 0 ? (
+                      <span className="cell-muted">No data</span>
+                    ) : (
+                      <div className="filter-stats-list">
+                        {(expandedStats.get(obj.id) ?? []).map((s, i) => (
+                          <div key={i} className="filter-stat-item">
+                            <FilterBadge name={s.filter_name} />
+                            <span className="cell-time">{fmtDuration(Number(s.total_seconds))}</span>
+                            {(s.exposures?.length ?? 0) > 0 && (
+                              <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                                {s.exposures!.map(e => `${e.frames} × ${e.duration}s`).join(' · ')}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+              </div>
+    )
+  }
+
   return (
     <div className="objects-page">
       <div className="page-header">
         <h2>Objects</h2>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          {(expandedIds.size > 0 || planExpandedIds.size > 0) && (
-            <button className="btn btn-ghost" onClick={() => { setExpandedIds(new Set()); setExpandedStats(new Map()); setPlanExpandedIds(new Set()) }}>Collapse all</button>
+          {expandedIds.size > 0 && (
+            <button className="btn btn-ghost" onClick={() => { setExpandedIds(new Set()); setExpandedStats(new Map()) }}>Collapse all</button>
           )}
-          <button className={`btn ${showForm && editingId === null ? 'btn-ghost' : 'btn-primary'}`} onClick={showForm && editingId === null ? handleCancel : openAdd}>
-            {showForm && editingId === null ? 'Cancel' : '+ Add Object'}
-          </button>
+          <button className="btn btn-primary" onClick={openAdd}>+ Add Object</button>
         </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
-
-      {showForm && editingId === null && (
-        <form className="object-form" onSubmit={handleSubmit}>
-          <p className="form-title">New Object</p>
-          <div className="form-grid">
-            <div className="form-field">
-              <label htmlFor="obj-name">Name</label>
-              <input id="obj-name" value={form.name} onChange={set('name')} required placeholder="e.g. Andromeda Galaxy" autoFocus />
-            </div>
-            <div className="form-field">
-              <label htmlFor="obj-type">Type</label>
-              <select id="obj-type" value={form.typeId} onChange={set('typeId')} required>
-                <option value="">Select type…</option>
-                {types.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
-            </div>
-            <div className="form-field form-field--full">
-              <label htmlFor="obj-position">Position (JSON)</label>
-              <input id="obj-position" value={form.position_json} onChange={set('position_json')} required placeholder='{"ra": "00h42m44s", "dec": "+41°16′09″"}' />
-            </div>
-            <div className="form-field">
-              <label htmlFor="obj-aliases">Aliases</label>
-              <input id="obj-aliases" value={form.aliases} onChange={set('aliases')} placeholder="e.g. M31, NGC 224" />
-            </div>
-            <div className="form-field form-field--check">
-              <label className="check-label">
-                <input type="checkbox" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} />
-                Active
-              </label>
-            </div>
-            <div className="form-field form-field--full">
-              <label htmlFor="obj-folder">Folder</label>
-              <input id="obj-folder" value={form.folder} onChange={set('folder')} placeholder="e.g. M31" spellCheck={false} />
-            </div>
-            <div className="form-field form-field--full">
-              <label htmlFor="obj-comment">Comment</label>
-              <textarea id="obj-comment" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
-            </div>
-          </div>
-          <div className="form-actions">
-            <button type="submit" className="btn btn-primary" disabled={submitting}>
-              {submitting ? 'Saving…' : editingId !== null ? 'Update Object' : 'Save Object'}
-            </button>
-          </div>
-        </form>
-      )}
 
       {loading ? (
         <p className="state-msg">Loading…</p>
       ) : objects.length === 0 ? (
         <p className="state-msg">No objects yet — add one above.</p>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table data-table--cards data-table--objects">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Active</th>
-                <th>Total</th>
-                <th>Progress</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayObjects.map(obj => {
-                const progress = planProgress.get(obj.id)
-                return (
-                  <Fragment key={obj.id}>
-                    <tr
-                      className={`row--card ${editingId === obj.id ? 'row--editing' : dragOverId === obj.id ? 'row--drag-over' : ''}`}
-                      onDragOver={e => handleDragOver(e, obj.id)}
-                      onDragLeave={() => setDragOverId(null)}
-                      onDrop={e => handleDrop(e, obj.id)}
-                    >
-                      <td className="cell-name-actions" style={{ verticalAlign: 'top' }}>
-                        <div className="cell-name">{obj.name}</div>
-                        {obj.aliases && obj.aliases.split(';').map(a => a.trim()).filter(Boolean).map((a, i) => (
-                          <div key={i} className="cell-muted" style={{ fontSize: '0.8rem' }}>{a}</div>
-                        ))}
-                        <div
-                          className="drag-handle"
-                          draggable
-                          onDragStart={e => handleDragStart(e, obj.id)}
-                          title="Drag to reorder"
-                        >{Array.from({ length: 9 }).map((_, i) => <span key={i} className="drag-handle__dot" />)}</div>
-                      </td>
-                      <td className="cell-type">
-                        {(() => { const typeName = typeMap.get(obj.type) ?? String(obj.type); const { icon, color } = getTypeIcon(typeName); return (<><span className="type-icon" style={{ color }}>{icon}</span><span className="type-badge">{typeName}</span></>) })()}
-                      </td>
-                      <td className="cell-toggle" data-label="Active">
-                        <button className={`toggle ${obj.active ? 'toggle--on' : ''}`} onClick={() => handleToggleActive(obj)} disabled={togglingId === obj.id} title={obj.active ? 'Active' : 'Inactive'} />
-                      </td>
-                      <td
-                        className={`cell-time ${obj.total_seconds > 0 ? 'cell-total--clickable' : ''}`}
-                        data-label="Total"
-                        onClick={() => handleToggleExpand(obj)}
-                        title={obj.total_seconds > 0 ? 'Click to see filter breakdown' : undefined}
-                      >
-                        {fmtDuration(Number(obj.total_seconds))}
-                        {obj.total_seconds > 0 && <span className="expand-caret">{expandedIds.has(obj.id) ? ' ▾' : ' ▸'}</span>}
-                      </td>
-                      <td
-                        className={`cell-progress ${obj.total_seconds > 0 ? 'cell-total--clickable' : ''}`}
-                        onClick={() => handleToggleExpand(obj)}
-                        title={obj.total_seconds > 0 ? 'Click to see filter breakdown' : undefined}
-                      >
-                        {progress && progress.length > 0 && (
-                          <div className="plan-progress-list">
-                            {progress.map(p => {
-                              const capturedMins = p.captured_seconds / 60
-                              const pct = p.target_minutes > 0 ? Math.min(100, Math.round(capturedMins / p.target_minutes * 100)) : 0
-                              const avgExp = p.total_frames > 0 ? Math.round(p.captured_seconds / p.total_frames) : null
-                              const tooltip = p.total_frames > 0
-                                ? `${p.total_frames} frame${p.total_frames !== 1 ? 's' : ''}${avgExp !== null ? ` × ${avgExp}s` : ''}`
-                                : undefined
-                              return (
-                                <div key={p.filter_id} className="plan-progress-item" title={tooltip}>
-                                  <FilterBadge name={p.filter_name} />
-                                  <div className="plan-progress-bar">
-                                    <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
-                                  </div>
-                                  <span className="cell-time">{fmtMinsH(capturedMins)} / {fmtMinsH(p.target_minutes)}</span>
-                                  <span className="plan-progress-pct">{pct}%</span>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </td>
-                      <td className="cell-action" style={{ verticalAlign: 'top' }}>
-                        <div className="row-actions">
-                          <button className="btn-icon btn-contents" onClick={() => setPlanExpandedIds(prev => { const s = new Set(prev); s.has(obj.id) ? s.delete(obj.id) : s.add(obj.id); return s })} title="Plans">☰</button>
-                          {activePlanObjectIds.has(obj.id) && (
-                            <button className="btn-icon btn-assign" onClick={() => handleAssignAll(obj.id)} disabled={assigningIds.has(obj.id)} title="Assign all unassigned sessions to active plan">
-                              {assigningIds.has(obj.id) ? '…' : '⬆'}
-                            </button>
-                          )}
-                          {obj.folder && (
-                            <button className="btn-icon btn-sync" onClick={() => handleSync(obj)} disabled={syncingId !== null}
-                              title="Sync stats with files present in the object folder">
-                              {syncingId === obj.id ? '…' : '⟳'}
-                            </button>
-                          )}
-                          <button className="btn-icon btn-edit" onClick={() => openEdit(obj)} title="Edit">✎</button>
-                          <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
-                        </div>
-                      </td>
-                    </tr>
-                    {expandedIds.has(obj.id) && (
-                      <tr>
-                        <td colSpan={6} style={{ padding: 0 }}>
-                          <div className="filter-stats-panel">
-                            <span className="filter-stats-panel__title">{obj.name} — by filter</span>
-                            {loadingIds.has(obj.id) ? (
-                              <span className="cell-muted">Loading…</span>
-                            ) : (expandedStats.get(obj.id)?.length ?? 0) === 0 ? (
-                              <span className="cell-muted">No data</span>
-                            ) : (
-                              <div className="filter-stats-list">
-                                {(expandedStats.get(obj.id) ?? []).map((s, i) => (
-                                  <div key={i} className="filter-stat-item">
-                                    <FilterBadge name={s.filter_name} />
-                                    <span className="cell-time">{fmtDuration(Number(s.total_seconds))}</span>
-                                    {(s.exposures?.length ?? 0) > 0 && (
-                                      <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
-                                        {s.exposures!.map(e => `${e.frames} × ${e.duration}s`).join(' · ')}
-                                      </span>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                    {planExpandedIds.has(obj.id) && (
-                      <tr>
-                        <td colSpan={6} style={{ padding: 0 }}>
-                          <PlansPanel
-                            objectId={obj.id}
-                            objectName={obj.name}
-                            onClose={() => setPlanExpandedIds(prev => { const s = new Set(prev); s.delete(obj.id); return s })}
-                            onActivePlanChange={has => setActivePlanObjectIds(prev => {
-                              const s = new Set(prev)
-                              has ? s.add(obj.id) : s.delete(obj.id)
-                              return s
-                            })}
-                          />
-                        </td>
-                      </tr>
-                    )}
-                    {editingId === obj.id && showForm && (
-                      <tr className="row--editor">
-                        <td colSpan={6} style={{ padding: 0 }}>
-                          <form className="object-form object-form--inline" onSubmit={handleSubmit}>
-                            <div className="form-actions">
-                              <button type="submit" className="btn btn-primary" disabled={submitting}>
-                                {submitting ? 'Saving…' : 'Update Object'}
-                              </button>
-                              <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
-                            </div>
-                            <div className="form-grid">
-                              <div className="form-field">
-                                <label htmlFor="obj-name">Name</label>
-                                <input id="obj-name" value={form.name} onChange={set('name')} required placeholder="e.g. Andromeda Galaxy" autoFocus />
-                              </div>
-                              <div className="form-field">
-                                <label htmlFor="obj-type">Type</label>
-                                <select id="obj-type" value={form.typeId} onChange={set('typeId')} required>
-                                  <option value="">Select type…</option>
-                                  {types.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                </select>
-                              </div>
-                              <div className="form-field form-field--full">
-                                <label htmlFor="obj-position">Position (JSON)</label>
-                                <input id="obj-position" value={form.position_json} onChange={set('position_json')} required placeholder='{"ra": "00h42m44s", "dec": "+41°16′09″"}' />
-                              </div>
-                              <div className="form-field">
-                                <label htmlFor="obj-aliases">Aliases</label>
-                                <input id="obj-aliases" value={form.aliases} onChange={set('aliases')} placeholder="e.g. M31; NGC 224" />
-                              </div>
-                              <div className="form-field form-field--check">
-                                <label className="check-label">
-                                  <input type="checkbox" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} />
-                                  Active
-                                </label>
-                              </div>
-                              <div className="form-field form-field--full">
-                                <label htmlFor="obj-folder">Folder</label>
-                                <input id="obj-folder" value={form.folder} onChange={set('folder')} placeholder="e.g. M31" spellCheck={false} />
-                              </div>
-                              <div className="form-field form-field--full">
-                                <label htmlFor="obj-comment">Comment</label>
-                                <textarea id="obj-comment" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
-                              </div>
-                            </div>
-                          </form>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
+        <>
+          {activeObjects.length > 0 && (
+            <div className="obj-list">{activeObjects.map(renderObject)}</div>
+          )}
+
+          {pausedObjects.length > 0 && (
+            <section className="obj-group">
+              <h3 className="obj-group__title">
+                Paused <span className="obj-group__count">{pausedObjects.length}</span>
+              </h3>
+              <div className="obj-list">{pausedObjects.map(renderObject)}</div>
+            </section>
+          )}
+        </>
+      )}
+      {/* Add and edit share one dialog — same fields, same submit handler. */}
+      {showForm && (
+        <div className="modal-backdrop" onClick={handleCancel}>
+          <div className="modal-dialog modal-dialog--form" onClick={e => e.stopPropagation()}>
+            <div className="modal-dialog__header">
+              <span className="modal-dialog__title">{editingId !== null ? 'Edit object' : 'New object'}</span>
+              <button className="btn btn-ghost" onClick={handleCancel}>✕</button>
+            </div>
+            {error && <div className="error-banner">{error}</div>}
+            <form onSubmit={handleSubmit}>
+              <div className="form-grid">
+                <div className="form-field">
+                  <label htmlFor="obj-name">Name</label>
+                  <input id="obj-name" value={form.name} onChange={set('name')} required placeholder="e.g. Andromeda Galaxy" autoFocus />
+                </div>
+                <div className="form-field">
+                  <label htmlFor="obj-type">Type</label>
+                  <select id="obj-type" value={form.typeId} onChange={set('typeId')} required>
+                    <option value="">Select type…</option>
+                    {types.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+                <div className="form-field form-field--full">
+                  <label htmlFor="obj-position">Position (JSON)</label>
+                  <input id="obj-position" value={form.position_json} onChange={set('position_json')} required placeholder='{"ra": "00h42m44s", "dec": "+41°16′09″"}' />
+                </div>
+                <div className="form-field">
+                  <label htmlFor="obj-aliases">Aliases</label>
+                  <input id="obj-aliases" value={form.aliases} onChange={set('aliases')} placeholder="e.g. M31; NGC 224" />
+                </div>
+                <div className="form-field form-field--check">
+                  <label className="check-label">
+                    <input type="checkbox" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} />
+                    Active
+                  </label>
+                </div>
+                <div className="form-field form-field--full">
+                  <label htmlFor="obj-folder">Folder</label>
+                  <input id="obj-folder" value={form.folder} onChange={set('folder')} placeholder="e.g. M31" spellCheck={false} />
+                </div>
+                <div className="form-field form-field--full">
+                  <label htmlFor="obj-comment">Comment</label>
+                  <textarea id="obj-comment" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
+                </div>
+              </div>
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary" disabled={submitting}>
+                  {submitting ? 'Saving…' : editingId !== null ? 'Update Object' : 'Save Object'}
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
+
+      {plansForId !== null && (() => {
+        const obj = objects.find(o => o.id === plansForId)
+        if (!obj) return null
+        return (
+          <div className="modal-backdrop" onClick={() => setPlansForId(null)}>
+            <div className="modal-dialog modal-dialog--wide" onClick={e => e.stopPropagation()}>
+              <PlansPanel
+                objectId={obj.id}
+                objectName={obj.name}
+                onClose={() => setPlansForId(null)}
+                onActivePlanChange={has => setActivePlanObjectIds(prev => {
+                  const s = new Set(prev)
+                  has ? s.add(obj.id) : s.delete(obj.id)
+                  return s
+                })}
+              />
+            </div>
+          </div>
+        )
+      })()}
 
       {syncPreview !== null && (
         <div className="modal-backdrop" onClick={closeSyncPreview}>
