@@ -293,6 +293,37 @@ export interface SyncApplyResult {
   relinkedRecords: number
 }
 
+/**
+ * The slice of a fresh scan that a disk cull accounts for: the slots holding
+ * records that went stale because those subs were just deleted, plus the
+ * culled records that fit no slot. Applying this alone brings the DB in step
+ * with the deletion in the same step, and leaves every other pending change
+ * (unregistered files elsewhere, unrelated stale records, relinks) for the
+ * user to approve in the dialog.
+ *
+ * A culled sub is matched to its record by base stem — the same rule the
+ * deletion itself uses — because processing changes the extension and appends
+ * suffixes, so the record rarely carries the disk name.
+ */
+export function cullSubset(scan: SyncScanResult, deletedNames: string[]): SyncScanResult {
+  const deleted = new Set(deletedNames.map(n => baseStem(stem(n))))
+  const wasDeleted = (name: string) => deleted.has(baseStem(stem(name)))
+  const changes = scan.changes.filter(c => c.missingFiles.some(wasDeleted))
+  const unadjustable = scan.unadjustable.filter(wasDeleted)
+  return {
+    ...scan,
+    changes,
+    // Relinking is bookkeeping the cull didn't cause; it stays with the
+    // pending sync. Records inside an applied slot are still linked, since
+    // that is what lets a removed entry take them with it.
+    relinks: [],
+    relinkCount: 0,
+    unadjustable,
+    addCount: changes.reduce((n, c) => n + c.addFiles.length, 0),
+    missingCount: changes.reduce((n, c) => n + c.missingFiles.length, 0) + unadjustable.length,
+  }
+}
+
 // Each change is applied independently, and import records are only removed
 // for changes that succeeded — a failure never strands the others.
 export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equipment: number | null): Promise<SyncApplyResult> {

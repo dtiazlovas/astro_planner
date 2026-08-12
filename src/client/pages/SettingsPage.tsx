@@ -4,6 +4,7 @@ import type { ApFilter } from '../types'
 import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour, fetchImagesFolder, saveImagesFolder, pickFolder, fetchImportFileMode, saveImportFileMode, type ImportFileMode } from '../utils/filePattern'
 import { getStoredImagesFolder, pickImagesFolder, isFolderAccessSupported } from '../utils/imagesFolder'
 import { fetchLatitude, saveLatitude, DEFAULT_LATITUDE } from '../utils/astro'
+import { cacheStats, clearCache, formatBytes, CACHE_CAP_BYTES } from '../utils/previewCache'
 import LatitudePicker from '../components/LatitudePicker'
 
 const emptyFilterForm = { name: '', aliases: '', folder: '' }
@@ -20,6 +21,8 @@ export default function SettingsPage() {
   const [imagesFolder, setImagesFolder] = useState('')
   const [imagesFolderSaving, setImagesFolderSaving] = useState(false)
   const [latitude, setLatitude] = useState(DEFAULT_LATITUDE)
+  const [cacheStatsValue, setCacheStatsValue] = useState<{ count: number; bytes: number } | null>(null)
+  const [clearingCache, setClearingCache] = useState(false)
 
   const [filters, setFilters] = useState<ApFilter[]>([])
   const [loadingFilters, setLoadingFilters] = useState(true)
@@ -37,6 +40,7 @@ export default function SettingsPage() {
   useEffect(() => { fetchImportFileMode().then(setImportFileMode) }, [])
   useEffect(() => { fetchImagesFolder().then(setImagesFolder) }, [])
   useEffect(() => { fetchLatitude().then(setLatitude) }, [])
+  useEffect(() => { cacheStats().then(setCacheStatsValue) }, [])
 
   const handleModeChange = async (mode: ImportFileMode) => {
     setImportFileMode(mode)
@@ -239,6 +243,38 @@ export default function SettingsPage() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* ── Blink preview cache ── */}
+      <div className="settings-card">
+        <p className="settings-card__title">Blink Previews</p>
+        <p className="cell-muted" style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
+          Downsampled, auto-stretched copies of your subs, kept so the blink viewer opens instantly
+          the second time. They rebuild on their own if a frame changes on disk, and the oldest
+          targets are dropped once the cache passes {formatBytes(CACHE_CAP_BYTES)}.
+        </p>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <span className="cell-muted" style={{ fontSize: '0.85rem' }}>
+            {cacheStatsValue
+              ? `${cacheStatsValue.count} preview${cacheStatsValue.count !== 1 ? 's' : ''} · ${formatBytes(cacheStatsValue.bytes)}`
+              : 'Reading cache…'}
+          </span>
+          <button
+            className="btn btn-secondary"
+            disabled={clearingCache || !cacheStatsValue?.count}
+            onClick={async () => {
+              setClearingCache(true)
+              try {
+                await clearCache()
+                setCacheStatsValue(await cacheStats())
+              } finally {
+                setClearingCache(false)
+              }
+            }}
+          >
+            {clearingCache ? 'Clearing…' : 'Clear cache'}
+          </button>
+        </div>
       </div>
 
       {/* ── Filters ── */}

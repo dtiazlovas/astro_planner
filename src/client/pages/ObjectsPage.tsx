@@ -3,7 +3,7 @@ import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
 import { fetchPatterns, fetchImportFileMode, fetchDayStartHour, type ImportFileMode } from '../utils/filePattern'
 import { ensureImagesFolderAccess, listObjectFolderFiles, getObjectFolderFiles, deleteObjectFolderFiles } from '../utils/imagesFolder'
-import { scanObjectFiles, applyObjectSync, type SyncScanResult } from '../utils/objectSync'
+import { scanObjectFiles, applyObjectSync, cullSubset, type SyncScanResult } from '../utils/objectSync'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
 import type { FitsAnalysis } from '../utils/fits'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
@@ -11,6 +11,7 @@ import FileListDialog from '../components/FileListDialog'
 import { useEquipment } from '../context/EquipmentContext'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
+import BlinkViewer from '../components/BlinkViewer'
 
 const emptyForm = { name: '', typeId: '', position_json: '', comment: '', aliases: '', active: true, folder: '' }
 
@@ -45,6 +46,10 @@ export default function ObjectsPage() {
   const [loadingIds, setLoadingIds] = useState<Set<number>>(new Set())
   // Plans open as a dialog, so at most one object's plans are shown at a time.
   const [plansForId, setPlansForId] = useState<number | null>(null)
+  /** Subs dropped by eye in the sync dialog's blink, culled alongside the limit. */
+  const [droppedSubs, setDroppedSubs] = useState<Set<string>>(new Set())
+  const [blinkFiles, setBlinkFiles] = useState<{ label: string; files: File[] } | null>(null)
+  const [blinkLoading, setBlinkLoading] = useState(false)
   const [activePlanObjectIds, setActivePlanObjectIds] = useState<Set<number>>(new Set())
   const [assigningIds, setAssigningIds] = useState<Set<number>>(new Set())
   const [dragOverId, setDragOverId] = useState<number | null>(null)
@@ -116,6 +121,38 @@ export default function ObjectsPage() {
   // click's transient user activation is still fresh.
   useEffect(() => { fetchImportFileMode().then(setImportFileMode) }, [])
 
+  // Reads the object's folder and diffs it against the DB. Separate from the
+  // dialog state so the cull can scan, apply and re-scan in one go.
+  const scanObject = async (obj: ApObject): Promise<SyncScanResult> => {
+    let present: string[]
+    if (importFileMode === 'backend') {
+      present = await getObjectFolderFilesViaBackend(obj.folder!)
+    } else {
+      const dir = await ensureImagesFolderAccess()
+      if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+      present = await listObjectFolderFiles(dir, obj.folder!)
+    }
+    const [filters, exposures, patterns, sessions, imported, dayStartHour] = await Promise.all([
+      getFilters(), getExposures(), fetchPatterns(), getSessions(), getImportedRecords(), fetchDayStartHour(),
+    ])
+    return scanObjectFiles(obj, objects, present, imported, filters, exposures, patterns, sessions, dayStartHour, activeId)
+  }
+
+  // Pulls the list's view of one object back in line after its stats changed.
+  const refreshObjectStats = async (id: number) => {
+    setObjects(await getObjects(activeId))
+    if (expandedIds.has(id)) {
+      getObjectFilterStats(id, activeId)
+        .then(s => setExpandedStats(prev => new Map(prev).set(id, s)))
+        .catch(() => {})
+    }
+    if (activePlanObjectIds.has(id)) {
+      getObjectPlanProgress(id, activeId)
+        .then(p => setPlanProgress(prev => new Map(prev).set(id, p)))
+        .catch(() => {})
+    }
+  }
+
   const handleSync = async (obj: ApObject, keepQuality = false) => {
     if (!obj.folder) return
     setSyncingId(obj.id); setError(null)
@@ -123,21 +160,10 @@ export default function ObjectsPage() {
       setQualityResultsByFilter(new Map()); setQualityThresholdByFilter(new Map())
       setQualityMeasuredFilters(new Set()); setQualityPaneOpen(false)
       setConfirmDeleteSubs(false); setQualityFilterId(null)
+      setDroppedSubs(new Set())
     }
     try {
-      let present: string[]
-      if (importFileMode === 'backend') {
-        present = await getObjectFolderFilesViaBackend(obj.folder)
-      } else {
-        const dir = await ensureImagesFolderAccess()
-        if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
-        present = await listObjectFolderFiles(dir, obj.folder)
-      }
-      const [filters, exposures, patterns, sessions, imported, dayStartHour] = await Promise.all([
-        getFilters(), getExposures(), fetchPatterns(), getSessions(), getImportedRecords(), fetchDayStartHour(),
-      ])
-      const scan = await scanObjectFiles(obj, objects, present, imported, filters, exposures, patterns, sessions, dayStartHour, activeId)
-      setSyncPreview({ obj, scan })
+      setSyncPreview({ obj, scan: await scanObject(obj) })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync scan failed')
     } finally {
@@ -153,18 +179,7 @@ export default function ObjectsPage() {
       if (applied.failedGroups > 0) {
         setError(`${applied.failedGroups} sync group${applied.failedGroups !== 1 ? 's' : ''} failed to update — their records were kept, run sync again`)
       }
-      const id = syncPreview.obj.id
-      setObjects(await getObjects(activeId))
-      if (expandedIds.has(id)) {
-        getObjectFilterStats(id, activeId)
-          .then(s => setExpandedStats(prev => new Map(prev).set(id, s)))
-          .catch(() => {})
-      }
-      if (activePlanObjectIds.has(id)) {
-        getObjectPlanProgress(id, activeId)
-          .then(p => setPlanProgress(prev => new Map(prev).set(id, p)))
-          .catch(() => {})
-      }
+      await refreshObjectStats(syncPreview.obj.id)
       setSyncPreview(null)
     } catch {
       setError('Failed to apply sync — stats may be partially updated, run sync again')
@@ -211,14 +226,31 @@ export default function ObjectsPage() {
   }
 
   const qualityTimeByName = new Map((syncPreview?.scan.analyzableFiles ?? []).map(f => [f.name, f.time]))
-  const qualityPoints: SnrPoint[] = [...qualityResults.values()]
+  const measuredPoints: SnrPoint[] = [...qualityResults.values()]
     .filter(r => metricValue(r) != null)
     .map(r => ({ fileName: r.fileName, snr: metricValue(r) as number, time: qualityTimeByName.get(r.fileName) ?? 0 }))
-    .sort((a, b) => a.time - b.time)
-  const qualityUnmeasured = qualityResults.size - qualityPoints.length
-  const cullFiles = qualityThreshold == null ? [] : qualityPoints
-    .filter(p => qualityMetric === 'psfsw' ? p.snr < qualityThreshold : p.snr > qualityThreshold)
-    .map(p => p.fileName)
+  // Subs not measured yet are plotted as faint markers so the run keeps its
+  // full width while results stream in — otherwise every new frame re-spreads
+  // every x position and the chart jitters for the whole pass.
+  const pendingPoints: SnrPoint[] = qualityFilterFiles
+    .filter(f => !qualityResults.has(f.name))
+    .map(f => ({ fileName: f.name, snr: 0, time: f.time, pending: true }))
+  const qualityPoints: SnrPoint[] = [...measuredPoints, ...pendingPoints].sort((a, b) => a.time - b.time)
+  const qualityUnmeasured = qualityResults.size - measuredPoints.length
+  /** Below the limit on score alone — what the chart's line rejects. */
+  const belowLimit = (name: string): boolean => {
+    if (qualityThreshold == null) return false
+    const r = qualityResults.get(name)
+    const v = r ? metricValue(r) : null
+    if (v == null) return false
+    return qualityMetric === 'psfsw' ? v < qualityThreshold : v > qualityThreshold
+  }
+  // The limit and a hand drop in blink are both vetoes. Scoped to the filter on
+  // screen, because that is the set the delete button acts on.
+  const cullFiles = [...new Set(
+    qualityFilterFiles.map(f => f.name).filter(n => belowLimit(n) || droppedSubs.has(n)),
+  )]
+  const handDroppedHere = qualityFilterFiles.filter(f => droppedSubs.has(f.name)).length
 
   const handleQualityFilterChange = (id: number) => {
     setQualityFilterId(id)
@@ -268,8 +300,38 @@ export default function ObjectsPage() {
       const names = qualityFilterFiles.map(f => f.name).filter(n => !storedNames.has(n))
 
       // Raw PSFSW values (saved and computed alike), normalized to unit
-      // median over the combined set below. On stop, partial results show.
-      let raw: FitsAnalysis[] = []
+      // median over the combined set. On stop, partial results show.
+      const raw: FitsAnalysis[] = []
+
+      /**
+       * Publishes what has been measured so far. Called after every frame
+       * rather than once at the end, so the chart fills in live instead of
+       * staying blank for the whole pass — which on a few hundred subs looks
+       * like nothing is happening.
+       */
+      const commit = () => {
+        const all = [...stored, ...raw]
+        if (!all.length) return
+        const weights = all.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
+        const median = weights.length ? weights[weights.length >> 1] : 0
+        const normed = median > 0
+          ? all.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
+          : all
+        setQualityResultsByFilter(prev => new Map(prev).set(filterId, new Map(normed.map(r => [r.fileName, r]))))
+        // Held at "keep everything" until the run finishes; the handle is
+        // disabled meanwhile, so this can't fight a drag in progress.
+        const t = defaultThreshold(normed, qualityMetric)
+        setQualityThresholdByFilter(prev => {
+          const next = new Map(prev)
+          if (t != null) next.set(filterId, t); else next.delete(filterId)
+          return next
+        })
+        setQualityPaneOpen(true)
+      }
+
+      // Saved values are already in hand — show them before decoding anything.
+      commit()
+
       if (names.length) {
         setQualityProgress({ current: 0, total: names.length })
         if (importFileMode === 'backend') {
@@ -283,12 +345,17 @@ export default function ObjectsPage() {
               throw err
             }
             setQualityProgress({ current: Math.min(i + BATCH, names.length), total: names.length })
+            commit()
           }
         } else {
           const dir = await ensureImagesFolderAccess()
           if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
           const files = await getObjectFolderFiles(dir, syncPreview.obj.folder, names)
-          raw = await analyzeFitsFiles(files, done => setQualityProgress({ current: done, total: files.length }), ctrl.signal)
+          await analyzeFitsFiles(files, (done, _total, result) => {
+            raw.push(result)
+            setQualityProgress({ current: done, total: files.length })
+            commit()
+          }, ctrl.signal)
         }
 
         // Persist what was just measured on the files' import records.
@@ -299,23 +366,10 @@ export default function ObjectsPage() {
         if (items.length) { try { await saveImportedAnalysis(items) } catch {} }
       }
 
-      const all = [...stored, ...raw]
-      if (all.length) {
-        const weights = all.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
-        const median = weights.length ? weights[weights.length >> 1] : 0
-        const normed = median > 0
-          ? all.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
-          : all
-        setQualityResultsByFilter(prev => new Map(prev).set(filterId, new Map(normed.map(r => [r.fileName, r]))))
-        const t = defaultThreshold(normed, qualityMetric)
-        setQualityThresholdByFilter(prev => {
-          const next = new Map(prev)
-          if (t != null) next.set(filterId, t); else next.delete(filterId)
-          return next
-        })
-        setQualityMeasuredFilters(prev => new Set(prev).add(filterId))
-        setQualityPaneOpen(true)
-      }
+      // Final publish, then mark the filter as measured in this dialog so the
+      // button offers a re-measure rather than the cheap saved-analysis pass.
+      commit()
+      if (stored.length || raw.length) setQualityMeasuredFilters(prev => new Set(prev).add(filterId))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Quality analysis failed')
     } finally {
@@ -337,6 +391,13 @@ export default function ObjectsPage() {
         stats = await deleteObjectFolderFiles(dir, syncPreview.obj.folder, cullFiles)
       }
       if (stats.failed > 0) setError(`${stats.failed} file${stats.failed !== 1 ? 's' : ''} could not be deleted`)
+      // These files are gone; keeping them flagged would re-count them against
+      // the next scan's cull total.
+      setDroppedSubs(prev => {
+        const next = new Set(prev)
+        for (const n of cullFiles) next.delete(n)
+        return next
+      })
       const filterId = activeQualityFilterId
       if (filterId != null) setQualityResultsByFilter(prev => {
         const results = prev.get(filterId)
@@ -346,12 +407,66 @@ export default function ObjectsPage() {
         return new Map(prev).set(filterId, m)
       })
       setConfirmDeleteSubs(false)
-      // Re-scan so the DB cleanup for the deleted subs lands in this preview.
-      await handleSync(syncPreview.obj, true)
+
+      // The subs are off disk but the DB still counts them, so the cull isn't
+      // finished until its own frame counts and import records follow. Scan,
+      // apply just the slots those subs belonged to, then re-scan so the
+      // dialog shows what is left. Only the cull's own slots are applied —
+      // everything else the scan found stays pending for the Apply button,
+      // which is the user's call, not a side effect of deleting.
+      const obj = syncPreview.obj
+      setSyncingId(obj.id)
+      try {
+        const scan = await scanObject(obj)
+        const cull = cullSubset(scan, cullFiles)
+        if (cull.changes.length > 0 || cull.unadjustable.length > 0) {
+          const applied = await applyObjectSync(obj, cull, activeId)
+          if (applied.failedGroups > 0) {
+            setError(`${applied.failedGroups} session entr${applied.failedGroups !== 1 ? 'ies' : 'y'} could not be updated for the deleted subs — run sync again`)
+          }
+          await refreshObjectStats(obj.id)
+          setSyncPreview({ obj, scan: await scanObject(obj) })
+        } else {
+          // Nothing of the cull was registered — the scan in hand is current.
+          setSyncPreview({ obj, scan })
+        }
+      } finally {
+        setSyncingId(null)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Deleting files failed')
     } finally {
       setQualityDeleting(false)
+    }
+  }
+
+  /**
+   * Opens the blink viewer on the filter currently selected in the sync
+   * dialog, so what you see is the same set the approve line and the delete
+   * button act on. Folder permission is requested here rather than inside the
+   * viewer: a re-prompt needs the click's transient activation, which is gone
+   * by the time a mount effect runs.
+   */
+  const handleBlink = async () => {
+    const obj = syncPreview?.obj
+    if (!obj?.folder || !qualityFilterFiles.length) return
+    setError(null); setBlinkLoading(true)
+    try {
+      const dir = await ensureImagesFolderAccess()
+      if (!dir) throw new Error('Images folder is not accessible — choose it in Settings and grant access')
+      const names = qualityFilterFiles.map(f => f.name)
+      const files = await getObjectFolderFiles(dir, obj.folder, names)
+      if (!files.length) throw new Error('None of these subs could be read from the images folder')
+      // The folder walk returns tree order; capture order is what makes drift
+      // and cloud visible, so sort by the time the scan already resolved.
+      const timeOf = new Map(qualityFilterFiles.map(f => [f.name, f.time]))
+      files.sort((a, b) => (timeOf.get(a.name) ?? 0) - (timeOf.get(b.name) ?? 0))
+      const label = analyzableFilters.find(f => f.id === activeQualityFilterId)?.name ?? 'subs'
+      setBlinkFiles({ label: `${obj.name} · ${label}`, files })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not open the images folder')
+    } finally {
+      setBlinkLoading(false)
     }
   }
 
@@ -667,6 +782,22 @@ export default function ObjectsPage() {
           )}
         </>
       )}
+      {blinkFiles && (
+        <BlinkViewer
+          title={blinkFiles.label}
+          files={blinkFiles.files}
+          scope={blinkFiles.label}
+          dropped={droppedSubs}
+          belowLine={belowLimit}
+          onToggleDrop={name => setDroppedSubs(prev => {
+            const next = new Set(prev)
+            next.has(name) ? next.delete(name) : next.add(name)
+            return next
+          })}
+          onClose={() => setBlinkFiles(null)}
+        />
+      )}
+
       {/* Add and edit share one dialog — same fields, same submit handler. */}
       {showForm && (
         <div className="modal-backdrop" onClick={handleCancel}>
@@ -854,6 +985,16 @@ export default function ObjectsPage() {
                   {qualityAnalyzing && (
                     <button className="btn btn-ghost" onClick={() => qualityAbortRef.current?.abort()}>■ Stop</button>
                   )}
+                  {/* Frontend mode only — backend mode never has the subs in
+                      the browser, and shipping them over HTTP to blink is not
+                      viable at ~50 MB each. */}
+                  {importFileMode === 'frontend' && qualityFilterFiles.length > 0 && (
+                    <button className="btn btn-secondary" onClick={handleBlink}
+                      disabled={blinkLoading || qualityAnalyzing || qualityDeleting || syncApplying}
+                      title="Flick through this filter's subs and drop the bad ones by eye">
+                      {blinkLoading ? 'Opening…' : `◫ Blink ${qualityFilterFiles.length}`}
+                    </button>
+                  )}
                   <select
                     className="select-dark"
                     value={qualityMetric}
@@ -866,7 +1007,7 @@ export default function ObjectsPage() {
                   </select>
                   {qualityResults.size > 0 && (
                     <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
-                      {analyzableFilters.find(f => f.id === activeQualityFilterId)?.name}: {qualityPoints.length} measured
+                      {analyzableFilters.find(f => f.id === activeQualityFilterId)?.name}: {measuredPoints.length} of {qualityFilterFiles.length} measured
                       {qualityMetric === 'psfsw' ? ' · median ≈ 1.0' : ' · px'} · {cullFiles.length} {qualityMetric === 'psfsw' ? 'below' : 'above'} the limit
                       {qualityUnmeasured > 0 ? ` · ${qualityUnmeasured} not measurable (kept)` : ''}
                     </span>
@@ -885,36 +1026,45 @@ export default function ObjectsPage() {
                   <>
                     <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.5rem 0' }}>
                       Drag the ▸ handle to set the limit — subs {qualityMetric === 'psfsw' ? 'below' : 'above'} it (including derived copies) are deleted from disk.
+                      {handDroppedHere > 0 && ` ${handDroppedHere} more dropped by eye in blink.`}
                     </p>
                     <SnrChart points={qualityPoints} threshold={qualityThreshold} onThresholdChange={setQualityThreshold}
                       metricLabel={qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM (px)'}
                       goodDirection={qualityMetric === 'psfsw' ? 'above' : 'below'}
+                      droppedFiles={droppedSubs} disabled={qualityAnalyzing}
                       onOpenFile={p => openFitsFile(p.fileName)} />
-                    {/* Always rendered (disabled when nothing is culled) so dragging
-                        the limit across the 0-excluded boundary doesn't resize the
-                        panel and jerk the handle. */}
-                    <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <button className="btn btn-ghost" onClick={() => setShowCullList(true)} disabled={cullFiles.length === 0}>
-                        📋 View {cullFiles.length} excluded…
-                      </button>
-                      {confirmDeleteSubs && cullFiles.length > 0 ? (
-                        <>
-                          <span style={{ color: '#f87171', fontSize: '0.85rem' }}>
-                            Permanently delete {cullFiles.length} sub{cullFiles.length !== 1 ? 's' : ''} from disk?
-                          </span>
-                          <button className="btn btn-danger" onClick={handleDeleteBelowLimit} disabled={qualityDeleting}>
-                            {qualityDeleting ? 'Deleting…' : 'Yes, delete'}
-                          </button>
-                          <button className="btn btn-ghost" onClick={() => setConfirmDeleteSubs(false)} disabled={qualityDeleting}>Cancel</button>
-                        </>
-                      ) : (
-                        <button className="btn btn-danger" onClick={() => setConfirmDeleteSubs(true)}
-                          disabled={cullFiles.length === 0 || qualityDeleting || qualityAnalyzing || syncingId !== null}>
-                          🗑 Delete {cullFiles.length} low-quality sub{cullFiles.length !== 1 ? 's' : ''}
-                        </button>
-                      )}
-                    </div>
                   </>
+                )}
+                {/* Outside the chart's own gate: blinking and dropping by eye
+                    is a complete workflow on its own, so the cull controls have
+                    to be reachable without running an analysis first. Always
+                    rendered once there is anything to cull (the buttons
+                    disable rather than disappear) so dragging the limit across
+                    the 0-excluded boundary doesn't resize the panel and jerk
+                    the handle. */}
+                {(cullFiles.length > 0 || (qualityPaneOpen && qualityThreshold != null && qualityPoints.length > 0)) && (
+                  <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button className="btn btn-ghost" onClick={() => setShowCullList(true)} disabled={cullFiles.length === 0}>
+                      📋 View {cullFiles.length} excluded…
+                    </button>
+                    {confirmDeleteSubs && cullFiles.length > 0 ? (
+                      <>
+                        <span style={{ color: '#f87171', fontSize: '0.85rem' }}>
+                          Permanently delete {cullFiles.length} sub{cullFiles.length !== 1 ? 's' : ''} from disk?
+                        </span>
+                        <button className="btn btn-danger" onClick={handleDeleteBelowLimit} disabled={qualityDeleting}>
+                          {qualityDeleting ? 'Deleting…' : 'Yes, delete'}
+                        </button>
+                        <button className="btn btn-ghost" onClick={() => setConfirmDeleteSubs(false)} disabled={qualityDeleting}>Cancel</button>
+                      </>
+                    ) : (
+                      <button className="btn btn-danger" onClick={() => setConfirmDeleteSubs(true)}
+                        disabled={cullFiles.length === 0 || qualityDeleting || qualityAnalyzing || syncingId !== null}>
+                        🗑 Delete {cullFiles.length} sub{cullFiles.length !== 1 ? 's' : ''}
+                        {handDroppedHere > 0 && cullFiles.length > handDroppedHere ? ` (${handDroppedHere} by eye)` : ''}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             )}

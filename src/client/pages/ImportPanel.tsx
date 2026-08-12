@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import {
   getObjects, getFilters, getExposures, getObjectTypes, getSessions,
   createSession, createObjectSession,
@@ -16,6 +16,7 @@ import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } 
 import { useEquipment } from '../context/EquipmentContext'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
 import FileListDialog from '../components/FileListDialog'
+import BlinkViewer from '../components/BlinkViewer'
 
 interface ImportResult {
   sessionsCreated: number
@@ -167,6 +168,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [lookupReady, setLookupReady] = useState(false)
 
   const [rawFiles, setRawFiles] = useState<File[]>([])
+  const [blinkOpen, setBlinkOpen] = useState(false)
   const [duplicateCount, setDuplicateCount] = useState(0)
   const [preview, setPreview] = useState<ImportSession[] | null>(null)
   const [warnings, setWarnings] = useState<string[]>([])
@@ -213,6 +215,12 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   // meaningless: PSFSW is relative to each group's own median.
   const [thresholds, setThresholds] = useState<Record<string, number>>({})
   const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null)
+  /**
+   * Frames dropped by eye in the blink viewer. This only ever removes frames:
+   * not being dropped means "let the approve line decide", not "keep no matter
+   * what", so a frame you leave alone is still culled if it scores badly.
+   */
+  const [droppedFrames, setDroppedFrames] = useState<Set<string>>(new Set())
   const [analyzing, setAnalyzing] = useState(false)
   const [showRejectedList, setShowRejectedList] = useState(false)
 
@@ -518,6 +526,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setAnalyzing(true); setError(null)
     setSnrResults(new Map()); setThresholds({}); setHistoricalByGroup(new Map())
     setActiveGroupKey(qualityGroups[0]?.key ?? null)
+    // Hand calls were made against the previous measurements; re-measuring
+    // invalidates the basis for them.
+    setDroppedFrames(new Set())
     const ctrl = new AbortController()
     analyzeAbortRef.current = ctrl
 
@@ -675,9 +686,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     return counts.length ? Math.round(counts.reduce((a, b) => a + b, 0) / counts.length) : 0
   })()
 
-  // A file is approved if we couldn't measure it (unknown → keep) or it clears
-  // the approve line of its own group.
-  const isApproved = (fileName: string): boolean => {
+  // Where the approve line alone puts a frame: approved if we couldn't measure
+  // it (unknown → keep) or it clears its own group's line.
+  const clearsLine = (fileName: string): boolean => {
     const key = groupKeyOfFile.get(fileName)
     const threshold = key != null ? thresholds[key] : undefined
     if (threshold == null) return true
@@ -687,10 +698,23 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     return goodDirection === 'above' ? v >= threshold : v <= threshold
   }
 
-  const rejectedFiles = measuredPoints.filter(p => !isApproved(p.fileName)).map(p => p.fileName)
+  // Dropping by eye and the approve line are both vetoes — a frame has to
+  // survive each of them to be imported.
+  const isApproved = (fileName: string): boolean =>
+    !droppedFrames.has(fileName) && clearsLine(fileName)
+
+  // Everything the active group will skip, whether the line or a hand call put
+  // it there. Built from the group's own file list rather than the measured
+  // points, so a frame dropped by eye before it was measured is included.
+  const rejectedFiles = (activeGroup?.fileNames ?? []).filter(n => !isApproved(n))
   const rejectedCount = rejectedFiles.length
-  // Every group's own line applied — this is what the import will actually skip.
-  const rejectedCountAll = [...snrResults.values()].filter(r => metricValue(r) != null && !isApproved(r.fileName)).length
+  const handDroppedActive = (activeGroup?.fileNames ?? []).filter(n => droppedFrames.has(n)).length
+  /** Analysis has produced usable numbers — the approve line and chart need this. */
+  const measured = snrResults.size > 0 && analyzedCountAll > 0
+  // Every group's own line plus any hand calls — what the import will actually
+  // skip. Counted over the importable set rather than the measured results, so
+  // a frame dropped by eye before it was measured still shows up here.
+  const rejectedCountAll = importableFileNames.filter(n => !isApproved(n)).length
 
   // Reset every group's approve line to "keep everything" for the newly selected
   // metric — a PSFSW line means nothing once the axis is FWHM.
@@ -716,6 +740,20 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   // import actually writes, and what the preview shows.
   const approvedFrames = (entry: ImportEntry): number => entry.fileNames.filter(isApproved).length
   const importableCount = preview?.flatMap(s => s.entries).filter(e => e.canImport && approvedFrames(e) > 0).length ?? 0
+
+  // Blinking is scoped to one target+filter: comparing frames only tells you
+  // anything when they are the same field through the same filter. Capture
+  // order comes from the file names. Memoized because BlinkViewer rebuilds its
+  // previews whenever this array identity changes.
+  // Depend on the names by value, not by array identity: qualityGroups is
+  // rebuilt on every render, so `activeGroup.fileNames` is a new array each
+  // time and would re-trigger the viewer's preview build continuously.
+  const groupNamesKey = (activeGroup?.fileNames ?? []).join('\n')
+  const blinkFiles = useMemo(() => {
+    if (!groupNamesKey) return []
+    const wanted = new Set(groupNamesKey.split('\n'))
+    return rawFiles.filter(f => wanted.has(f.name)).sort((a, b) => a.name.localeCompare(b.name))
+  }, [rawFiles, groupNamesKey])
 
   const handleImport = async () => {
     setImporting(true); setError(null); setImportResult(null); setResultExpanded(null)
@@ -948,9 +986,12 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                 )}
               </div>
 
-              {/* Gated on the batch, not the active group, so a group with no
-                  measurable frames doesn't hide the picker for the others. */}
-              {(analyzing || (snrResults.size > 0 && analyzedCountAll > 0)) && (
+              {/* Shown as soon as the batch has been grouped by target/filter,
+                  not only once measurements exist: the group picker and Blink
+                  are useful before any analysis, and blinking a set should not
+                  cost a full measuring pass first. The measured parts below
+                  gate themselves on having data. */}
+              {qualityGroups.length > 0 && (
                 <div className="import-session-block">
                   <div className="import-session-header import-session-header--quality">
                     <span className="cell-name">Frame quality</span>
@@ -975,14 +1016,25 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                       <option value="psfsw">Signal (PSFSW)</option>
                       <option value="fwhm">Star size (FWHM)</option>
                     </select>
+                    {/* Frontend mode only — backend mode never has the frames
+                        in the browser, and shipping raw subs over HTTP to blink
+                        them is not viable at ~50 MB each. */}
+                    {importFileMode === 'frontend' && blinkFiles.length > 0 && (
+                      <button className="btn btn-secondary" onClick={() => setBlinkOpen(true)} disabled={importing}
+                        title="Flick through this target/filter's frames and keep or drop them by eye">
+                        ◫ Blink {blinkFiles.length}
+                      </button>
+                    )}
                     <span className="cell-muted import-quality-stats" style={{ fontSize: '0.8rem' }}>
                       {analyzing && importProgress
                         ? `Analyzing… ${importProgress.current} / ${importProgress.total}${analyzedCountAll > 0 ? ` · ${analyzedCountAll} measured so far` : ''}`
-                        : <>
-                            {analyzedCount} analyzed{avgStars > 0 ? ` · ~${avgStars} stars/frame` : ''}{qualityMetric === 'psfsw' ? ' · median frame ≈ 1.0' : ' · px'} · {rejectedCount} {goodDirection === 'above' ? 'below' : 'above'} approve line will be skipped
-                            {analysisErrors > 0 ? ` · ${analysisErrors} not measurable (kept)` : ''}
-                            {historicalForMetric.length > 0 ? ` · band + dots = ${historicalForMetric.length} past sub${historicalForMetric.length !== 1 ? 's' : ''} (same target/filter)` : ''}
-                          </>}
+                        : !measured
+                          ? <>Not measured yet{handDroppedActive > 0 ? ` · ${handDroppedActive} dropped by hand` : ''} — analyze to set an approve line, or blink through them as they are.</>
+                          : <>
+                              {analyzedCount} analyzed{avgStars > 0 ? ` · ~${avgStars} stars/frame` : ''}{qualityMetric === 'psfsw' ? ' · median frame ≈ 1.0' : ' · px'} · {rejectedCount} will be skipped{handDroppedActive > 0 ? ` (${handDroppedActive} dropped by hand)` : ''}
+                              {analysisErrors > 0 ? ` · ${analysisErrors} not measurable (kept)` : ''}
+                              {historicalForMetric.length > 0 ? ` · band + dots = ${historicalForMetric.length} past sub${historicalForMetric.length !== 1 ? 's' : ''} (same target/filter)` : ''}
+                            </>}
                     </span>
                   </div>
                   {analyzing && importProgress && importProgress.total > 0 && (
@@ -990,24 +1042,29 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                       <div className="progress-bar__fill" style={{ width: `${Math.round((importProgress.current / importProgress.total) * 100)}%` }} />
                     </div>
                   )}
-                  <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.25rem 0 0.5rem' }}>
-                    {analyzing
-                      ? 'Results appear as each frame is measured — the approve line unlocks when analysis finishes.'
-                      : `Drag the ▸ handle to set the approve line for ${qualityGroups.length > 1 ? 'this target/filter' : 'this batch'} — only frames ${goodDirection === 'above' ? 'above' : 'below'} it are copied.`}
-                    {!analyzing && qualityGroups.length > 1 && (
-                      <> Each target/filter keeps its own line: {rejectedCountAll} of {analyzedCountAll} frames will be skipped across all {qualityGroups.length} groups.</>
-                    )}
-                  </p>
-                  {snrPoints.length > 0 ? (
+                  {(analyzing || measured) && (
+                    <p className="cell-muted" style={{ fontSize: '0.8rem', margin: '0.25rem 0 0.5rem' }}>
+                      {analyzing
+                        ? 'Results appear as each frame is measured — the approve line unlocks when analysis finishes.'
+                        : `Drag the ▸ handle to set the approve line for ${qualityGroups.length > 1 ? 'this target/filter' : 'this batch'} — only frames ${goodDirection === 'above' ? 'above' : 'below'} it are copied. Blink can drop further frames by eye, but never rescues one the line has already cut.`}
+                      {!analyzing && qualityGroups.length > 1 && (
+                        <> Each target/filter keeps its own line: {rejectedCountAll} of {analyzedCountAll} frames will be skipped across all {qualityGroups.length} groups.</>
+                      )}
+                    </p>
+                  )}
+                  {/* The chart only exists once there is something to plot; an
+                      unmeasured batch just shows the picker and Blink. */}
+                  {(analyzing || measured) && (snrPoints.length > 0 ? (
                     <SnrChart points={snrPoints} threshold={activeThreshold ?? 0}
                       onThresholdChange={v => activeGroup && setThresholds(t => ({ ...t, [activeGroup.key]: v }))}
                       metricLabel={metricLabel} goodDirection={goodDirection} historical={historicalForMetric} disabled={analyzing}
+                      droppedFiles={droppedFrames}
                       onOpenFile={p => openFitsFile(p.fileName)} />
                   ) : (
                     <p className="cell-muted" style={{ fontSize: '0.85rem', padding: '2rem 0', textAlign: 'center' }}>
                       Waiting for frames…
                     </p>
-                  )}
+                  ))}
                   {analyzing ? (
                     <button className="btn btn-ghost" style={{ marginTop: '0.5rem' }} onClick={() => analyzeAbortRef.current?.abort()}>
                       ■ Stop analysis
@@ -1019,7 +1076,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                   )}
                   {showRejectedList && (
                     <FileListDialog
-                      title={`Frames below the approve line — ${activeGroup?.label ?? ''}`}
+                      title={`Frames that will be skipped — ${activeGroup?.label ?? ''}`}
                       files={rejectedFiles}
                       onClose={() => setShowRejectedList(false)}
                     />
@@ -1342,6 +1399,22 @@ export default function ImportPanel({ onImported, onClose }: Props) {
             </form>
           </div>
         </div>
+      )}
+
+      {blinkOpen && (
+        <BlinkViewer
+          title={activeGroup?.label ?? 'Frames to import'}
+          files={blinkFiles}
+          scope="import"
+          dropped={droppedFrames}
+          belowLine={name => !clearsLine(name)}
+          onToggleDrop={name => setDroppedFrames(prev => {
+            const next = new Set(prev)
+            next.has(name) ? next.delete(name) : next.add(name)
+            return next
+          })}
+          onClose={() => setBlinkOpen(false)}
+        />
       )}
     </div>
   )

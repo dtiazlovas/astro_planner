@@ -22,6 +22,13 @@
   overflow-y: scroll;
 }
 
+/* The blink overlay owns the whole window; the page behind it must not scroll
+   or show its (now pointless) scrollbar track. */
+:root.is-blinking {
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
 body {
   font-family: system-ui, -apple-system, sans-serif;
   background: #0f0f1a;
@@ -2033,6 +2040,221 @@ body {
   .cal-cell { min-height: 62px; }
   .cal-cell__dur { font-size: 0.75rem; }
   .cal-cell__pct { font-size: 0.62rem; }
+}
+
+/* ── Blink viewer ─────────────────────────────────────────────
+   Full-window frame flicker. The stage takes every pixel that isn't chrome,
+   because spotting a drifting star or a passing cloud depends on the frames
+   being large and landing in exactly the same place each time. */
+
+.blink {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  background: #07070d;
+}
+
+.blink__defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+.blink__bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid #23233f;
+  background: #0b0b16;
+}
+
+.blink__title {
+  font-weight: 600;
+  color: #c4b5fd;
+}
+
+.blink__counter {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.blink__building { color: #64748b; }
+
+.blink__close { margin-left: auto; }
+
+.blink__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* Capture order as a column of numbers. Fixed width so the stage doesn't
+   resize as the run is culled, and scrollable because a filter can run to
+   several hundred subs. */
+.blink__strip {
+  flex-shrink: 0;
+  width: 9.5rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 0.25rem;
+  padding: 0.6rem 0.5rem;
+  background: #0b0b16;
+  border-left: 1px solid #23233f;
+}
+
+.blink__chip {
+  width: 2.2rem;
+  padding: 0.22rem 0;
+  border: 1px solid #2a2a3f;
+  border-radius: 4px;
+  background: #16161f;
+  color: #64748b;
+  font-family: inherit;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.blink__chip:hover { background: #24243a; }
+
+.blink__chip--keep  { color: #4ade80; border-color: #1c5638; }
+.blink__chip--below { color: #fbbf24; border-color: #4a3a12; }
+.blink__chip--drop  { color: #f87171; border-color: #5a2020; background: #2a1414; }
+
+/* Not rendered yet — the run is still building, so this one can't be shown. */
+.blink__chip--pending { opacity: 0.3; }
+
+.blink__chip--current {
+  outline: 2px solid #a78bfa;
+  outline-offset: 1px;
+  background: #24243a;
+}
+
+.blink__stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  /* Black surround: any other colour biases how the faint end reads. */
+  background: #000;
+}
+
+.blink__img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  /* Nearest-neighbour would shimmer as frames swap; smooth scaling keeps the
+     only visible change between frames the change in the data. */
+  image-rendering: auto;
+}
+
+.blink__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem 0.85rem;
+  border-top: 1px solid #23233f;
+  background: #0b0b16;
+}
+
+.blink__transport {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.blink__field {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.blink__field--grow { flex: 1; min-width: 12rem; }
+.blink__field--grow input[type="range"] { flex: 1; }
+
+/* A tint at the frame's edge, so the keep/drop state registers peripherally
+   while your attention stays on the image. */
+.blink__stage--keep { box-shadow: inset 0 0 0 2px #1c5638; }
+.blink__stage--drop { box-shadow: inset 0 0 0 2px #6b2222; }
+
+.blink__tally {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.blink__tally--keep { color: #4ade80; }
+.blink__tally--drop { color: #f87171; }
+
+.blink__verdict {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.blink__call { min-width: 11rem; }
+
+.blink__call--keep-on {
+  background: #0d2b1b;
+  color: #4ade80;
+  border: 1px solid #1c5638;
+}
+
+.blink__call--drop-on {
+  background: #2d1515;
+  color: #f87171;
+  border: 1px solid #5a2020;
+}
+
+/* Dropped by the quality limit rather than by hand — distinct from both, so
+   it's clear the button press wasn't what removed this one. */
+.blink__call--below {
+  background: #2a2312;
+  color: #fbbf24;
+  border: 1px solid #4a3a12;
+}
+
+.blink__state {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.blink__scrub { width: 100%; }
+
+.blink__filename {
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 0.78rem;
+  color: #64748b;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .blink__bar { padding: 0.5rem 0.7rem; gap: 0.5rem; }
+  .blink__title { font-size: 0.9rem; }
+  .blink__controls { padding: 0.6rem 0.7rem 0.7rem; }
+  .blink__field--grow { min-width: 100%; }
+  /* The stage is already tight at this width; the strip would halve it. */
+  .blink__strip { display: none; }
 }
 
 /* ── Latitude picker ──────────────────────────────────────── */

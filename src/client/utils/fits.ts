@@ -223,7 +223,7 @@ function computePsfSignalWeight(px: Float32Array, w: number, h: number): { weigh
 const attrOf = (tag: string, name: string): string | null =>
   tag.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? null
 
-function analyzeXisfBuffer(fileName: string, buf: ArrayBuffer): FitsAnalysis {
+function decodeXisf(buf: ArrayBuffer): DecodedImage {
   const bytes = new Uint8Array(buf)
   const dv = new DataView(buf)
   const headerLen = dv.getUint32(8, true)
@@ -262,20 +262,39 @@ function analyzeXisfBuffer(fileName: string, buf: ArrayBuffer): FitsAnalysis {
     px[i] = reader.read(off)
   }
 
-  const { weight, stars, fwhm } = computePsfSignalWeight(px, w, h)
-  if (weight == null) throw new Error('No stars detected')
-  return { fileName, snr: weight, fwhm: fwhm != null ? Math.round(fwhm * 100) / 100 : null, dateObs, width: w, height: h, stars }
+  return { px, width: w, height: h, dateObs }
+}
+
+/** A decoded mono frame: pixels in physical units, plus its geometry. */
+export interface DecodedImage {
+  px: Float32Array
+  width: number
+  height: number
+  dateObs: string | null
+}
+
+// Dispatches on the file signature: XISF or FITS.
+export function decodeImageBuffer(buf: ArrayBuffer): DecodedImage {
+  const head = new Uint8Array(buf)
+  return head.length >= 8 && ascii.decode(head.subarray(0, 8)) === 'XISF0100'
+    ? decodeXisf(buf)
+    : decodeFits(buf)
 }
 
 // Dispatches on the file signature: XISF or FITS.
 export function analyzeFitsBuffer(fileName: string, buf: ArrayBuffer): FitsAnalysis {
-  const head = new Uint8Array(buf)
-  if (head.length >= 8 && ascii.decode(head.subarray(0, 8)) === 'XISF0100')
-    return analyzeXisfBuffer(fileName, buf)
-  return analyzeFitsImage(fileName, buf)
+  const { px, width, height, dateObs } = decodeImageBuffer(buf)
+  const { weight, stars, fwhm } = computePsfSignalWeight(px, width, height)
+  if (weight == null) throw new Error('No stars detected')
+  // `snr` carries the raw PSF Signal Weight here; normalized to unit median later.
+  return {
+    fileName, snr: weight,
+    fwhm: fwhm != null ? Math.round(fwhm * 100) / 100 : null,
+    dateObs, width, height, stars,
+  }
 }
 
-function analyzeFitsImage(fileName: string, buf: ArrayBuffer): FitsAnalysis {
+function decodeFits(buf: ArrayBuffer): DecodedImage {
   const bytes = new Uint8Array(buf)
   const dv = new DataView(buf)
   const { cards, dataStart } = readHeader(bytes)
@@ -297,8 +316,5 @@ function analyzeFitsImage(fileName: string, buf: ArrayBuffer): FitsAnalysis {
     cards.BZERO !== undefined ? parseFloat(cards.BZERO) : 0,
     cards.BSCALE !== undefined ? parseFloat(cards.BSCALE) : 1)
 
-  const { weight, stars, fwhm } = computePsfSignalWeight(px, w, h)
-  if (weight == null) throw new Error('No stars detected')
-  // `snr` carries the raw PSF Signal Weight here; normalized to unit median later.
-  return { fileName, snr: weight, fwhm: fwhm != null ? Math.round(fwhm * 100) / 100 : null, dateObs, width: w, height: h, stars }
+  return { px, width: w, height: h, dateObs }
 }

@@ -33,6 +33,12 @@ interface Props {
   // awaited but discarded) — `Promise<void> | void` would reject a handler that
   // simply forwards an API call returning a value.
   onOpenFile?: (point: SnrPoint) => void
+  /**
+   * Files dropped by hand in the blink viewer. An extra veto on top of the
+   * threshold, never an override of it — without this the legend and the point
+   * colours would disagree with what the import is actually going to do.
+   */
+  droppedFiles?: Set<string>
 }
 
 const H = 300
@@ -43,8 +49,11 @@ const REJECTED = '#6b7280'
 const LINE = '#f59e0b'
 const BAND = '#818cf8'
 
-export default function SnrChart({ points, threshold, onThresholdChange, metricLabel = 'PSFSW', goodDirection = 'above', historical, disabled = false, onOpenFile }: Props) {
-  const isApproved = (v: number) => goodDirection === 'above' ? v >= threshold : v <= threshold
+export default function SnrChart({ points, threshold, onThresholdChange, metricLabel = 'PSFSW', goodDirection = 'above', historical, disabled = false, onOpenFile, droppedFiles }: Props) {
+  const isApproved = (p: SnrPoint) => {
+    if (droppedFiles?.has(p.fileName)) return false
+    return goodDirection === 'above' ? p.snr >= threshold : p.snr <= threshold
+  }
   const wrapRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   // SVG geometry captured at drag start. Using a fixed rect for the whole
@@ -94,7 +103,7 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
   const thY = yFor(threshold)
   const measured = sorted.filter(p => !p.pending)
   const pendingCount = sorted.length - measured.length
-  const approvedCount = measured.filter(p => isApproved(p.snr)).length
+  const approvedCount = measured.filter(p => isApproved(p)).length
   // Indexed lookup, so a stale index from a shrinking series just clears the hover.
   const hoverPoint = hover != null ? sorted[hover] ?? null : null
 
@@ -235,8 +244,8 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
           <circle
             key={p.fileName}
             cx={xFor(i)} cy={yFor(p.snr)} r={3.5}
-            fill={isApproved(p.snr) ? APPROVED : REJECTED}
-            opacity={isApproved(p.snr) ? 1 : 0.55}
+            fill={isApproved(p) ? APPROVED : REJECTED}
+            opacity={isApproved(p) ? 1 : 0.55}
           >
             <title>{`${p.fileName}\n${metricLabel} ${p.snr.toFixed(3)}`}</title>
           </circle>
@@ -275,7 +284,7 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
           const i = hover as number
           const x = xFor(i)
           const py = hoverPoint.pending ? yFor(goodDirection === 'above' ? yMin : yMax) : yFor(hoverPoint.snr)
-          const ok = !hoverPoint.pending && isApproved(hoverPoint.snr)
+          const ok = !hoverPoint.pending && isApproved(hoverPoint)
           const name = hoverPoint.fileName.length > 42 ? `…${hoverPoint.fileName.slice(-41)}` : hoverPoint.fileName
           const value = hoverPoint.pending ? 'measuring…' : `${metricLabel} ${hoverPoint.snr.toFixed(3)}`
           const meta = `#${i + 1}/${sorted.length}`

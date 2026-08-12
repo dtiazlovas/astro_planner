@@ -18,10 +18,16 @@ export async function analyzeFitsFiles(
     const results: FitsAnalysis[] = []
     for (let i = 0; i < files.length; i++) {
       if (signal?.aborted) break
+      const file = files[i]
       const result = await new Promise<FitsAnalysis>((resolve, reject) => {
-        worker.onmessage = (e: MessageEvent<{ result: FitsAnalysis }>) => resolve(e.data.result)
+        worker.onmessage = (e: MessageEvent<{ result?: FitsAnalysis; error?: string }>) => resolve(
+          e.data.result ?? {
+            fileName: file.name, snr: null, fwhm: null, dateObs: null, width: null, height: null,
+            error: e.data.error ?? 'Analysis failed',
+          },
+        )
         worker.onerror = () => reject(new Error('Analysis worker failed'))
-        worker.postMessage({ file: files[i] })
+        worker.postMessage({ file })
       })
       results.push(result)
       onProgress?.(i + 1, files.length, result)

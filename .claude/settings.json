@@ -103,7 +103,8 @@
       "PowerShell($env:PORT=\"5137\"; node dist/server.js)",
       "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:5137/\" -UseBasicParsing -TimeoutSec 10; \"HTTP $\\($r.StatusCode\\)  len=$\\($r.Content.Length\\)\" } catch { \"ERR: $_\" })",
       "PowerShell($env:PORT=\"5137\"; node h:\\\\astro-planner\\\\repo\\\\dist\\\\server.js)",
-      "Bash(awk '/── Object cards ──/,/── Active \\\\/ paused chip ──/' src/client/index.css)"
+      "Bash(awk '/── Object cards ──/,/── Active \\\\/ paused chip ──/' src/client/index.css)",
+      "Bash(node \"C:/Users/DT/AppData/Local/Temp/claude/h--astro-planner-repo/c35f33a7-7039-4f33-aaae-1a436d07b7d9/scratchpad/peek.js\")"
     ]
   }
 }
