@@ -187,6 +187,33 @@ export const deleteObjectFilesViaBackend = (objectFolder: string, fileNames: str
     body: JSON.stringify({ objectFolder, fileNames }),
   }).then(json<{ deleted: number; failed: number }>)
 
+// ── PSFSW display anchors ──────────────────────────────────────────────────
+// The frozen divisor each target+filter's PSFSW is shown against, so the same
+// sub reads the same number on every screen and in every session.
+
+export interface PsfswAnchorRow { object: number; filter: number; anchor: number; subs: number; set_at: string }
+
+export const getPsfswAnchors = (): Promise<PsfswAnchorRow[]> =>
+  fetch(`${BASE}/psfsw-anchors`).then(json<PsfswAnchorRow[]>)
+
+// `replace` re-baselines an existing anchor; without it the stored one wins and
+// comes back unchanged, so two screens racing to establish a scale agree.
+export const savePsfswAnchor = (object: number, filter: number, anchor: number, subs: number, replace = false): Promise<PsfswAnchorRow> =>
+  fetch(`${BASE}/psfsw-anchors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ object, filter, anchor, subs, replace }),
+  }).then(json<PsfswAnchorRow>)
+
+// Deletes the subs an import copied from, wherever the server finds them
+// outside the images folder. Files inside it are the copies — never touched.
+export const deleteSourceFilesViaBackend = (fileNames: string[]): Promise<{ deleted: number; failed: number; notFound: number; skipped: number }> =>
+  fetch(`${BASE}/imported/delete-source-files`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileNames }),
+  }).then(json<{ deleted: number; failed: number; notFound: number; skipped: number }>)
+
 // ── Server-side file operations — used only in 'backend' import file mode ───
 // The server locates files by name in the images folder's parent tree, so
 // sources must live on the server machine; the browser never reads the bytes.

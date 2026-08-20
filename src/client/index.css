@@ -129,26 +129,30 @@ body {
   padding: 0 1rem 0.6rem;
 }
 
+/* The page names carry the whole navigation, so they sit a step above the
+   muted-label greys used for supporting text — legible at a glance against the
+   rail's near-black rather than receding into it. */
 .nav-link {
   background: none;
   border: none;
   cursor: pointer;
   padding: 0.35rem 0.9rem;
   border-radius: 6px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  color: #64748b;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #94a3b8;
   transition: color 0.15s, background 0.15s;
 }
 
 .nav-link:hover {
-  color: #cbd5e1;
+  color: #f1f5f9;
   background: #1a1a2e;
 }
 
 .nav-link--active {
-  color: #c4b5fd;
-  background: #1e1a38;
+  color: #ddd6fe;
+  background: #241f45;
+  font-weight: 700;
 }
 
 .rig-selector {
@@ -269,7 +273,16 @@ body {
     padding: 0;
   }
 
-  .nav-link { text-align: left; }
+  /* In the rail each link is a full-width row, so it can afford the size and
+     padding a tab strip can't. The active row also gets an accent bar — drawn
+     as an inset shadow rather than a border, which would shift the label. */
+  .nav-link {
+    text-align: left;
+    padding: 0.5rem 0.8rem;
+    font-size: 1rem;
+  }
+
+  .nav-link--active { box-shadow: inset 2px 0 0 #a78bfa; }
 
   /* Totals become a labelled column: there's vertical room here, so each
      filter gets its own row with the name spelled out. */
@@ -508,13 +521,14 @@ body {
 .obj-card__actions .btn-icon:hover:not(:disabled) { background: #32323f; }
 .obj-card__actions .btn-danger:hover:not(:disabled) { background: #3b1a1a; }
 
-/* One filter per line in a normal card. The track floor only kicks in when
-   an expanded object spans the full row, where the extra width becomes
-   two or three columns instead of very long bars. */
+/* Always one filter per line, at every width. Letting a wide card flow into
+   two or three columns saved vertical space but broke the read: the filters
+   are a short ranked list, and a reader scanning down one column shouldn't
+   have to notice it wraps into the next. */
 .obj-card__progress {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr));
-  gap: 0.4rem 1.75rem;
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
   border-top: 1px solid #2e2e3a;
   padding-top: 0.7rem;
 }
@@ -1167,15 +1181,32 @@ body {
 }
 
 /* Each item is its own grid rather than `display: contents` in a shared one:
-   the progress block flows into as many columns as fit, and every item using
-   the same template keeps the bars aligned down each column. */
+   every item uses the same template, so the bars stay aligned down the column.
+   The element is a <button> — the reset keeps it looking like the row it was
+   before it became clickable. */
 .plan-progress-item {
   display: grid;
   grid-template-columns: 5.3rem minmax(56px, 1fr) max-content 2.2rem;
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
+  width: 100%;
+  padding: 0.15rem 0.3rem;
+  margin: -0.15rem -0.3rem;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: default;
 }
+
+/* The whole row is the target. No caret: hover and the held highlight of the
+   open row carry the affordance, and the rows stay clean at a glance. */
+.plan-progress-item--clickable { cursor: pointer; }
+.plan-progress-item--clickable:hover { background: #24242f; }
+.plan-progress-item--open { background: #20203a; }
 
 .plan-progress-bar {
   height: 8px;

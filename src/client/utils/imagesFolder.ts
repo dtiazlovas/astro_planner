@@ -73,6 +73,34 @@ export async function ensureImagesFolderAccess(): Promise<FileSystemDirectoryHan
   return null
 }
 
+// Opens the folder picker for a one-off source folder (the capture dump an
+// import read from). Deliberately not persisted: the images folder is a fixed
+// place, a source folder is wherever this batch happened to come from.
+// Returns null only if the user cancelled.
+export async function pickSourceFolder(): Promise<FileSystemDirectoryHandle | null> {
+  if (!isFolderAccessSupported) throw new Error('This browser does not support local folder access')
+  try {
+    return await window.showDirectoryPicker({ id: 'import-source-folder', mode: 'readwrite' })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return null // user cancelled
+    throw err
+  }
+}
+
+// True when `dir` is the images folder or sits inside it. Guards the source
+// cleanup: the copies an import just made live there, and deleting "sources"
+// out of that tree would delete the only copy.
+export async function isInsideImagesFolder(dir: FileSystemDirectoryHandle): Promise<boolean> {
+  const root = await getStoredImagesFolder()
+  if (!root) return false
+  try {
+    if (await root.isSameEntry(dir)) return true
+    return (await root.resolve(dir)) !== null
+  } catch {
+    return false
+  }
+}
+
 export interface CopyItem {
   files: File[]
   objectFolder: string
@@ -173,6 +201,36 @@ export async function deleteObjectFolderFiles(root: FileSystemDirectoryHandle, o
     for (const sub of dirs) await scan(sub)
   }
   await scan(dir)
+  return stats
+}
+
+export interface SourceDeleteStats { deleted: number; failed: number; notFound: number }
+
+// Deletes the named subs from a source folder tree. Exact file names only —
+// unlike an object folder, a capture dump holds the originals themselves, so
+// there are no derived copies to sweep up and nothing to gain from matching
+// loosely. Names not found are reported, not treated as failures: an import
+// batch can span more than one source folder.
+export async function deleteFilesFromDirectory(dir: FileSystemDirectoryHandle, fileNames: string[]): Promise<SourceDeleteStats> {
+  const wanted = new Set(fileNames)
+  const stats: SourceDeleteStats = { deleted: 0, failed: 0, notFound: 0 }
+  const scan = async (d: FileSystemDirectoryHandle): Promise<void> => {
+    // Collect first — don't mutate the directory while iterating it.
+    const files: string[] = []
+    const dirs: FileSystemDirectoryHandle[] = []
+    for await (const handle of d.values()) {
+      if (handle.kind === 'directory') dirs.push(handle as FileSystemDirectoryHandle)
+      else files.push(handle.name)
+    }
+    for (const name of files) {
+      if (!wanted.has(name)) continue
+      wanted.delete(name)
+      try { await d.removeEntry(name); stats.deleted++ } catch { stats.failed++ }
+    }
+    for (const sub of dirs) await scan(sub)
+  }
+  await scan(dir)
+  stats.notFound = wanted.size
   return stats
 }
 

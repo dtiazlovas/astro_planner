@@ -6,12 +6,13 @@ import {
   updateFilter, createFilter,
   checkImported, recordImported,
   getPlans, setPlanSession, createPlan, createPlanDetail,
-  analyzeFitsViaBackend, copyFilesViaBackend, saveImportedAnalysis, getImportedRecords, openFitsFile,
+  analyzeFitsViaBackend, copyFilesViaBackend, deleteSourceFilesViaBackend, saveImportedAnalysis, getImportedRecords, getPsfswAnchors, openFitsFile,
   type ImportedRecord,
 } from '../api'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
+import { groupRecords, ensureAnchor, toAnchorMap, medianOf, scaleBy, type AnchorMap } from '../utils/psfsw'
 import type { FitsAnalysis } from '../utils/fits'
-import { ensureImagesFolderAccess, copyFilesToObjectFolders, type CopyItem } from '../utils/imagesFolder'
+import { ensureImagesFolderAccess, copyFilesToObjectFolders, pickSourceFolder, isInsideImagesFolder, deleteFilesFromDirectory, type CopyItem } from '../utils/imagesFolder'
 import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } from '../types'
 import { useEquipment } from '../context/EquipmentContext'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
@@ -28,9 +29,13 @@ interface ImportResult {
   filesNotFound: number
   filesFailed: number
   copyWarning: string | null
+  // The two sets the source cleanup offers to delete, captured here because the
+  // preview they were derived from is cleared once the import finishes.
+  copiedNames: string[]   // approved subs that reached an object folder
+  culledNames: string[]   // subs the approve line / blink rejected — never copied
 }
 import {
-  DEFAULT_PATTERN, fetchPatterns, parseFileMulti, parseFile, patternToRegex, dateKey, toDatetimeLocal,
+  DEFAULT_PATTERN, fetchPatterns, parseFileMulti, dateKey, toDatetimeLocal,
   matchObject, matchFilter, matchExposure, getPatternAcceptMulti,
   fetchDayStartHour, fetchImportFileMode, type ImportFileMode,
 } from '../utils/filePattern'
@@ -201,6 +206,13 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [resultExpanded, setResultExpanded] = useState<'failed' | 'skipped' | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // ── source cleanup, offered in the result dialog ──────────────
+  const [confirmDeleteSources, setConfirmDeleteSources] = useState(false)
+  const [deletingSources, setDeletingSources] = useState(false)
+  // Reported inside the dialog rather than the page's error banner — the banner
+  // sits behind the modal backdrop.
+  const [sourceDeleteMsg, setSourceDeleteMsg] = useState<{ kind: 'ok' | 'warn' | 'fail'; text: string } | null>(null)
+
   // ── quality analysis / frame approval ─────────────────────────
   const [snrResults, setSnrResults] = useState<Map<string, FitsAnalysis>>(new Map())
   // Both metrics are measured in one pass; this selects which is shown and
@@ -237,6 +249,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   // — fetching them behind the click raced the chart's first mount, so the band
   // was missing on the first analyze and only appeared on re-analyze.
   const importedRecordsRef = useRef<ImportedRecord[] | null>(null)
+  // The frozen per-target+filter PSFSW scales. A ref because `commit()` runs
+  // inside the analysis loop and must not read a stale copy; the counter is
+  // what tells the chart to redraw when one is established.
+  const anchorsRef = useRef<AnchorMap>(new Map())
+  const [anchorVersion, setAnchorVersion] = useState(0)
 
   // Closing the panel stops a running analysis instead of letting it keep
   // hammering the worker / server in the background.
@@ -253,6 +270,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         setLookupReady(true)
       })
       .catch(() => setError('Failed to load lookup data'))
+    // Separate from the lookups above: a missing anchor table shouldn't stop
+    // the panel loading, it just means no pair is anchored yet.
+    getPsfswAnchors()
+      .then(rows => { anchorsRef.current = toAnchorMap(rows); setAnchorVersion(v => v + 1) })
+      .catch(() => {})
   }, [])
 
   const applyPreview = (
@@ -486,39 +508,44 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
   // Previously-analyzed subs (persisted psfsw/fwhm, different files) whose parsed
   // target+filter matches an importable entry in this batch — the chart's
-  // historical context. Matched synchronously from the prefetched records so the
-  // band is available immediately when analysis starts. Returns raw values,
-  // time-ordered; PSFSW is normalized against a median by the caller.
+  // historical context, and the population a pair's anchor is set from. Matched
+  // synchronously from the prefetched records so the band is available
+  // immediately when analysis starts. Raw values, time-ordered.
   const matchHistoricalRecords = (): Map<string, HistoricalRecord[]> => {
-    const out = new Map<string, HistoricalRecord[]>()
     const records = importedRecordsRef.current
-    if (!records?.length) return out
-    const analyzedSet = new Set(importableFileNames)
+    if (!records?.length) return new Map()
     const pairSet = new Set(qualityGroups.map(g => g.key))
-    if (!pairSet.size) return out
-    // Try every configured pattern per record, not just the first that matches: a
-    // greedy pattern can swallow a token like a rotation angle ("nessy_270deg")
-    // into the target and miss the real object, while a more specific pattern
-    // parses it correctly. A record counts if any pattern resolves it to a pair.
-    const regexes = patterns.map(patternToRegex)
-    for (const rec of records) {
-      if ((rec.psfsw == null && rec.fwhm == null) || analyzedSet.has(rec.filename)) continue
-      for (const rx of regexes) {
-        const parsed = parseFile(rec.filename, rx)
-        if (!parsed) continue
-        const obj = matchObject(parsed.target, objects)
-        const filt = matchFilter(parsed.filter, filters)
-        const key = obj && filt ? `${obj.id}|${filt.id}` : null
-        if (key && pairSet.has(key)) {
-          const list = out.get(key)
-          const entry = { psfsw: rec.psfsw, fwhm: rec.fwhm, time: parsed.datetime.getTime() }
-          if (list) list.push(entry); else out.set(key, [entry])
-          break
-        }
-      }
+    if (!pairSet.size) return new Map()
+    // The batch's own files are excluded: they are what the history is context
+    // for, and on a re-import they may already carry a stored analysis.
+    const grouped = groupRecords(records, objects, filters, patterns, new Set(importableFileNames))
+    const out = new Map<string, HistoricalRecord[]>()
+    for (const [key, list] of grouped) {
+      if (pairSet.has(key)) out.set(key, list.map(r => ({ psfsw: r.psfsw, fwhm: r.fwhm, time: r.time })))
     }
-    for (const list of out.values()) list.sort((a, b) => a.time - b.time)
     return out
+  }
+
+  /**
+   * Makes sure every group on screen has a frozen PSFSW scale, so the numbers
+   * this import shows are the ones the object's own analysis will show later.
+   *
+   * A pair is anchored to its history where it has any; a first-light pair has
+   * only this batch to go on, so it anchors to that — which is also why this
+   * runs again after measuring, for the groups that had nothing to anchor to
+   * beforehand.
+   */
+  const ensureGroupAnchors = async (history: Map<string, HistoricalRecord[]>) => {
+    let changed = false
+    for (const g of qualityGroups) {
+      const [objectId, filterId] = g.key.split('|').map(Number)
+      if (anchorsRef.current.has(g.key)) continue
+      const fromHistory = (history.get(g.key) ?? []).map(h => h.psfsw).filter((v): v is number => v != null)
+      const fromBatch = g.fileNames.map(n => rawAnalysisRef.current.get(n)?.psfsw).filter((v): v is number => v != null)
+      const row = await ensureAnchor(anchorsRef.current, objectId, filterId, fromHistory.length ? fromHistory : fromBatch)
+      if (row) changed = true
+    }
+    if (changed) setAnchorVersion(v => v + 1)
   }
 
   const handleAnalyzeSnr = async () => {
@@ -541,9 +568,12 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
     const commit = () => {
       if (!raw.length) return
-      // Frames are normalized within their own target+filter group: PSFSW is
-      // relative to a median, so one median across two targets would rank a
-      // faint target's frames against a bright one's. FWHM stays raw (pixels).
+      // Frames are scaled within their own target+filter group, against that
+      // pair's frozen anchor — the same divisor the object's own analysis uses,
+      // so a sub reads the same number there as here, tonight and next year.
+      // Until a first-light pair has an anchor, its own median stands in and the
+      // final commit redraws it against the anchor once one is written.
+      // FWHM stays raw (pixels).
       const byGroup = new Map<string, FitsAnalysis[]>()
       for (const r of raw) {
         const key = fileGroup.get(r.fileName) ?? ''
@@ -556,10 +586,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       // finishes and the user drags it (dragging is disabled while analyzing).
       const defaults: Record<string, number> = {}
       for (const [key, items] of byGroup) {
-        const weights = items.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
-        const median = weights.length ? weights[weights.length >> 1] : 0
+        const anchored = anchorsRef.current.get(key)?.anchor
+        const median = anchored ?? medianOf(items.map(r => r.snr).filter((v): v is number => v != null)) ?? 0
         const normed = median > 0
-          ? items.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
+          ? items.map(r => r.snr != null ? { ...r, snr: scaleBy(r.snr, median) } : r)
           : items
         normedAll.push(...normed)
         const vals = normed
@@ -580,12 +610,16 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       // selection, so this is a synchronous match with no fetch racing the
       // chart's first mount — the band is present on the very first analyze, not
       // only on re-analyze. The prefetch may not have run (or may have failed),
-      // so fetch as a fallback. Rendering normalizes each group's band against
-      // that group's own median, so no median is needed here.
+      // so fetch as a fallback. The history is also what a pair's scale is
+      // anchored to, so it is established here — before the first frame is
+      // committed, or the chart would start on a stand-in scale and jump.
+      let history = new Map<string, HistoricalRecord[]>()
       try {
         if (importedRecordsRef.current == null) importedRecordsRef.current = await getImportedRecords()
-        setHistoricalByGroup(matchHistoricalRecords())
+        history = matchHistoricalRecords()
+        setHistoricalByGroup(history)
       } catch { setHistoricalByGroup(new Map()) }
+      await ensureGroupAnchors(history)
 
       if (importFileMode === 'backend') {
         // Server mode: the backend locates files by name near its images
@@ -617,7 +651,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         }, ctrl.signal)
       }
 
-      commit() // final normalization over the full set
+      // First-light pairs had no history to anchor to; now that their frames are
+      // measured they can be anchored to this batch, and the re-commit puts the
+      // chart on that scale for good.
+      await ensureGroupAnchors(history)
+      commit() // final scaling over the full set
     } catch {
       setError(importFileMode === 'backend'
         ? 'Quality analysis failed — is the images folder set and reachable on the server?'
@@ -645,24 +683,20 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   // group, while the import-wide totals are computed separately.
   const activeResults = [...snrResults.values()].filter(r => groupKeyOfFile.get(r.fileName) === activeGroup?.key)
 
-  // Past subs for this group. PSFSW is normalized by the group's own raw median
-  // (snrResults already holds group-normalized values, so the raw figures come
-  // from rawAnalysisRef) to share the axis with the live frames; FWHM is raw px.
+  // Past subs for this group, on the same scale as the live frames because both
+  // divide by the pair's frozen anchor — no longer by whatever this batch's
+  // median happens to be, which made the band shift as frames arrived and put
+  // it on a different scale from the object's own analysis. FWHM is raw px.
+  const activeAnchor = activeGroup ? anchorsRef.current.get(activeGroup.key) ?? null : null
   const historicalForMetric: number[] = (() => {
+    void anchorVersion // recompute when a scale is established
     const records = activeGroup ? historicalByGroup.get(activeGroup.key) ?? [] : []
     if (qualityMetric === 'fwhm') return records.map(h => h.fwhm).filter((v): v is number => v != null)
-    const raws = (activeGroup?.fileNames ?? [])
-      .map(n => rawAnalysisRef.current.get(n)?.psfsw)
-      .filter((v): v is number => v != null && v > 0)
-      .sort((a, b) => a - b)
-    // Before any frame of this group is measured, fall back to the historical
-    // set's own median so the band renders in place rather than off-scale.
-    const live = raws.length ? raws[raws.length >> 1] : 0
-    const hist = records.map(h => h.psfsw).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
-    const median = live > 0 ? live : hist.length ? hist[hist.length >> 1] : 0
-    return records
-      .filter(h => h.psfsw != null)
-      .map(h => median > 0 ? Math.round((h.psfsw! / median) * 1000) / 1000 : h.psfsw!)
+    const psfsw = records.map(h => h.psfsw).filter((v): v is number => v != null)
+    // No anchor yet (first light, before anything is measured): the stand-in is
+    // the historical set's own median, matching what commit() falls back to.
+    const divisor = activeAnchor?.anchor ?? medianOf(psfsw)
+    return divisor ? psfsw.map(v => scaleBy(v, divisor)) : psfsw
   })()
 
   const measuredPoints: SnrPoint[] = activeResults
@@ -757,6 +791,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
   const handleImport = async () => {
     setImporting(true); setError(null); setImportResult(null); setResultExpanded(null)
+    setConfirmDeleteSources(false); setSourceDeleteMsg(null)
 
     // Culled frames are never copied, so they must not reach the DB either:
     // counting them would overstate every entry's frames and leave import
@@ -767,6 +802,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     for (const s of preview ?? [])
       for (const e of s.entries) approvedByEntry.set(e, e.fileNames.filter(isApproved))
     const approvedOf = (e: ImportEntry): string[] => approvedByEntry.get(e) ?? e.fileNames
+    // Resolved from the same snapshot: what the lines rejected is what the
+    // source cleanup can offer to delete outright, since none of it is copied.
+    const approvedSet = new Set([...approvedByEntry.values()].flat())
+    const culledNames = importableFileNames.filter(n => !approvedSet.has(n))
     // An entry whose every frame was culled has nothing to import — creating a
     // zero-frame entry for it would be the same stale row in another guise.
     const entriesToImport = (s: ImportSession) => s.entries.filter(e => e.canImport && approvedOf(e).length > 0)
@@ -923,13 +962,77 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       }
 
       setImportProgress(null)
-      setImportResult({ sessionsCreated, entriesOk: entryCount, entriesFailed, entriesSkipped, filesCopied, filesSkipped, filesNotFound, filesFailed, copyWarning })
+      setImportResult({
+        sessionsCreated, entriesOk: entryCount, entriesFailed, entriesSkipped,
+        filesCopied, filesSkipped, filesNotFound, filesFailed, copyWarning,
+        // Only subs with a copy destination count as safe to delete at the
+        // source: one belonging to an object with no folder was never copied
+        // anywhere, so its source file is still the only copy.
+        copiedNames: [...new Set(copyGroups.flatMap(g => g.fileNames))],
+        culledNames,
+      })
       setPreview(null)
     } catch {
       setError('Import failed — check console for details')
     } finally {
       setImporting(false)
       setImportProgress(null)
+    }
+  }
+
+  // ── source cleanup ───────────────────────────────────────────
+  // The imported subs now live in the object folders, so their originals in the
+  // capture folder are redundant. Offered only when the copy actually landed:
+  // if any file failed to copy we can't tell which, and deleting a source whose
+  // copy never arrived loses the sub.
+  const canDeleteCopied = !!importResult
+    && importResult.copiedNames.length > 0
+    && importResult.filesFailed === 0
+    && !importResult.copyWarning
+  // The culled subs go with them: they were never copied anywhere, so leaving
+  // them behind just refills the folder the cleanup was meant to empty. Nothing
+  // in the DB refers to them either — the import deliberately recorded none.
+  const sourceDeleteNames = importResult
+    ? [...new Set([
+        ...(canDeleteCopied ? importResult.copiedNames : []),
+        ...importResult.culledNames,
+      ])]
+    : []
+  const culledDeleteCount = importResult?.culledNames.length ?? 0
+  const copiedDeleteCount = sourceDeleteNames.length - culledDeleteCount
+
+  const handleDeleteSources = async () => {
+    if (!sourceDeleteNames.length) return
+    setDeletingSources(true); setSourceDeleteMsg(null)
+    try {
+      let stats: { deleted: number; failed: number; notFound: number; skipped?: number }
+      if (importFileMode === 'backend') {
+        stats = await deleteSourceFilesViaBackend(sourceDeleteNames)
+      } else {
+        // The browser only grants delete access to a folder the user picks, and
+        // the files came in through a file input — which carries no handle. The
+        // picker is the first await here so the click's activation still holds.
+        const dir = await pickSourceFolder()
+        if (!dir) return // cancelled
+        if (await isInsideImagesFolder(dir))
+          throw new Error('That folder is inside the images folder — the imported copies live there. Pick the folder the subs were captured to.')
+        stats = await deleteFilesFromDirectory(dir, sourceDeleteNames)
+      }
+      const parts = [
+        `${stats.deleted} source file${stats.deleted !== 1 ? 's' : ''} deleted`,
+        stats.notFound > 0 ? `${stats.notFound} not found` : null,
+        stats.skipped ? `${stats.skipped} inside the images folder, kept` : null,
+        stats.failed > 0 ? `${stats.failed} could not be deleted` : null,
+      ].filter(Boolean)
+      setSourceDeleteMsg({
+        kind: stats.failed > 0 ? 'fail' : stats.notFound > 0 || stats.skipped ? 'warn' : 'ok',
+        text: parts.join(' · '),
+      })
+      setConfirmDeleteSources(false)
+    } catch (err) {
+      setSourceDeleteMsg({ kind: 'fail', text: err instanceof Error ? err.message : 'Deleting source files failed' })
+    } finally {
+      setDeletingSources(false)
     }
   }
 
@@ -1000,7 +1103,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                       value={activeGroup?.key ?? ''}
                       onChange={e => { setActiveGroupKey(e.target.value); setShowRejectedList(false) }}
                       style={{ fontSize: '0.85rem' }}
-                      title="Each target/filter is measured and culled on its own — PSFSW is relative to the group's own median"
+                      title="Each target/filter is measured and culled on its own — PSFSW is shown against that pair's own fixed scale"
                     >
                       {qualityGroups.map(g => (
                         <option key={g.key} value={g.key}>{g.label} ({g.fileNames.length})</option>
@@ -1031,7 +1134,12 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                         : !measured
                           ? <>Not measured yet{handDroppedActive > 0 ? ` · ${handDroppedActive} dropped by hand` : ''} — analyze to set an approve line, or blink through them as they are.</>
                           : <>
-                              {analyzedCount} analyzed{avgStars > 0 ? ` · ~${avgStars} stars/frame` : ''}{qualityMetric === 'psfsw' ? ' · median frame ≈ 1.0' : ' · px'} · {rejectedCount} will be skipped{handDroppedActive > 0 ? ` (${handDroppedActive} dropped by hand)` : ''}
+                              {analyzedCount} analyzed{avgStars > 0 ? ` · ~${avgStars} stars/frame` : ''}
+                              {qualityMetric === 'psfsw'
+                                ? activeAnchor
+                                  ? ` · 1.0 = this target/filter's median of ${activeAnchor.subs} sub${activeAnchor.subs !== 1 ? 's' : ''}, fixed ${activeAnchor.set_at.slice(0, 10)}`
+                                  : ' · first light — this batch fixes the scale'
+                                : ' · px'} · {rejectedCount} will be skipped{handDroppedActive > 0 ? ` (${handDroppedActive} dropped by hand)` : ''}
                               {analysisErrors > 0 ? ` · ${analysisErrors} not measurable (kept)` : ''}
                               {historicalForMetric.length > 0 ? ` · band + dots = ${historicalForMetric.length} past sub${historicalForMetric.length !== 1 ? 's' : ''} (same target/filter)` : ''}
                             </>}
@@ -1314,8 +1422,62 @@ export default function ImportPanel({ onImported, onClose }: Props) {
               </div>
             )}
 
+            {/* Source cleanup. This is the one moment the app knows exactly
+                which files a batch came from, so the offer belongs here rather
+                than in a later screen that would have to guess. */}
+            {(importResult.copiedNames.length > 0 || importResult.culledNames.length > 0) && (
+              <div className="import-result-section">
+                <div className="import-result-row import-result-row--muted">🗑 Source files</div>
+                {canDeleteCopied ? (
+                  <div className="import-result-row import-result-row--muted">
+                    {importResult.copiedNames.length} imported sub{importResult.copiedNames.length !== 1 ? 's are' : ' is'} now in the object folders — their originals can go.
+                  </div>
+                ) : importResult.copiedNames.length > 0 && (
+                  <div className="import-result-row import-result-row--warn">
+                    ⚠ Originals of the {importResult.copiedNames.length} imported sub{importResult.copiedNames.length !== 1 ? 's' : ''} are kept — the copy to the images folder didn't complete.
+                  </div>
+                )}
+                {culledDeleteCount > 0 && (
+                  <div className="import-result-row import-result-row--warn">
+                    ⚠ The {culledDeleteCount} culled sub{culledDeleteCount !== 1 ? 's' : ''} go{culledDeleteCount === 1 ? 'es' : ''} too — never copied, so this deletes {culledDeleteCount !== 1 ? 'them' : 'it'} outright.
+                  </div>
+                )}
+                {sourceDeleteMsg && (
+                  <div className={`import-result-row import-result-row--${sourceDeleteMsg.kind === 'ok' ? 'ok' : sourceDeleteMsg.kind === 'warn' ? 'warn' : 'fail'}`}>
+                    {sourceDeleteMsg.kind === 'ok' ? '✓' : sourceDeleteMsg.kind === 'warn' ? '⚠' : '✗'} {sourceDeleteMsg.text}
+                  </div>
+                )}
+                {/* A clean sweep leaves nothing to press again; a partial one
+                    keeps the button so the rest can be retried. */}
+                <div style={{ display: sourceDeleteMsg?.kind === 'ok' ? 'none' : 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', marginTop: '0.25rem' }}>
+                  {confirmDeleteSources ? (
+                    <>
+                      {/* Spelled out per set: the imported half has a copy in
+                          the object folders, the culled half has none. */}
+                      <span style={{ color: '#f87171', fontSize: '0.85rem' }}>
+                        Permanently delete {sourceDeleteNames.length} file{sourceDeleteNames.length !== 1 ? 's' : ''} from the source folder
+                        {culledDeleteCount > 0 && copiedDeleteCount > 0 ? ` (${copiedDeleteCount} imported · ${culledDeleteCount} culled)` : ''}?
+                      </span>
+                      <button className="btn btn-danger" onClick={handleDeleteSources} disabled={deletingSources}>
+                        {deletingSources ? 'Deleting…' : importFileMode === 'backend' ? 'Yes, delete' : 'Choose folder & delete'}
+                      </button>
+                      <button className="btn btn-ghost" onClick={() => setConfirmDeleteSources(false)} disabled={deletingSources}>Cancel</button>
+                    </>
+                  ) : (
+                    <button className="btn btn-danger" onClick={() => { setSourceDeleteMsg(null); setConfirmDeleteSources(true) }}
+                      disabled={deletingSources || sourceDeleteNames.length === 0}
+                      title={importFileMode === 'backend'
+                        ? 'Deletes them where the server found them — files inside the images folder are never touched'
+                        : 'You pick the folder they came from; the browser only allows deleting inside a folder you choose'}>
+                      🗑 Delete {sourceDeleteNames.length} source sub{sourceDeleteNames.length !== 1 ? 's' : ''}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="import-result-actions">
-              <button className="btn btn-primary" onClick={() => { setImportResult(null); setResultExpanded(null); try { onImported() } catch {} }}>Close</button>
+              <button className="btn btn-primary" onClick={() => { setImportResult(null); setResultExpanded(null); setConfirmDeleteSources(false); setSourceDeleteMsg(null); try { onImported() } catch {} }}>Close</button>
             </div>
           </div>
         </div>

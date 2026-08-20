@@ -115,6 +115,19 @@ function initSchema(database: Database.Database): void {
       filename TEXT NOT NULL
     );
 
+    -- The fixed divisor a target+filter's PSFSW values are shown against.
+    -- Set once from the median of that pair's subs and then left alone: a
+    -- scale recomputed from a growing population would move every previously
+    -- seen number, which is exactly what makes subs incomparable across time.
+    CREATE TABLE IF NOT EXISTS ap_psfsw_anchor (
+      object INTEGER NOT NULL REFERENCES ap_object(id),
+      filter INTEGER NOT NULL REFERENCES ap_filter(id),
+      anchor REAL    NOT NULL,
+      subs   INTEGER NOT NULL,
+      set_at TEXT    NOT NULL,
+      PRIMARY KEY (object, filter)
+    );
+
     CREATE TABLE IF NOT EXISTS ap_equipment (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       name         TEXT    NOT NULL,

@@ -157,6 +157,33 @@ export async function buildFileIndex(dir: string): Promise<Map<string, string>> 
   return index
 }
 
+export interface SourceDeleteStats { deleted: number; failed: number; notFound: number; skipped: number }
+
+// Deletes the subs an import copied from, located by name in the same tree
+// copyFilesToObjectFolders searches. Anything found inside the images folder is
+// left alone and counted as skipped — that file is the copy, not the source,
+// and it is all that remains of the sub. Returns null when the images folder
+// isn't configured.
+export const deleteSourceFiles = async (fileNames: string[]): Promise<SourceDeleteStats | null> => {
+  const stats: SourceDeleteStats = { deleted: 0, failed: 0, notFound: 0, skipped: 0 }
+  if (!fileNames.length) return stats
+  const db = connectToDatabase()
+  const setting = db.prepare("SELECT value FROM ap_settings WHERE name = 'images_folder'").get() as { value: string } | undefined
+  const imagesFolder = setting?.value?.trim()
+  if (!imagesFolder) return null
+
+  const root = path.resolve(imagesFolder)
+  const index = await buildFileIndex(path.dirname(root))
+  for (const fileName of new Set(fileNames)) {
+    const srcPath = index.get(fileName)
+    if (!srcPath) { stats.notFound++; continue }
+    const resolved = path.resolve(srcPath)
+    if (resolved === root || resolved.startsWith(root + path.sep)) { stats.skipped++; continue }
+    try { await fs.unlink(resolved); stats.deleted++ } catch { stats.failed++ }
+  }
+  return stats
+}
+
 export interface CopyStats { copied: number; skipped: number; notFound: number; failed: number }
 
 export const copyFilesToObjectFolders = async (items: CopyItem[]): Promise<CopyStats> => {

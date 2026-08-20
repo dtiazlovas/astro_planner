@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { checkImported, recordImported, relinkImported, copyFilesToObjectFolders, getAllImported, removeImported, listObjectFolderFiles, deleteObjectFolderFiles, saveImportedAnalysis, type CopyItem, type CopyStats } from '../services/apImportedService.js'
+import { checkImported, recordImported, relinkImported, copyFilesToObjectFolders, getAllImported, removeImported, listObjectFolderFiles, deleteObjectFolderFiles, deleteSourceFiles, saveImportedAnalysis, type CopyItem, type CopyStats } from '../services/apImportedService.js'
 
 const router = Router()
 
@@ -52,6 +52,18 @@ router.post('/delete-object-files', async (req: Request, res: Response) => {
   if (!Array.isArray(fileNames) || !fileNames.length) { res.status(400).json({ error: 'fileNames must be a non-empty array' }); return }
   try {
     const stats = await deleteObjectFolderFiles(objectFolder.trim(), fileNames)
+    if (stats === null) { res.status(409).json({ error: 'Images folder not set' }); return }
+    res.json(stats)
+  } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.post('/delete-source-files', async (req: Request, res: Response) => {
+  const { fileNames } = req.body as { fileNames?: string[] }
+  if (!Array.isArray(fileNames) || !fileNames.length) { res.status(400).json({ error: 'fileNames must be a non-empty array' }); return }
+  try {
+    const stats = await deleteSourceFiles(fileNames)
     if (stats === null) { res.status(409).json({ error: 'Images folder not set' }); return }
     res.json(stats)
   } catch {

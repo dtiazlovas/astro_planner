@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend, saveImportedAnalysis, openFitsFile } from '../api'
+import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend, saveImportedAnalysis, getPsfswAnchors, savePsfswAnchor, openFitsFile, type PsfswAnchorRow } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
 import { fetchPatterns, fetchImportFileMode, fetchDayStartHour, type ImportFileMode } from '../utils/filePattern'
 import { ensureImagesFolderAccess, listObjectFolderFiles, getObjectFolderFiles, deleteObjectFolderFiles } from '../utils/imagesFolder'
 import { scanObjectFiles, applyObjectSync, cullSubset, type SyncScanResult } from '../utils/objectSync'
+import { groupRecords, ensureAnchor, toAnchorMap, medianOf, scaleBy, anchorKeyOf, type AnchorMap, type GroupedRecord } from '../utils/psfsw'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
 import type { FitsAnalysis } from '../utils/fits'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
@@ -42,6 +43,9 @@ export default function ObjectsPage() {
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
   const [expandedStats, setExpandedStats] = useState<Map<number, ObjectFilterStat[]>>(new Map())
+  // Object id → the filter name its breakdown panel is narrowed to, set by
+  // clicking that filter's row. Absent means the panel shows every filter.
+  const [focusedFilter, setFocusedFilter] = useState<Map<number, string>>(new Map())
   const [planProgress, setPlanProgress] = useState<Map<number, PlanProgressItem[]>>(new Map())
   const [loadingIds, setLoadingIds] = useState<Set<number>>(new Set())
   // Plans open as a dialog, so at most one object's plans are shown at a time.
@@ -80,7 +84,20 @@ export default function ObjectsPage() {
   const [qualityDeleting, setQualityDeleting] = useState(false)
   const [confirmDeleteSubs, setConfirmDeleteSubs] = useState(false)
   const [showCullList, setShowCullList] = useState(false)
+  const [rebaselining, setRebaselining] = useState(false)
+  const [confirmRebaseline, setConfirmRebaseline] = useState(false)
   const qualityAbortRef = useRef<AbortController | null>(null)
+  // The frozen per-object+filter PSFSW scales, shared with the import panel so
+  // a sub reads the same number in both. A ref because the analysis loop's
+  // commit() must not close over a stale copy; the counter redraws the chart
+  // when one is established.
+  const anchorsRef = useRef<AnchorMap>(new Map())
+  const [anchorVersion, setAnchorVersion] = useState(0)
+  // Every import record grouped by the object+filter its filename parses to —
+  // the population a pair's anchor is set from, refreshed by each scan. Subs
+  // deleted from disk still count here: the scale must not move because a bad
+  // night was culled.
+  const groupedRecordsRef = useRef<Map<string, GroupedRecord[]>>(new Map())
 
   // Closing the dialog (or leaving the page) stops a running analysis instead
   // of letting it keep hammering the worker / server in the background.
@@ -114,12 +131,20 @@ export default function ObjectsPage() {
     }
     load()
     // Collapse any rig-specific expanded state when switching rigs
-    setExpandedIds(new Set()); setExpandedStats(new Map()); setPlansForId(null)
+    setExpandedIds(new Set()); setExpandedStats(new Map()); setFocusedFilter(new Map()); setPlansForId(null)
   }, [activeId])
 
   // Loaded up-front so the sync click can request folder permission while the
   // click's transient user activation is still fresh.
   useEffect(() => { fetchImportFileMode().then(setImportFileMode) }, [])
+
+  // A pair with no anchor yet just falls back to a local median until one is
+  // established, so a failure here is not worth surfacing.
+  useEffect(() => {
+    getPsfswAnchors()
+      .then(rows => { anchorsRef.current = toAnchorMap(rows); setAnchorVersion(v => v + 1) })
+      .catch(() => {})
+  }, [])
 
   // Reads the object's folder and diffs it against the DB. Separate from the
   // dialog state so the cull can scan, apply and re-scan in one go.
@@ -135,6 +160,9 @@ export default function ObjectsPage() {
     const [filters, exposures, patterns, sessions, imported, dayStartHour] = await Promise.all([
       getFilters(), getExposures(), fetchPatterns(), getSessions(), getImportedRecords(), fetchDayStartHour(),
     ])
+    // Kept for the quality pane: the anchor is set from a pair's whole record
+    // history, which is wider than the files this scan found on disk.
+    groupedRecordsRef.current = groupRecords(imported, objects, filters, patterns)
     return scanObjectFiles(obj, objects, present, imported, filters, exposures, patterns, sessions, dayStartHour, activeId)
   }
 
@@ -210,16 +238,67 @@ export default function ObjectsPage() {
     if (activeQualityFilterId != null) setQualityThresholdByFilter(prev => new Map(prev).set(activeQualityFilterId, v))
   }
 
-  // Saved analysis for one filter's subs, normalized to unit median exactly as
-  // a fresh run is — enough to keep the chart populated when the filter is
-  // switched, without measuring anything.
+  /** The frozen scale this object+filter's PSFSW is shown against, if set. */
+  const anchorRowFor = (filterId: number | null): PsfswAnchorRow | null => {
+    void anchorVersion // recompute when a scale is established
+    if (syncPreview == null || filterId == null) return null
+    return anchorsRef.current.get(anchorKeyOf(syncPreview.obj.id, filterId)) ?? null
+  }
+  const anchorFor = (filterId: number | null): number | null => anchorRowFor(filterId)?.anchor ?? null
+  const activeAnchor = anchorRowFor(activeQualityFilterId)
+
+  /**
+   * Moves this pair's frozen scale onto the median of everything it has now.
+   *
+   * Only ever from a click: every number ever shown for the pair shifts by the
+   * ratio between the old scale and the new one, which is precisely what the
+   * frozen anchor exists to prevent. What's on screen is rescaled by that same
+   * ratio rather than refetched, so the chart doesn't jump for a different
+   * reason than the one the user asked for.
+   */
+  const handleRebaseline = async () => {
+    if (!syncPreview || activeQualityFilterId == null || !activeAnchor) return
+    const filterId = activeQualityFilterId
+    const objectId = syncPreview.obj.id
+    setRebaselining(true); setError(null)
+    try {
+      const values = (groupedRecordsRef.current.get(anchorKeyOf(objectId, filterId)) ?? [])
+        .map(r => r.psfsw).filter((v): v is number => v != null)
+      const median = medianOf(values)
+      if (median == null) throw new Error('No measured subs to set a scale from')
+      const row = await savePsfswAnchor(objectId, filterId, median, values.filter(v => v > 0).length, true)
+      const ratio = activeAnchor.anchor / row.anchor
+      anchorsRef.current.set(anchorKeyOf(objectId, filterId), row)
+      setAnchorVersion(v => v + 1)
+      setQualityResultsByFilter(prev => {
+        const results = prev.get(filterId)
+        if (!results) return prev
+        return new Map(prev).set(filterId, new Map([...results].map(([n, r]) =>
+          [n, r.snr != null ? { ...r, snr: Math.round(r.snr * ratio * 1000) / 1000 } : r])))
+      })
+      // The limit is in displayed units — but only PSFSW's; FWHM is raw px.
+      if (qualityMetric === 'psfsw') setQualityThresholdByFilter(prev => {
+        const t = prev.get(filterId)
+        return t == null ? prev : new Map(prev).set(filterId, t * ratio)
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not re-baseline the scale')
+    } finally {
+      setRebaselining(false); setConfirmRebaseline(false)
+    }
+  }
+
+  // Saved analysis for one filter's subs, scaled by that pair's anchor exactly
+  // as a fresh run is — enough to keep the chart populated when the filter is
+  // switched, without measuring anything. Falling back to the population's own
+  // median (an unanchored pair) is the one case where these numbers aren't
+  // comparable with other screens; analyzing anchors the pair and fixes it.
   const storedResultsFor = (filterId: number): Map<string, FitsAnalysis> => {
     const files = (syncPreview?.scan.analyzableFiles ?? []).filter(f => f.filterId === filterId && f.storedPsfsw != null)
-    const weights = files.map(f => f.storedPsfsw!).filter(v => v > 0).sort((a, b) => a - b)
-    const median = weights.length ? weights[weights.length >> 1] : 0
+    const divisor = anchorFor(filterId) ?? medianOf(files.map(f => f.storedPsfsw!)) ?? 0
     return new Map(files.map(f => [f.name, {
       fileName: f.name,
-      snr: median > 0 ? Math.round((f.storedPsfsw! / median) * 1000) / 1000 : f.storedPsfsw,
+      snr: divisor > 0 ? scaleBy(f.storedPsfsw!, divisor) : f.storedPsfsw,
       fwhm: f.storedFwhm,
       dateObs: null, width: null, height: null,
     }]))
@@ -299,9 +378,23 @@ export default function ObjectsPage() {
       const storedNames = new Set(stored.map(r => r.fileName))
       const names = qualityFilterFiles.map(f => f.name).filter(n => !storedNames.has(n))
 
-      // Raw PSFSW values (saved and computed alike), normalized to unit
-      // median over the combined set. On stop, partial results show.
+      // Raw PSFSW values (saved and computed alike), scaled by this
+      // object+filter's frozen anchor. On stop, partial results show.
       const raw: FitsAnalysis[] = []
+
+      // Establish the scale before anything is drawn, from every record this
+      // pair has — not just the subs still on disk — so the sync dialog and the
+      // import chart divide by the same number. Already-anchored pairs keep
+      // what they have; this only ever fills a gap.
+      const anchoredValues = (groupedRecordsRef.current.get(anchorKeyOf(syncPreview.obj.id, filterId)) ?? [])
+        .map(r => r.psfsw).filter((v): v is number => v != null)
+      const seedValues = anchoredValues.length
+        ? anchoredValues
+        : qualityFilterFiles.map(f => f.storedPsfsw).filter((v): v is number => v != null)
+      if (seedValues.length) {
+        await ensureAnchor(anchorsRef.current, syncPreview.obj.id, filterId, seedValues)
+        setAnchorVersion(v => v + 1)
+      }
 
       /**
        * Publishes what has been measured so far. Called after every frame
@@ -312,10 +405,13 @@ export default function ObjectsPage() {
       const commit = () => {
         const all = [...stored, ...raw]
         if (!all.length) return
-        const weights = all.map(r => r.snr).filter((v): v is number => v != null && v > 0).sort((a, b) => a - b)
-        const median = weights.length ? weights[weights.length >> 1] : 0
-        const normed = median > 0
-          ? all.map(r => r.snr != null ? { ...r, snr: Math.round((r.snr / median) * 1000) / 1000 } : r)
+        // The pair's frozen anchor, or — for a pair with nothing to anchor to
+        // yet — this set's own median as a stand-in.
+        const divisor = anchorsRef.current.get(anchorKeyOf(syncPreview.obj.id, filterId))?.anchor
+          ?? medianOf(all.map(r => r.snr).filter((v): v is number => v != null))
+          ?? 0
+        const normed = divisor > 0
+          ? all.map(r => r.snr != null ? { ...r, snr: scaleBy(r.snr, divisor) } : r)
           : all
         setQualityResultsByFilter(prev => new Map(prev).set(filterId, new Map(normed.map(r => [r.fileName, r]))))
         // Held at "keep everything" until the run finishes; the handle is
@@ -598,19 +694,49 @@ export default function ObjectsPage() {
     }
   }
 
-  const handleToggleExpand = (obj: ApObject) => {
-    if (obj.total_seconds <= 0) return
-    if (expandedIds.has(obj.id)) {
-      setExpandedIds(prev => { const s = new Set(prev); s.delete(obj.id); return s })
-      setExpandedStats(prev => { const m = new Map(prev); m.delete(obj.id); return m })
-      return
-    }
-    setExpandedIds(prev => new Set(prev).add(obj.id))
+  const loadFilterStats = (obj: ApObject) => {
     setLoadingIds(prev => new Set(prev).add(obj.id))
     getObjectFilterStats(obj.id, activeId)
       .then(s => setExpandedStats(prev => new Map(prev).set(obj.id, s)))
       .catch(() => {})
       .finally(() => setLoadingIds(prev => { const s = new Set(prev); s.delete(obj.id); return s }))
+  }
+
+  const collapseObject = (id: number) => {
+    setExpandedIds(prev => { const s = new Set(prev); s.delete(id); return s })
+    setExpandedStats(prev => { const m = new Map(prev); m.delete(id); return m })
+    setFocusedFilter(prev => { const m = new Map(prev); m.delete(id); return m })
+  }
+
+  const handleToggleExpand = (obj: ApObject) => {
+    if (obj.total_seconds <= 0) return
+    if (expandedIds.has(obj.id)) {
+      // Open on a single filter → widen to the full breakdown instead of
+      // closing. "Integrated" is the whole-object figure, so its click should
+      // land on the whole-object panel; a second one closes it.
+      if (focusedFilter.has(obj.id)) {
+        setFocusedFilter(prev => { const m = new Map(prev); m.delete(obj.id); return m })
+        return
+      }
+      collapseObject(obj.id)
+      return
+    }
+    setExpandedIds(prev => new Set(prev).add(obj.id))
+    loadFilterStats(obj)
+  }
+
+  /** Same panel as Integrated, narrowed to the filter whose row was clicked. */
+  const handleToggleFilter = (obj: ApObject, filterName: string) => {
+    if (obj.total_seconds <= 0) return
+    if (expandedIds.has(obj.id) && focusedFilter.get(obj.id) === filterName) {
+      collapseObject(obj.id)
+      return
+    }
+    setFocusedFilter(prev => new Map(prev).set(obj.id, filterName))
+    if (!expandedIds.has(obj.id)) {
+      setExpandedIds(prev => new Set(prev).add(obj.id))
+      loadFilterStats(obj)
+    }
   }
 
   const set = (field: keyof Omit<typeof emptyForm, 'active'>) => (
@@ -687,15 +813,30 @@ export default function ObjectsPage() {
                         const tooltip = p.total_frames > 0
                           ? `${p.total_frames} frame${p.total_frames !== 1 ? 's' : ''}${avgExp !== null ? ` × ${avgExp}s` : ''}`
                           : undefined
+                        const rowOpen = expanded && focusedFilter.get(obj.id) === (p.filter_name ?? '')
+                        // Not `disabled` when there's nothing to show: a disabled
+                        // button drops its tooltip, and the frame count in it is
+                        // the row's own detail.
+                        const rowClickable = obj.total_seconds > 0
                         return (
-                          <div key={p.filter_id} className="plan-progress-item" title={tooltip}>
+                          <button
+                            key={p.filter_id}
+                            className={[
+                              'plan-progress-item',
+                              rowClickable ? 'plan-progress-item--clickable' : '',
+                              rowOpen ? 'plan-progress-item--open' : '',
+                            ].filter(Boolean).join(' ')}
+                            title={tooltip}
+                            aria-expanded={rowClickable ? rowOpen : undefined}
+                            onClick={() => handleToggleFilter(obj, p.filter_name ?? '')}
+                          >
                             <FilterBadge name={p.filter_name} />
                             <div className="plan-progress-bar">
                               <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
                             </div>
                             <span className="cell-time">{fmtMinsH(capturedMins)} / {fmtMinsH(p.target_minutes)}</span>
                             <span className="plan-progress-pct">{pct}%</span>
-                          </div>
+                          </button>
                         )
                       })}
                     </div>
@@ -719,16 +860,23 @@ export default function ObjectsPage() {
                   </div>
                 </div>
 
-                {expanded && (
+                {expanded && (() => {
+                  // A row click narrows the same panel to that filter; the
+                  // stats carry no filter id, so they're matched by name —
+                  // both sides come from the filters table.
+                  const focus = focusedFilter.get(obj.id)
+                  const all = expandedStats.get(obj.id) ?? []
+                  const shown = focus == null ? all : all.filter(s => (s.filter_name ?? '') === focus)
+                  return (
                   <div className="filter-stats-panel">
-                    <span className="filter-stats-panel__title">{obj.name} — by filter</span>
+                    <span className="filter-stats-panel__title">{obj.name} — {focus ? focus : 'by filter'}</span>
                     {loadingIds.has(obj.id) ? (
                       <span className="cell-muted">Loading…</span>
-                    ) : (expandedStats.get(obj.id)?.length ?? 0) === 0 ? (
-                      <span className="cell-muted">No data</span>
+                    ) : shown.length === 0 ? (
+                      <span className="cell-muted">{focus ? 'Nothing captured with this filter yet' : 'No data'}</span>
                     ) : (
                       <div className="filter-stats-list">
-                        {(expandedStats.get(obj.id) ?? []).map((s, i) => (
+                        {shown.map((s, i) => (
                           <div key={i} className="filter-stat-item">
                             <FilterBadge name={s.filter_name} />
                             <span className="cell-time">{fmtDuration(Number(s.total_seconds))}</span>
@@ -742,7 +890,8 @@ export default function ObjectsPage() {
                       </div>
                     )}
                   </div>
-                )}
+                  )
+                })()}
 
               </div>
     )
@@ -754,7 +903,7 @@ export default function ObjectsPage() {
         <h2>Objects</h2>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {expandedIds.size > 0 && (
-            <button className="btn btn-ghost" onClick={() => { setExpandedIds(new Set()); setExpandedStats(new Map()) }}>Collapse all</button>
+            <button className="btn btn-ghost" onClick={() => { setExpandedIds(new Set()); setExpandedStats(new Map()); setFocusedFilter(new Map()) }}>Collapse all</button>
           )}
           <button className="btn btn-primary" onClick={openAdd}>+ Add Object</button>
         </div>
@@ -1008,9 +1157,31 @@ export default function ObjectsPage() {
                   {qualityResults.size > 0 && (
                     <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
                       {analyzableFilters.find(f => f.id === activeQualityFilterId)?.name}: {measuredPoints.length} of {qualityFilterFiles.length} measured
-                      {qualityMetric === 'psfsw' ? ' · median ≈ 1.0' : ' · px'} · {cullFiles.length} {qualityMetric === 'psfsw' ? 'below' : 'above'} the limit
+                      {qualityMetric === 'psfsw'
+                        ? activeAnchor
+                          ? ` · 1.0 = this target/filter's median of ${activeAnchor.subs} sub${activeAnchor.subs !== 1 ? 's' : ''}, fixed ${activeAnchor.set_at.slice(0, 10)}`
+                          : ' · scale not fixed yet — analyze to set it'
+                        : ' · px'} · {cullFiles.length} {qualityMetric === 'psfsw' ? 'below' : 'above'} the limit
                       {qualityUnmeasured > 0 ? ` · ${qualityUnmeasured} not measurable (kept)` : ''}
                     </span>
+                  )}
+                  {/* The scale is meant to stay put, so this sits behind a
+                      confirm: it moves every number ever shown for the pair. */}
+                  {qualityMetric === 'psfsw' && activeAnchor && !qualityAnalyzing && (
+                    confirmRebaseline ? (
+                      <span style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
+                        <span style={{ color: '#fbbf24', fontSize: '0.8rem' }}>Move the 1.0 point to today's median? Past numbers shift.</span>
+                        <button className="btn btn-sm" onClick={handleRebaseline} disabled={rebaselining}>
+                          {rebaselining ? '…' : 'Re-baseline'}
+                        </button>
+                        <button className="btn btn-sm btn-ghost" onClick={() => setConfirmRebaseline(false)} disabled={rebaselining}>Cancel</button>
+                      </span>
+                    ) : (
+                      <button className="btn btn-ghost btn-sm" onClick={() => setConfirmRebaseline(true)}
+                        title="Re-fix the 1.0 point to this target/filter's median as it stands now">
+                        ↺ Re-baseline
+                      </button>
+                    )
                   )}
                 </div>
                 {/* Open from the first analysis onward. A filter with nothing to
