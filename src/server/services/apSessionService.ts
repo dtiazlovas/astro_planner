@@ -1,10 +1,34 @@
 import { connectToDatabase } from '../db.js'
 import type { ApSession, CreateApSessionDto, UpdateApSessionDto } from '../models/ApSession.js'
 
+// Exposure thrown away with the culled subs, taken from the entry each record
+// is linked to. A record with no entry — its whole entry was culled, or the
+// entry has since been deleted — falls back to the night's average seconds per
+// frame, which is exact unless that night mixed exposure lengths.
+const CULLED_SECONDS = `
+  CAST(COALESCE(SUM(COALESCE(ce.duration, (
+    SELECT CAST(SUM(os2.frames * e2.duration) AS REAL) / NULLIF(SUM(os2.frames), 0)
+      FROM ap_object_session os2
+      JOIN ap_exposure e2 ON e2.id = os2.exposure
+     WHERE os2.session = i.session_id
+  ))), 0) AS INTEGER)
+`
+
+// `frames`/`culled_frames`/`culled_seconds` are the night's cull stats: subs
+// kept versus subs measured, rejected and deleted. Culled figures come from
+// subqueries rather than joins — a second join against the per-entry rows would
+// multiply the frame sums.
 const SELECT_WITH_CALC = `
   SELECT
     s.id, s.name, s.start, s.duration, s.duration_set, s.comment, s.equipment,
-    CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS calculated_seconds
+    CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS calculated_seconds,
+    CAST(COALESCE(SUM(os.frames), 0) AS INTEGER) AS frames,
+    (SELECT COUNT(*) FROM ap_imported i WHERE i.session_id = s.id AND i.culled = 1) AS culled_frames,
+    (SELECT ${CULLED_SECONDS}
+       FROM ap_imported i
+       LEFT JOIN ap_object_session cos ON cos.id = i.object_session_id
+       LEFT JOIN ap_exposure ce ON ce.id = cos.exposure
+      WHERE i.session_id = s.id AND i.culled = 1) AS culled_seconds
   FROM ap_session s
   LEFT JOIN ap_object_session os ON os.session = s.id
   LEFT JOIN ap_exposure e ON e.id = os.exposure

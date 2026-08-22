@@ -517,8 +517,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     const pairSet = new Set(qualityGroups.map(g => g.key))
     if (!pairSet.size) return new Map()
     // The batch's own files are excluded: they are what the history is context
-    // for, and on a re-import they may already carry a stored analysis.
-    const grouped = groupRecords(records, objects, filters, patterns, new Set(importableFileNames))
+    // for, and on a re-import they may already carry a stored analysis. Culled
+    // subs are excluded too — the history is what the kept population looks
+    // like, and a scale anchored to rejected frames is pulled towards them.
+    const grouped = groupRecords(records.filter(r => !r.culled), objects, filters, patterns, new Set(importableFileNames))
     const out = new Map<string, HistoricalRecord[]>()
     for (const [key, list] of grouped) {
       if (pairSet.has(key)) out.set(key, list.map(r => ({ psfsw: r.psfsw, fwhm: r.fwhm, time: r.time })))
@@ -793,11 +795,12 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setImporting(true); setError(null); setImportResult(null); setResultExpanded(null)
     setConfirmDeleteSources(false); setSourceDeleteMsg(null)
 
-    // Culled frames are never copied, so they must not reach the DB either:
-    // counting them would overstate every entry's frames and leave import
-    // records for files that aren't on disk — exactly the drift an object file
-    // sync then has to undo. Every write below uses this approved set, resolved
-    // once so the approve lines can't shift underneath a half-finished import.
+    // Culled frames never reach an entry's frame count: counting them would
+    // overstate the integration and leave the object folder short of the subs
+    // the DB claims. They are still recorded — flagged culled, which keeps them
+    // out of every file-based reckoning while the night keeps the tally of what
+    // it threw away. Every write below uses this approved set, resolved once so
+    // the approve lines can't shift underneath a half-finished import.
     const approvedByEntry = new Map<ImportEntry, string[]>()
     for (const s of preview ?? [])
       for (const e of s.entries) approvedByEntry.set(e, e.fileNames.filter(isApproved))
@@ -806,6 +809,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     // source cleanup can offer to delete outright, since none of it is copied.
     const approvedSet = new Set([...approvedByEntry.values()].flat())
     const culledNames = importableFileNames.filter(n => !approvedSet.has(n))
+    const culledOf = (e: ImportEntry): string[] => e.fileNames.filter(n => !approvedSet.has(n))
     // An entry whose every frame was culled has nothing to import — creating a
     // zero-frame entry for it would be the same stale row in another guise.
     const entriesToImport = (s: ImportSession) => s.entries.filter(e => e.canImport && approvedOf(e).length > 0)
@@ -886,21 +890,52 @@ export default function ImportPanel({ onImported, onClose }: Props) {
             const objId = entry.objectId!
             createdObjSessionsByObject.set(objId, [...(createdObjSessionsByObject.get(objId) ?? []), created.id])
             entriesByObject.set(objId, [...(entriesByObject.get(objId) ?? []), entry])
-            // Only approved subs get an import record: a record for a culled
-            // file would read as a sub that went missing from the object folder.
             // Recorded per entry, tied to the entry just created — deleting that
             // entry later takes exactly these files' records with it.
             try { await recordImported(approved, sessionId, created.id) } catch {}
             allRecordedNames.push(...approved)
+            // This entry's rejects, flagged culled so nothing reads them as
+            // subs that went missing from the object folder. Same entry link:
+            // it says which target and filter they were shot for.
+            const culled = culledOf(entry)
+            if (culled.length) {
+              try { await recordImported(culled, sessionId, created.id, true) } catch {}
+              allRecordedNames.push(...culled)
+            }
             entryCount++
             setImportProgress({ step: 'Importing entries…', current: entryCount, total: totalEntries })
           } catch {
             entriesFailed.push({ target: entry.target, filter: entry.filter })
           }
         }
+
+        // Entries the line rejected outright: nothing was imported, so there is
+        // no entry to hang their records on, but the night still lost the
+        // frames and says so.
+        const wholesaleCulled = s.entries.filter(e => e.canImport && approvedOf(e).length === 0).flatMap(culledOf)
+        if (wholesaleCulled.length) {
+          try { await recordImported(wholesaleCulled, sessionId, null, true) } catch {}
+          allRecordedNames.push(...wholesaleCulled)
+        }
       }
 
-      // Persist quality analysis measured during this import onto the records.
+      // Nights where every importable frame was culled never reached the loop
+      // above — no entry means no session was created. Their rejects are only
+      // attributable when a session for that date already exists; inventing one
+      // for a night that produced nothing keepable is not this import's call.
+      for (const s of preview ?? []) {
+        if (sessionsToImport.includes(s)) continue
+        const sessionId = sessionByDate.get(s.dateKey)
+        if (sessionId == null) continue
+        const culled = s.entries.filter(e => e.canImport).flatMap(culledOf)
+        if (culled.length) {
+          try { await recordImported(culled, sessionId, null, true) } catch {}
+          allRecordedNames.push(...culled)
+        }
+      }
+
+      // Persist quality analysis measured during this import onto the records —
+      // culled subs included: what they measured is why they were culled.
       const analysisItems = allRecordedNames
         .map(n => ({ n, a: rawAnalysisRef.current.get(n) }))
         .filter((x): x is { n: string; a: { psfsw: number | null; fwhm: number | null } } => !!x.a && (x.a.psfsw != null || x.a.fwhm != null))
@@ -990,8 +1025,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     && importResult.filesFailed === 0
     && !importResult.copyWarning
   // The culled subs go with them: they were never copied anywhere, so leaving
-  // them behind just refills the folder the cleanup was meant to empty. Nothing
-  // in the DB refers to them either — the import deliberately recorded none.
+  // them behind just refills the folder the cleanup was meant to empty. Their
+  // records are flagged culled, so deleting the files strands nothing — no
+  // entry counts them and no sync goes looking for them.
   const sourceDeleteNames = importResult
     ? [...new Set([
         ...(canDeleteCopied ? importResult.copiedNames : []),

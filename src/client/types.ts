@@ -48,9 +48,14 @@ export interface ApSession {
   comment: string | null
   equipment: number | null
   calculated_seconds: number
+  // Cull stats for the night: subs kept, and subs culled (measured, rejected
+  // and deleted — never part of `frames` or `calculated_seconds`).
+  frames: number
+  culled_frames: number
+  culled_seconds: number
 }
 
-export type CreateApSessionDto = Omit<ApSession, 'id' | 'calculated_seconds'>
+export type CreateApSessionDto = Omit<ApSession, 'id' | 'calculated_seconds' | 'frames' | 'culled_frames' | 'culled_seconds'>
 
 export interface ApExposure {
   id: number

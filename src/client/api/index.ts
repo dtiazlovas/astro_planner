@@ -126,12 +126,23 @@ export const checkImported = (names: string[]): Promise<string[]> =>
 
 // `objectSessionId` links the files to the session entry they were imported
 // under; deleting that entry then deletes these records too.
-export const recordImported = (names: string[], sessionId: number, objectSessionId: number | null = null): Promise<void> =>
+// `culled` records subs the import rejected: no file was copied anywhere, and
+// the record exists only so the night can report what was thrown away.
+export const recordImported = (names: string[], sessionId: number, objectSessionId: number | null = null, culled = false): Promise<void> =>
   fetch(`${BASE}/imported/record`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ names, sessionId, objectSessionId }),
+    body: JSON.stringify({ names, sessionId, objectSessionId, culled }),
   }).then(() => undefined)
+
+// Flags existing records as culled rather than deleting them — used when subs
+// already in the library are deleted from disk by a quality cull.
+export const cullImported = (names: string[]): Promise<{ culled: number }> =>
+  fetch(`${BASE}/imported/cull`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names }),
+  }).then(json<{ culled: number }>)
 
 // Points existing records at a session entry — used by the object file sync to
 // attribute records that predate the link, and to move records off entries it
@@ -152,6 +163,9 @@ export interface ImportedRecord {
   // persisted quality analysis: raw PSFSW and FWHM in pixels
   psfsw: number | null
   fwhm: number | null
+  // 1 when the sub was culled — rejected and deleted, so no file backs this
+  // record. Anything reasoning about the library's files must skip these.
+  culled: number
 }
 
 export const getImportedRecords = (): Promise<ImportedRecord[]> =>

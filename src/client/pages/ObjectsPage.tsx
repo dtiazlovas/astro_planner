@@ -161,8 +161,10 @@ export default function ObjectsPage() {
       getFilters(), getExposures(), fetchPatterns(), getSessions(), getImportedRecords(), fetchDayStartHour(),
     ])
     // Kept for the quality pane: the anchor is set from a pair's whole record
-    // history, which is wider than the files this scan found on disk.
-    groupedRecordsRef.current = groupRecords(imported, objects, filters, patterns)
+    // history, which is wider than the files this scan found on disk. Culled
+    // subs are left out — a scale set from frames that were rejected for their
+    // quality would be a scale drawn towards the rejects.
+    groupedRecordsRef.current = groupRecords(imported.filter(r => !r.culled), objects, filters, patterns)
     return scanObjectFiles(obj, objects, present, imported, filters, exposures, patterns, sessions, dayStartHour, activeId)
   }
 
@@ -516,7 +518,9 @@ export default function ObjectsPage() {
         const scan = await scanObject(obj)
         const cull = cullSubset(scan, cullFiles)
         if (cull.changes.length > 0 || cull.unadjustable.length > 0) {
-          const applied = await applyObjectSync(obj, cull, activeId)
+          // Cull mode: these records are flagged culled rather than deleted, so
+          // the night they were shot on keeps the count in the calendar.
+          const applied = await applyObjectSync(obj, cull, activeId, true)
           if (applied.failedGroups > 0) {
             setError(`${applied.failedGroups} session entr${applied.failedGroups !== 1 ? 'ies' : 'y'} could not be updated for the deleted subs — run sync again`)
           }

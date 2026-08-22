@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { checkImported, recordImported, relinkImported, copyFilesToObjectFolders, getAllImported, removeImported, listObjectFolderFiles, deleteObjectFolderFiles, deleteSourceFiles, saveImportedAnalysis, type CopyItem, type CopyStats } from '../services/apImportedService.js'
+import { checkImported, recordImported, relinkImported, cullImported, copyFilesToObjectFolders, getAllImported, removeImported, listObjectFolderFiles, deleteObjectFolderFiles, deleteSourceFiles, saveImportedAnalysis, type CopyItem, type CopyStats } from '../services/apImportedService.js'
 
 const router = Router()
 
@@ -19,6 +19,16 @@ router.post('/analysis', async (req: Request, res: Response) => {
   try {
     const updated = await saveImportedAnalysis(items.map(i => ({ filename: i.filename!, psfsw: i.psfsw ?? null, fwhm: i.fwhm ?? null })))
     res.json({ updated })
+  } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+router.post('/cull', async (req: Request, res: Response) => {
+  const { names } = req.body as { names?: string[] }
+  if (!Array.isArray(names)) { res.status(400).json({ error: 'names must be an array' }); return }
+  try {
+    res.json({ culled: await cullImported(names) })
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }

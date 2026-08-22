@@ -1,6 +1,6 @@
 import {
   getObjectSessionsForObject, updateObjectSession, deleteObjectSession, createObjectSession,
-  createSession, recordImported, removeImported, relinkImported, getPlans, setPlanSession,
+  createSession, recordImported, removeImported, relinkImported, cullImported, getPlans, setPlanSession,
   type ImportedRecord,
 } from '../api'
 import { parseFile, patternToRegex, matchObject, matchFilter, matchExposure, dateKey, toDatetimeLocal, type ParsedFile } from './filePattern'
@@ -101,7 +101,7 @@ export async function scanObjectFiles(
   obj: ApObject,
   allObjects: ApObject[],
   presentFileNames: string[],
-  imported: ImportedRecord[],
+  allImported: ImportedRecord[],
   filters: ApFilter[],
   exposures: ApExposure[],
   patterns: string[],
@@ -109,6 +109,10 @@ export async function scanObjectFiles(
   dayStartHour: number,
   equipment: number | null,
 ): Promise<SyncScanResult> {
+  // A culled sub's record is not a claim that a file exists — the file was
+  // deleted on purpose. Counting it would make every scan report the same
+  // "missing" subs forever and re-offer a change that has already been applied.
+  const imported = allImported.filter(r => !r.culled)
   const presentStems = presentFileNames.map(stem)
   const presentSet = new Set(presentStems)
   // Processing tools keep the original name and append suffix segments
@@ -287,7 +291,7 @@ export async function scanObjectFiles(
 export interface SyncApplyResult {
   adjusted: number       // changes applied
   failedGroups: number   // changes that failed (records kept for retry)
-  removedRecords: number
+  removedRecords: number // stale records deleted (or flagged culled, in cull mode)
   addedFiles: number
   createdSessions: number
   relinkedRecords: number
@@ -326,13 +330,22 @@ export function cullSubset(scan: SyncScanResult, deletedNames: string[]): SyncSc
 
 // Each change is applied independently, and import records are only removed
 // for changes that succeeded — a failure never strands the others.
-export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equipment: number | null): Promise<SyncApplyResult> {
-  const removeNames: string[] = [...scan.unadjustable]
+//
+// `cull` is for the deletion the user just made in the quality pane: the subs
+// behind these stale records weren't lost, they were rejected, so their records
+// are flagged culled instead of deleted and the night keeps the count. Records
+// are flagged before the entries are touched, because deleting an entry takes
+// its un-culled records with it.
+export async function applyObjectSync(
+  obj: ApObject, scan: SyncScanResult, equipment: number | null, cull = false,
+): Promise<SyncApplyResult> {
+  const staleNames: string[] = [...scan.unadjustable]
   let adjusted = 0
   let failedGroups = 0
   let addedFiles = 0
   let createdSessions = 0
   let relinkedRecords = 0
+  let culledRecords = 0
 
   // New entries join the object's single active plan, as import does.
   let planId: number | null = null
@@ -346,6 +359,11 @@ export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equip
   const createdSessionByDate = new Map<string, number>()
   for (const c of scan.changes) {
     try {
+      // Flag first: the entry updates below may delete an entry, and that takes
+      // every un-culled record pointing at it. If the change then fails the
+      // count is left too high, but the files are off disk either way, so the
+      // next scan still sees the slot short and offers the same recount.
+      if (cull && c.missingFiles.length) culledRecords += (await cullImported(c.missingFiles)).culled
       let sessionId = c.sessionId ?? createdSessionByDate.get(c.dateKey) ?? null
       if (sessionId == null && (c.newFrames > 0 || c.addFiles.length > 0)) {
         const created = await createSession({
@@ -394,7 +412,7 @@ export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equip
         await recordImported(c.addFiles, sessionId, entryId)
         addedFiles += c.addFiles.length
       }
-      removeNames.push(...c.missingFiles)
+      if (!cull) staleNames.push(...c.missingFiles)
       adjusted++
     } catch {
       failedGroups++
@@ -408,7 +426,11 @@ export async function applyObjectSync(obj: ApObject, scan: SyncScanResult, equip
     try { relinkedRecords += (await relinkImported(r.names, r.objectSessionId)).relinked } catch {}
   }
 
-  let removedRecords = 0
-  if (removeNames.length) removedRecords = (await removeImported(removeNames)).removed
+  // In cull mode the slot records were flagged above; what is left here is the
+  // unadjustable set — records that fit no slot, so no entry ever deletes them
+  // and flagging them is safe at any point.
+  let removedRecords = culledRecords
+  if (staleNames.length)
+    removedRecords += cull ? (await cullImported(staleNames)).culled : (await removeImported(staleNames)).removed
   return { adjusted, failedGroups, removedRecords, addedFiles, createdSessions, relinkedRecords }
 }

@@ -1801,6 +1801,10 @@ body {
 
 /* ── Calendar ─────────────────────────────────────────────── */
 
+/* A night cell is a bar chart, not a text field: past ~900px the extra width
+   only makes the columns squat and pushes the month chart's shape apart. */
+.calendar-page { max-width: 900px; }
+
 .cal-nav {
   display: flex;
   align-items: center;
@@ -1856,6 +1860,7 @@ body {
 }
 
 .cal-legend__swatch--used { background: linear-gradient(180deg, #8b5cf6, #5b21b6); }
+.cal-legend__swatch--culled { background: #8a4d5a; }
 .cal-legend__swatch--missed { background: #383650; }
 
 .cal-months__bars {
@@ -1899,6 +1904,14 @@ body {
 }
 
 .cal-month-col__missed { background: #383650; }
+/* Flat, with the bottom 3px shaded: enough of a seam to read as a band sitting
+   on the imaged column rather than a change of colour within one bar. */
+.cal-month-col__culled {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0) calc(100% - 3px), rgba(0, 0, 0, 0.32)),
+    #8a4d5a;
+  border-top: 1px solid rgba(214, 165, 175, 0.45);
+}
 .cal-month-col__used {
   background: linear-gradient(180deg, #8b5cf6, #5b21b6);
   border-top: 1px solid rgba(196, 181, 253, 0.6);
@@ -2057,6 +2070,150 @@ body {
   color: #a78bfa;
 }
 
+/* Culled exposure: red, stacked straight onto the imaged column. It is time
+   that was spent under the sky and then thrown away — neither kept integration
+   nor darkness that went unused, so it gets its own slice of the same bar. */
+.cal-cell__culled-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0) calc(100% - 3px), rgba(0, 0, 0, 0.32)),
+    #8a4d5a;
+  border-top: 1px solid rgba(214, 165, 175, 0.45);
+  opacity: 0.6;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Sits on the cell floor when nothing was kept that night. */
+.cal-cell__culled-bar--base { border-radius: 0 0 6px 6px; }
+
+.cal-stat--culled .cal-stat__value { color: #c4919c; }
+.cal-stat--culled .cal-stat__label { color: #7d5a62; }
+
+/* ── Night detail card ─────────────────────────────────────────
+   The cell shows the shape of a night; this shows its numbers. Hover-only and
+   CSS-only: it lives in the cell it describes, so the grid needs no pointer
+   state and nothing re-renders as the mouse crosses it. Hidden outright where
+   there is no hover to open it with (and no room to put it). */
+.cal-card { display: none; }
+
+@media (hover: hover) and (min-width: 701px) {
+  .cal-card {
+    display: block;
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 8px);
+    transform: translateX(-50%);
+    z-index: 20;
+    width: 252px;
+    padding: 0.55rem 0.7rem 0.5rem;
+    background: #14142a;
+    border: 1px solid #32325a;
+    border-radius: 9px;
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.55);
+    text-align: left;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+
+  /* The hovered cell rises as a whole, so its card can't slide under a
+     neighbour that happens to paint later. An out-of-month cell also drops its
+     dimming while hovered — the parent's opacity would otherwise wash out the
+     card along with the cell. */
+  .cal-cell:hover { z-index: 5; }
+  .cal-cell--out:hover { opacity: 1; }
+
+  .cal-cell:hover .cal-card,
+  .cal-cell:focus-within .cal-card { opacity: 1; visibility: visible; }
+
+  /* Top row opens downwards; the edge columns hug their own side. */
+  .cal-cell--pop-below .cal-card { bottom: auto; top: calc(100% + 8px); }
+  .cal-cell--pop-left .cal-card  { left: 0; right: auto; transform: none; }
+  .cal-cell--pop-right .cal-card { left: auto; right: 0; transform: none; }
+}
+
+.cal-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.45rem;
+  border-bottom: 1px solid #262646;
+}
+
+.cal-card__date {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #e9e4ff;
+}
+
+.cal-card__sessions {
+  font-size: 0.68rem;
+  color: #a78bfa;
+  white-space: nowrap;
+}
+
+.cal-card__row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  gap: 0 0.5rem;
+  align-items: baseline;
+  margin-bottom: 0.3rem;
+}
+
+.cal-card__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  align-self: center;
+}
+
+.cal-card__swatch--used   { background: linear-gradient(180deg, #8b5cf6, #5b21b6); }
+.cal-card__swatch--culled { background: #8a4d5a; }
+.cal-card__swatch--missed { background: #383650; }
+
+.cal-card__label {
+  grid-column: 2;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+}
+
+.cal-card__value {
+  grid-column: 3;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #e8e8f0;
+}
+
+.cal-card__row--used .cal-card__value   { color: #c4b5fd; }
+.cal-card__row--culled .cal-card__value { color: #c4919c; }
+.cal-card__row--missed .cal-card__value { color: #9694b3; }
+
+.cal-card__note {
+  grid-column: 2 / -1;
+  font-size: 0.68rem;
+  color: #64748b;
+}
+
+.cal-card__empty {
+  font-size: 0.78rem;
+  color: #64748b;
+  padding: 0.1rem 0 0.35rem;
+}
+
+.cal-card__foot {
+  margin-top: 0.45rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid #262646;
+  font-size: 0.68rem;
+  color: #64748b;
+}
+
 .cal-caption {
   margin-top: 0.75rem;
   font-size: 0.78rem;
@@ -2066,6 +2223,7 @@ body {
 
 .cal-caption strong { color: #7dd3fc; font-weight: 600; }
 .cal-caption__missed { color: #9694b3; }
+.cal-caption__culled { color: #c4919c; }
 
 @media (max-width: 640px) {
   .cal-cell { min-height: 62px; }

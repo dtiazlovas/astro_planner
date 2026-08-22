@@ -153,6 +153,12 @@ function initSchema(database: Database.Database): void {
   // Migrate: persist per-file quality analysis (raw PSFSW + FWHM in pixels)
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN psfsw REAL') } catch {}
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN fwhm REAL') } catch {}
+  // Migrate: mark the records of subs that were culled — rejected by an approve
+  // line or dropped by eye. The file is gone (never copied in, or deleted from
+  // the object folder), so the record no longer stands for a sub in the
+  // library; it is kept only so the night it was shot on can report what was
+  // thrown away. Everything that reasons about files on disk skips these.
+  try { database.exec('ALTER TABLE ap_imported ADD COLUMN culled INTEGER NOT NULL DEFAULT 0') } catch {}
   // Migrate: link each import record to the session entry it was imported
   // under. session_id alone can't say which entry of a multi-filter session a
   // file belongs to, so deleting one entry couldn't take its records with it.

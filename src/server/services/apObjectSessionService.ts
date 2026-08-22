@@ -57,10 +57,15 @@ export const updateApObjectSession = async (id: number, data: UpdateApObjectSess
 // as imported and can be imported again. Records predating the entry link
 // (object_session_id IS NULL) can't be attributed to one entry of a session and
 // are left alone — an object file sync links those.
+// Culled records are the exception: they describe subs that never made it into
+// this entry's frame count, so removing the entry doesn't make them untrue.
+// They are unlinked (the foreign key would otherwise block the delete) and kept
+// against their session, which is what the calendar counts them for.
 export const deleteApObjectSession = async (id: number): Promise<boolean> => {
   const db = connectToDatabase()
   return db.transaction((): boolean => {
     db.prepare('DELETE FROM ap_plan_session WHERE session = @id').run({ id })
+    db.prepare('UPDATE ap_imported SET object_session_id = NULL WHERE object_session_id = @id AND culled = 1').run({ id })
     db.prepare('DELETE FROM ap_imported WHERE object_session_id = @id').run({ id })
     const { changes } = db.prepare('DELETE FROM ap_object_session WHERE id = @id').run({ id })
     return changes > 0
