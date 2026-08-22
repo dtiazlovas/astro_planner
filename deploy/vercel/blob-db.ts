@@ -15,8 +15,8 @@ import Database from 'better-sqlite3'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { blobKey, downloadDbToFile, isBlobEnabled, uploadDbFromFile } from '../src/server/blobDb.js'
-import { dbFilePath } from '../src/server/db.js'
+import { blobKey, downloadDbToFile, isBlobEnabled, uploadDbFromFile } from '../../src/server/blobDb.js'
+import { dbFilePath } from '../../src/server/db.js'
 
 const [command, fileArg] = process.argv.slice(2)
 
@@ -98,6 +98,6 @@ const list = async (): Promise<void> => {
 const commands: Record<string, () => Promise<void>> = { list, push, pull, info }
 
 const run = commands[command ?? '']
-if (!run) die(`Usage: tsx scripts/blob-db.ts <list|push|pull|info> [file]`)
+if (!run) die(`Usage: tsx deploy/vercel/blob-db.ts <list|push|pull|info> [file]`)
 
 await run()

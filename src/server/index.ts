@@ -8,13 +8,15 @@ import { closeDatabaseConnection, flushDatabaseToBlob, initDatabase } from './db
 
 const app = createApiApp()
 const PORT = process.env.PORT ?? 5000
-// Host matters on PaaS (Render, Fly, …): a service reachable only on loopback
-// fails their port scan. Node already listens on all interfaces when no host is
-// given, but saying so is cheaper than debugging it.
+// All interfaces by default, which is what makes the app reachable from another
+// device on the network (a phone, say) and from outside a container. Node does
+// this anyway when no host is given; saying so leaves somewhere to put a
+// loopback-only HOST when that is what you want.
 const HOST = process.env.HOST ?? '0.0.0.0'
-// Dev is the mode you opt into; anything else is production. The other way
-// round bites on hosts that set NODE_ENV=production during the build, because
-// npm then skips devDependencies and vite/esbuild are missing at build time.
+// Dev is the mode you opt into (`npm run dev` sets it); anything else is
+// production. The other way round bites on any host that sets
+// NODE_ENV=production for the build, because npm then skips devDependencies and
+// vite/esbuild are missing when the build needs them.
 const isProduction = process.env.NODE_ENV !== 'development'
 
 // Production: dist/server.js, with the built client beside it in dist/public.

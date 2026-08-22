@@ -83,8 +83,8 @@ export const createApiApp = (): express.Express => {
   const app = express()
 
   // No CORS: in every deployment the client is served from the same origin as
-  // this router — our own process locally and on Render, Vercel's CDN in front
-  // of the same domain there.
+  // this router — our own process when it serves dist/public, Vercel's CDN in
+  // front of the same domain there.
   app.use(express.json())
   app.use(revalidateBeforeHandling)
   app.use(snapshotBeforeResponding)

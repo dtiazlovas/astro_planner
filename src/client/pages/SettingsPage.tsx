@@ -1,13 +1,21 @@
-import { useState, useEffect, FormEvent } from 'react'
-import { getFilters, createFilter, updateFilter, deleteFilter } from '../api'
-import type { ApFilter } from '../types'
-import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour, fetchImagesFolder, saveImagesFolder, pickFolder, fetchImportFileMode, saveImportFileMode, type ImportFileMode } from '../utils/filePattern'
+import { useState, useEffect, useRef, FormEvent } from 'react'
+import { getFilters, createFilter, updateFilter, deleteFilter, getObjects } from '../api'
+import type { ApFilter, ApObject } from '../types'
+import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour, fetchImagesFolder, saveImagesFolder, pickFolder, fetchImportFileMode, saveImportFileMode, inferPattern, buildPattern, PATTERN_FIELD_ORDER, REQUIRED_PATTERN_FIELDS, type ImportFileMode, type PatternInference, type PatternFieldKind } from '../utils/filePattern'
 import { getStoredImagesFolder, pickImagesFolder, isFolderAccessSupported } from '../utils/imagesFolder'
 import { fetchLatitude, saveLatitude, DEFAULT_LATITUDE } from '../utils/astro'
 import { cacheStats, clearCache, formatBytes, CACHE_CAP_BYTES } from '../utils/previewCache'
 import LatitudePicker from '../components/LatitudePicker'
 
 const emptyFilterForm = { name: '', aliases: '', folder: '' }
+
+const FIELD_LABELS: Record<PatternFieldKind, string> = {
+  target: 'Target',
+  duration: 'Exposure',
+  filter: 'Filter',
+  short_datetime: 'Date / time',
+  filenumber: 'Frame number',
+}
 
 export default function SettingsPage() {
   const [patterns, setPatterns] = useState<string[]>([DEFAULT_PATTERN])
@@ -23,6 +31,14 @@ export default function SettingsPage() {
   const [latitude, setLatitude] = useState(DEFAULT_LATITUDE)
   const [cacheStatsValue, setCacheStatsValue] = useState<{ count: number; bytes: number } | null>(null)
   const [clearingCache, setClearingCache] = useState(false)
+
+  // Pattern-from-a-file: the proposal stands until it is accepted or discarded,
+  // and `accepted` is which of its guesses survive into the saved pattern.
+  const [inference, setInference] = useState<PatternInference | null>(null)
+  const [sampleNames, setSampleNames] = useState<string[]>([])
+  const [accepted, setAccepted] = useState<Set<PatternFieldKind>>(new Set())
+  const [inferError, setInferError] = useState<string | null>(null)
+  const patternFileRef = useRef<HTMLInputElement>(null)
 
   const [filters, setFilters] = useState<ApFilter[]>([])
   const [loadingFilters, setLoadingFilters] = useState(true)
@@ -73,6 +89,55 @@ export default function SettingsPage() {
   }
 
   const resetPatterns = () => saveAll([DEFAULT_PATTERN])
+
+  // ── Pattern from a file ──────────────────────────────────────
+  // The browser hands over the name only, which is all a pattern is about.
+  // Objects are fetched here rather than held in page state: they are read once
+  // per proposal, to recognise a target the user has already created.
+  const handlePatternFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const names = Array.from(e.target.files ?? []).map(f => f.name)
+    if (patternFileRef.current) patternFileRef.current.value = ''
+    if (!names.length) return
+    setInferError(null)
+    let objects: ApObject[] = []
+    try { objects = await getObjects() } catch {}
+    const inf = inferPattern(names, objects, filters)
+    if (!inf || !inf.fields.length) {
+      setInference(null)
+      setInferError(`Nothing recognisable in “${names[0]}” — write the pattern by hand below.`)
+      return
+    }
+    setSampleNames(names)
+    setInference(inf)
+    setAccepted(new Set(inf.fields.map(f => f.kind)))
+  }
+
+  const toggleField = (kind: PatternFieldKind, on: boolean) =>
+    setAccepted(prev => {
+      const next = new Set(prev)
+      if (on) next.add(kind); else next.delete(kind)
+      return next
+    })
+
+  const discardInference = () => { setInference(null); setSampleNames([]); setInferError(null) }
+
+  const builtPattern = inference ? buildPattern(inference, accepted) : ''
+  const missingRequired = REQUIRED_PATTERN_FIELDS.filter(k => !accepted.has(k))
+  // Proof rather than promise: the proposed pattern is run over every file that
+  // was selected, so "it works" is something the panel can show, not claim.
+  const sampleMatches = (() => {
+    if (!builtPattern || missingRequired.length) return 0
+    try {
+      const rx = patternToRegex(builtPattern)
+      return sampleNames.filter(n => parseFile(n, rx) !== null).length
+    } catch { return 0 }
+  })()
+
+  const acceptInference = async () => {
+    if (!builtPattern) return
+    await saveAll([...patterns.filter(p => p.trim() && p !== builtPattern), builtPattern])
+    discardInference()
+  }
 
   let parsed: ReturnType<typeof parseFile> | 'invalid' = null
   if (test.trim()) {
@@ -320,7 +385,10 @@ export default function SettingsPage() {
           <p className="cell-muted">No filters yet.</p>
         ) : (
           <div className="table-scroll">
-            <table className="data-table">
+            {/* Cards on a phone: three short columns plus an action cluster
+                don't fit a narrow screen as a table, and this is a list you
+                read rather than compare down a column. */}
+            <table className="data-table data-table--cards data-table--filters">
               <thead>
                 <tr>
                   <th>Name</th>
@@ -331,16 +399,16 @@ export default function SettingsPage() {
               </thead>
               <tbody>
                 {filters.map(f => (
-                  <tr key={f.id} className={editingFilterId === f.id ? 'row--editing' : ''}>
+                  <tr key={f.id} className={`row--card ${editingFilterId === f.id ? 'row--editing' : ''}`}>
                     <td className="cell-name">{f.name}</td>
-                    <td className="cell-muted" style={{ fontSize: '0.85rem' }}>
+                    <td className="cell-muted cell-filter-aliases" style={{ fontSize: '0.85rem' }} data-label="Aliases">
                       {f.aliases
                         ? f.aliases.split(';').map((a, i) => (
                             <span key={i} className="type-badge" style={{ marginRight: '0.25rem' }}>{a.trim()}</span>
                           ))
                         : '—'}
                     </td>
-                    <td className="cell-muted" style={{ fontSize: '0.85rem', fontFamily: 'monospace' }}>
+                    <td className="cell-muted cell-filter-folder" style={{ fontSize: '0.85rem', fontFamily: 'monospace' }} data-label="Folder">
                       {f.folder ?? '—'}
                     </td>
                     <td className="cell-actions">
@@ -375,16 +443,86 @@ export default function SettingsPage() {
           <p className="settings-card__title" style={{ margin: 0 }}>
             Filename Patterns {saving && <span className="cell-muted" style={{ fontWeight: 400, fontSize: '0.8rem' }}> saving…</span>}
           </p>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className="btn btn-primary" onClick={addPattern}>+ Add Pattern</button>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" onClick={() => patternFileRef.current?.click()}>📄 From a file…</button>
+            <button className="btn btn-ghost" onClick={addPattern}>+ Add Pattern</button>
             <button className="btn btn-ghost" onClick={resetPatterns}>Reset</button>
           </div>
         </div>
         <p className="cell-muted" style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
           A file must match at least one pattern to be imported.
           Use <code className="inline-code">{'{placeholder}'}</code> tokens and <code className="inline-code">*</code> as a wildcard.
-          Saved automatically.
+          Saved automatically. Or pick a few of your own subs with <strong>From a file…</strong> and
+          confirm what it recognises — nothing is saved until you accept it.
         </p>
+
+        {/* Names only: the file is never read, so picking a 60MB sub costs
+            nothing and no data leaves the machine. */}
+        <input ref={patternFileRef} type="file" multiple style={{ display: 'none' }} onChange={handlePatternFiles} />
+
+        {inferError && <div className="error-banner">{inferError}</div>}
+
+        {inference && (
+          <div className="pattern-infer">
+            <div className="pattern-infer__head">
+              <code className="pattern-infer__file">{inference.fileName}</code>
+              <span className="cell-muted" style={{ fontSize: '0.78rem' }}>
+                {inference.sampleCount > 1
+                  ? `${inference.sampleCount} files — parts that differ between them became wildcards`
+                  : 'One file — pick several at once and the parts that vary become wildcards'}
+              </span>
+            </div>
+
+            <div className="pattern-infer__fields">
+              {PATTERN_FIELD_ORDER.map(kind => {
+                const f = inference.fields.find(x => x.kind === kind)
+                return (
+                  <label key={kind} className={`pattern-infer__field ${f ? '' : 'pattern-infer__field--missing'}`}>
+                    <input type="checkbox" disabled={!f} checked={!!f && accepted.has(kind)}
+                      onChange={e => toggleField(kind, e.target.checked)} />
+                    <span className="pattern-infer__key">{FIELD_LABELS[kind]}</span>
+                    {f ? (
+                      <>
+                        <code className="inline-code">{f.text}</code>
+                        <span className="cell-muted">{f.display}</span>
+                      </>
+                    ) : (
+                      <span className="cell-muted">not recognised</span>
+                    )}
+                  </label>
+                )
+              })}
+            </div>
+
+            <div className="pattern-infer__preview">
+              <span className="pattern-infer__key">Pattern</span>
+              <code className="inline-code">{builtPattern}</code>
+            </div>
+
+            {missingRequired.length > 0 ? (
+              <div className="error-banner">
+                A pattern needs {missingRequired.map(k => FIELD_LABELS[k].toLowerCase()).join(', ')} to import a file.
+                {inference.fields.some(f => missingRequired.includes(f.kind)) ? ' Tick them above,' : ' None was found in this name —'} or write the pattern by hand.
+              </div>
+            ) : sampleMatches === sampleNames.length ? (
+              <div className="pattern-infer__ok">
+                ✓ Parses {sampleNames.length === 1 ? 'the selected file' : `all ${sampleNames.length} selected files`}
+              </div>
+            ) : (
+              <div className="error-banner">
+                Parses {sampleMatches} of {sampleNames.length} selected files — the rest are named differently and need a pattern of their own.
+              </div>
+            )}
+
+            <div className="form-actions">
+              <button className="btn btn-primary" onClick={acceptInference}
+                disabled={saving || missingRequired.length > 0 || sampleMatches === 0}>
+                {saving ? 'Saving…' : 'Accept & save'}
+              </button>
+              <button className="btn btn-ghost" onClick={discardInference}>Discard</button>
+            </div>
+          </div>
+        )}
 
         {patterns.map((p, idx) => (
           <div key={idx} className="form-field" style={{ marginBottom: '0.75rem' }}>

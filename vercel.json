@@ -1,7 +1,8 @@
 {
+  "//": "Vercel reads this only from the deployment root, so it cannot move into deploy/vercel/ with the rest of the deployment. See deploy/vercel/README.md.",
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "buildCommand": "npm run build:client",
+  "buildCommand": "npm run vercel",
   "outputDirectory": "dist/public",
   "env": {
     "SQLITE_PATH": "/tmp/astro_planner.db"

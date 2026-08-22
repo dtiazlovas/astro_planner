@@ -12,5 +12,8 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/server", "api", "scripts/blob-db.ts"]
+  // deploy/** is server code too — it imports src/server with NodeNext-style
+  // ".js" specifiers — so it is checked here rather than left to rot outside
+  // any project. It is only ever *built* by the host that deploys it.
+  "include": ["src/server", "api", "deploy"]
 }

@@ -6,8 +6,8 @@
 // here because the database is under a megabyte and the app has one writer;
 // see the concurrency note on uploadDbFromFile for what happens when it doesn't.
 //
-// Everything is inert unless BLOB_READ_WRITE_TOKEN is set, so local dev and the
-// Render disk deployment behave exactly as before and never load the SDK.
+// Everything is inert unless BLOB_READ_WRITE_TOKEN is set, so local dev and any
+// host with a real disk behave exactly as before and never load the SDK.
 import fs from 'node:fs'
 import path from 'node:path'
 

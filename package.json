@@ -9,10 +9,11 @@
     "build:client": "vite build",
     "build:server": "node scripts/build-server.js",
     "start": "node dist/server.js",
-    "db:list": "tsx scripts/blob-db.ts list",
-    "db:push": "tsx scripts/blob-db.ts push",
-    "db:pull": "tsx scripts/blob-db.ts pull",
-    "db:info": "tsx scripts/blob-db.ts info",
+    "vercel": "npm run build:client",
+    "db:list": "tsx deploy/vercel/blob-db.ts list",
+    "db:push": "tsx deploy/vercel/blob-db.ts push",
+    "db:pull": "tsx deploy/vercel/blob-db.ts pull",
+    "db:info": "tsx deploy/vercel/blob-db.ts info",
     "typecheck": "tsc -b tsconfig.json"
   },
   "dependencies": {

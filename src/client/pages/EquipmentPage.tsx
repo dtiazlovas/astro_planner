@@ -221,7 +221,9 @@ export default function EquipmentPage() {
         <p className="state-msg">No equipment yet — add one above.</p>
       ) : (
         <div className="table-wrap">
-          <table className="data-table">
+          {/* Seven columns is a rig spec sheet, not something a phone can hold
+              as a table — below 700px each row becomes a card. */}
+          <table className="data-table data-table--cards data-table--equipment">
             <thead>
               <tr>
                 <th>Name</th>
@@ -235,13 +237,13 @@ export default function EquipmentPage() {
             </thead>
             <tbody>
               {equipment.map(eq => (
-                <tr key={eq.id} className={editingId === eq.id ? 'row--editing' : ''}>
+                <tr key={eq.id} className={`row--card ${editingId === eq.id ? 'row--editing' : ''}`}>
                   <td className="cell-name">{eq.name}</td>
-                  <td className="cell-muted">{effectiveFocal(eq)}</td>
-                  <td><span className="type-badge">{SENSORS[eq.sensor]?.label ?? eq.sensor}</span></td>
-                  <td className="cell-muted">{resolution(eq.sensor, eq.binning)}</td>
-                  <td className="cell-muted">Bin {eq.binning}</td>
-                  <td className="cell-time">{imageScale(eq)}</td>
+                  <td className="cell-muted cell-eq-optics" data-label="Optics">{effectiveFocal(eq)}</td>
+                  <td className="cell-eq-sensor"><span className="type-badge">{SENSORS[eq.sensor]?.label ?? eq.sensor}</span></td>
+                  <td className="cell-muted cell-eq-res" data-label="Resolution">{resolution(eq.sensor, eq.binning)}</td>
+                  <td className="cell-muted cell-eq-binning">Bin {eq.binning}</td>
+                  <td className="cell-time cell-eq-scale" data-label="Image scale">{imageScale(eq)}</td>
                   <td className="cell-action">
                     <div className="row-actions">
                       <button className="btn-icon btn-edit" onClick={() => openEdit(eq)} title="Edit">✎</button>

@@ -22,13 +22,25 @@ server bundle.
 
 ## Deploying
 
-**Render** (`render.yaml`) is the supported target. One web service runs
-`dist/server.js`, which serves both the API and the client, and a mounted disk
-at `/var/data` holds the SQLite file so it survives deploys and restarts.
+**Any Node host** runs `dist/server.js`, which serves the API and the client on
+one port. Point `SQLITE_PATH` at storage that survives a restart — on a host
+whose filesystem is rebuilt each deploy, that means a mounted disk, or the blob
+store below.
 
-**Vercel** (`vercel.json`) splits the app: the client is built by `build:client`
-and served from the CDN, while `/api/*` is rewritten to a serverless function
-(`api/index.ts`) that mounts the same routers via `createApiApp()`.
+**Vercel** splits the app: the client is served from the CDN, while `/api/*` is
+rewritten to a serverless function that mounts the same routers via
+`createApiApp()`. It lives in [`deploy/vercel/`](deploy/vercel/README.md) and
+builds with its own command:
+
+```
+npm run vercel   # client only — what vercel.json runs
+```
+
+`npm run build` (client + `dist/server.js`) is the self-hosting build and never
+touches the function; `npm run vercel` never builds the server bundle. Two files
+have to sit at the repo root because Vercel finds them by convention — the
+config `vercel.json` and the function `api/index.ts`, which is a re-export of
+`deploy/vercel/handler.ts`.
 
 Vercel gives a function no persistent disk — only `/tmp`, which is per-instance
 and wiped on every cold start. Vercel Blob covers that gap; see below.
@@ -48,8 +60,8 @@ changed something. `SQLITE_PATH` still says where the working copy lives —
 `/tmp/astro_planner.db` on Vercel — but losing it no longer loses data.
 
 Leave the token unset and none of this happens: the file on disk is the
-database, the SDK is never even imported, and local dev and the Render disk
-behave exactly as they did before.
+database, the SDK is never even imported, and local dev and any host with a real
+disk behave exactly as they did before.
 
 Setting it up:
 

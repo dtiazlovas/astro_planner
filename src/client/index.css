@@ -1320,6 +1320,84 @@ body {
   white-space: nowrap;
 }
 
+/* ── Pattern proposed from a file ──────────────────────────────
+   A proposal, not a result: it sits in the neutral card grey rather than the
+   green of a confirmed parse, and every guess in it is a checkbox. */
+.pattern-infer {
+  background: #14142a;
+  border: 1px solid #2f2f52;
+  border-radius: 9px;
+  padding: 0.85rem;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.pattern-infer__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  justify-content: space-between;
+}
+
+.pattern-infer__file {
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  overflow-wrap: anywhere;
+}
+
+.pattern-infer__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+/* Each row is one guess: tick to keep it as a placeholder, untick to leave
+   that part of the name as fixed text. */
+.pattern-infer__field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.pattern-infer__field--missing { cursor: default; opacity: 0.65; }
+
+.pattern-infer__field input { accent-color: #8b5cf6; }
+
+.pattern-infer__key {
+  color: #64748b;
+  min-width: 92px;
+  font-weight: 500;
+}
+
+.pattern-infer__preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  border-top: 1px solid #262646;
+  padding-top: 0.6rem;
+}
+
+/* The pattern is the one thing here that must be readable in full. */
+.pattern-infer__preview .inline-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 0;
+}
+
+.pattern-infer__ok {
+  font-size: 0.85rem;
+  color: #86efac;
+}
+
 .parse-result {
   background: #0d1f10;
   border: 1px solid #1a3a1e;
@@ -2600,9 +2678,13 @@ body {
 
   .app-side__brand h1 { font-size: 1.05rem; }
 
-  /* The tabs scroll sideways rather than squeezing when all five don't fit. */
+  /* Five tabs have to share one phone-width row, so they give up the space
+     between them and their own padding — both tied to the viewport — before
+     the type starts shrinking. The sideways scroll stays as the last resort
+     for a screen narrower than any of that can absorb. */
   .app-nav {
     padding: 0 0.85rem 0.6rem;
+    gap: clamp(1px, 0.6vw, 0.25rem);
     overflow-x: auto;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
@@ -2611,8 +2693,13 @@ body {
   .app-nav::-webkit-scrollbar { display: none; }
 
   .nav-link {
+    /* Grow into any leftover width, shrink into the row when there is none. */
+    flex: 1 1 auto;
+    min-width: 0;
     white-space: nowrap;
-    padding: 0.4rem 0.7rem;
+    text-align: center;
+    padding: 0.4rem clamp(0.15rem, 1.2vw, 0.7rem);
+    font-size: clamp(0.7rem, 3vw, 0.95rem);
   }
 
   /* Clipped rather than `display: none` — the wrapping <label> is what names
@@ -2771,6 +2858,10 @@ body {
   /* Undo the readable-table floor from the block above — cards wrap. */
   .table-wrap .data-table--cards { min-width: 0; }
 
+  /* Same for the borderless wrapper, whose scroll is what the cards replace. */
+  .table-scroll:has(.data-table--cards) { overflow-x: visible; }
+  .table-scroll .data-table--cards { min-width: 0; }
+
   /* Every rule below is scoped with `>` to the top-level table. The expansion
      rows host whole nested tables (session contents, plans) — a descendant
      selector would turn their cells into cards too. */
@@ -2882,6 +2973,58 @@ body {
   .data-table--sessions > tbody > .row--card > .cell-session-start   { grid-column: 1 / -1; grid-row: 2; font-size: 0.82rem; }
   .data-table--sessions > tbody > .row--card > .cell-session-comment { grid-column: 1 / -1; grid-row: 3; font-size: 0.85rem; }
   .data-table--sessions > tbody > .row--card > .cell-action          { grid-column: 1 / -1; grid-row: 4; }
+
+  /* ── Equipment cards ─────────────────────────────────────────
+     ┌───────────────────────────────────┐
+     │ Redcat 51 + IMX571     IMAGE SCALE│
+     │                           3.10″/px│
+     │ Sony IMX571                 Bin 1 │
+     │ OPTICS              RESOLUTION    │
+     │ 250mm · f/4.9       6252 × 4176   │
+     │                             ✎ ✕   │
+     └───────────────────────────────────┘ */
+  .data-table--equipment > thead { display: none; }
+
+  .data-table--equipment > tbody > tr.row--card {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .data-table--equipment > tbody > .row--card > .cell-name        { grid-column: 1; grid-row: 1; font-size: 0.95rem; }
+  .data-table--equipment > tbody > .row--card > .cell-eq-scale    { grid-column: 2; grid-row: 1; text-align: right; }
+  .data-table--equipment > tbody > .row--card > .cell-eq-sensor   { grid-column: 1; grid-row: 2; }
+  .data-table--equipment > tbody > .row--card > .cell-eq-binning  { grid-column: 2; grid-row: 2; text-align: right; }
+  .data-table--equipment > tbody > .row--card > .cell-eq-optics   { grid-column: 1; grid-row: 3; }
+  .data-table--equipment > tbody > .row--card > .cell-eq-res      { grid-column: 2; grid-row: 3; text-align: right; }
+  .data-table--equipment > tbody > .row--card > .cell-action      { grid-column: 1 / -1; grid-row: 4; }
+
+  /* ── Filter cards ────────────────────────────────────────────
+     ┌───────────────────────────────────┐
+     │ Luminance                         │
+     │ ALIASES              FOLDER       │
+     │ L  Lum                   Lum      │
+     │                          ✎ ✕      │
+     └───────────────────────────────────┘
+     Nothing in this header is interactive, so it goes — the per-cell labels
+     say the same thing where the values are. */
+  .data-table--filters > thead { display: none; }
+
+  .data-table--filters > tbody > tr.row--card {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .data-table--filters > tbody > .row--card > .cell-name           { grid-column: 1 / -1; grid-row: 1; font-size: 0.95rem; }
+  .data-table--filters > tbody > .row--card > .cell-filter-aliases { grid-column: 1; grid-row: 2; }
+  .data-table--filters > tbody > .row--card > .cell-filter-folder  { grid-column: 2; grid-row: 2; text-align: right; }
+
+  .data-table--filters > tbody > .row--card > .cell-actions {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.4rem;
+  }
 }
 
 /* Portrait phones. */
@@ -2908,9 +3051,22 @@ body {
   .cal-stat { flex: 1 1 auto; min-width: 0; padding: 0.5rem 0.7rem; }
   .cal-stat__value { font-size: 1.15rem; }
 
-  .cal-months__bars { gap: 4px; }
-  .cal-month-col { min-width: 26px; }
+  /* The month chart is a shape to read across, so the columns divide whatever
+     width there is rather than holding a fixed size and scrolling out of view.
+     They shrink to a floor narrow enough for a year and a half to fit a phone;
+     past that the bar scrolls, as before. */
+  .cal-months__bars { gap: clamp(2px, 0.8vw, 4px); }
+
+  .cal-month-col {
+    flex: 1 1 0;
+    min-width: clamp(16px, 4.4vw, 26px);
+    max-width: none;
+    gap: 3px;
+  }
+
   .cal-month-col__track { height: 96px; }
+  .cal-month-col__label { font-size: clamp(0.52rem, 2.2vw, 0.7rem); }
+  .cal-month-col__year { font-size: clamp(0.45rem, 1.9vw, 0.6rem); }
   .cal-months__head { gap: 0.35rem; }
   .cal-months__legend { gap: 0.75rem; }
 }
@@ -2922,7 +3078,8 @@ body {
   .app-nav { padding: 0 0.6rem 0.5rem; }
   .totals-bar { padding: 0.4rem 0.6rem; }
   .app-side__brand h1 { font-size: 0.95rem; }
-  .nav-link { padding: 0.35rem 0.55rem; font-size: 0.82rem; }
+  /* No fixed nav sizes here — the viewport-tied padding and type above already
+     shrink past what these would have pinned them to. */
   .cal-cell { min-height: 50px; padding: 0.2rem 0.25rem; }
   .cal-cell__dur { font-size: 0.66rem; }
   .cal-cell__pct { font-size: 0.54rem; }
