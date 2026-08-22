@@ -1,5 +1,4 @@
 {
-  "//": "Vercel reads this only from the deployment root, so it cannot move into deploy/vercel/ with the rest of the deployment. See deploy/vercel/README.md.",
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "buildCommand": "npm run vercel",
