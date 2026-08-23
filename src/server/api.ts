@@ -14,7 +14,6 @@ import apPlansRouter from './routes/apPlans.js'
 import apPlanDetailsRouter from './routes/apPlanDetails.js'
 import apPlanSessionsRouter from './routes/apPlanSessions.js'
 import apEquipmentRouter from './routes/apEquipment.js'
-import apFitsRouter from './routes/apFits.js'
 import apPsfswAnchorsRouter from './routes/apPsfswAnchors.js'
 
 // The API half of the app, with no listener and no client mounting. Kept
@@ -102,7 +101,6 @@ export const createApiApp = (): express.Express => {
   app.use('/api/plan-details', apPlanDetailsRouter)
   app.use('/api/plan-sessions', apPlanSessionsRouter)
   app.use('/api/equipment', apEquipmentRouter)
-  app.use('/api/fits', apFitsRouter)
   app.use('/api/psfsw-anchors', apPsfswAnchorsRouter)
 
   // An unknown /api path is a 404 in its own right — it must never fall through

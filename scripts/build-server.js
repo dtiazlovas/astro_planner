@@ -15,7 +15,9 @@ await build({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node18',
+  // The floor from package.json engines: the bundle has to run on the oldest
+  // Node the project supports, not the newest it is built on.
+  target: 'node22',
   sourcemap: true,
   external: ['better-sqlite3', 'vite', '@vercel/blob'],
   // ESM output, but bundled CJS dependencies (express and friends) still expect

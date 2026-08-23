@@ -4,15 +4,79 @@ small app to plan astrophotography targets and track their completition
 ## Running
 
 One Node app serves the API and the UI on a single port (`PORT`, default 5000).
+Needs **Node 22 or newer** (`.nvmrc` pins the current release, 26). Nothing else
+has to be installed first — in particular **not SQLite**, which `better-sqlite3`
+carries its own copy of, as a prebuilt binary per platform inside the package.
+No compiler, no download, no `node-gyp`.
+
+Don't want to install Node at all? See [Docker](#docker) below.
 
 ```
-npm install
+npm install     # installs, then builds via the prepare script
+npm start       # http://localhost:5000
+```
+
+No `.env` is needed to start: `PORT` and `SQLITE_PATH` both have defaults, and
+`.env.example` documents what overriding them does.
+
+### Docker
+
+For developing on the current Node without installing it, or for running the app
+without a Node toolchain at all:
+
+```
+docker compose up                                # dev, http://localhost:5000
+docker compose run --rm app npm run db:snapshot  # copy the DB to ./backups
+docker compose build                             # after a dependency change
+```
+
+`compose.yaml` carries three volume entries that each work around a specific way
+a plain bind mount breaks this app on Windows — a Linux-native `node_modules`,
+the database on a named volume rather than the host drive, and a backups folder
+to get snapshots back out. The reasoning is in the comments there; the short
+version is that SQLite's WAL mode needs filesystem semantics a Windows bind
+mount does not provide, so the database deliberately does not live on your
+Windows drive. `npm run db:snapshot` writes a consistent copy that does.
+
+Editing works normally: the source is bind-mounted and watched by polling
+(`CHOKIDAR_USEPOLLING`), because bind mounts on Windows drives do not deliver
+inotify events into the container.
+
+The same Dockerfile builds a production image:
+
+```
+docker build --target prod -t astro-planner:prod .
+docker run -p 5000:5000 -v astro-planner-data:/app/data astro-planner:prod
+```
+
+`npm run db:snapshot` also works outside Docker, writing to `./backups`.
+
+### Your image files
+
+The server never touches them. Picking folders, reading FITS, measuring frame
+quality, copying subs into object folders and deleting culled ones all happen in
+the browser through the File System Access API — which needs Chrome or Edge,
+opened directly rather than embedded. The server stores records and serves the
+app; the only path it ever resolves is its own SQLite file.
+
+That is what lets the same build run anywhere: a container or a serverless
+function has no access to your drives and does not need any, because the bytes
+never leave the browser.
+
+### Developing
+
+```
+npm ci          # exactly what package-lock.json says
 npm run dev     # one process, Vite middleware, HMR
-npm run build   # client → dist/public, server → dist/server.js
-npm start       # production
+npm run typecheck
 ```
 
-`npm run typecheck` checks the server, client and build-config projects.
+`npm run build` rebuilds by hand (client → `dist/public`, server →
+`dist/server.js`); `prepare` runs the same thing after every `npm install`, so a
+fresh clone is runnable without a separate build step. npm skips `prepare` when
+devDependencies are omitted (`--omit=dev`, or `NODE_ENV=production`), which is
+what keeps it from failing on a host that has no vite or esbuild to build with —
+such a host wants `dist/` shipped to it, not rebuilt.
 
 The SQLite file lives in `data/` (`SQLITE_PATH` in `.env`), unless a Vercel Blob
 store is configured — see below. Deploying means
@@ -48,8 +112,11 @@ and wiped on every cold start. Vercel Blob covers that gap; see below.
 Refresh the seed the Vercel build ships with:
 
 ```
-sqlite3 data/astro_planner.db "VACUUM INTO 'data/seed.db'"
+npm run db:snapshot -- data/seed.db
 ```
+
+(Same `VACUUM INTO` the `sqlite3` CLI would do, without needing the CLI
+installed. In Docker, prefix with `docker compose run --rm app`.)
 
 ## Vercel Blob storage
 

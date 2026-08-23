@@ -98,63 +98,6 @@ export async function saveDayStartHour(hour: number): Promise<void> {
   })
 }
 
-const IMAGES_FOLDER_KEY = 'images_folder'
-
-// Server-side images folder path — used only in 'backend' file mode.
-export async function fetchImagesFolder(): Promise<string> {
-  try {
-    const res = await fetch(`${BASE}/settings/${IMAGES_FOLDER_KEY}`)
-    if (res.ok) {
-      const data = await res.json() as { value: string | null }
-      return data.value ?? ''
-    }
-  } catch {}
-  return ''
-}
-
-export async function saveImagesFolder(folder: string): Promise<void> {
-  await fetch(`${BASE}/settings/${IMAGES_FOLDER_KEY}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: folder }),
-  })
-}
-
-export async function pickFolder(): Promise<string | null> {
-  try {
-    const res = await fetch(`${BASE}/settings/pick-folder`, { method: 'POST' })
-    if (!res.ok) return null
-    const data = await res.json() as { path: string }
-    return data.path || null
-  } catch {
-    return null
-  }
-}
-
-// Where import file operations (quality analysis, copying) run:
-// 'frontend' — in the browser via the File System Access API (default);
-// 'backend'  — on the server, which locates files by name near the images folder.
-export type ImportFileMode = 'frontend' | 'backend'
-const IMPORT_FILE_MODE_KEY = 'import_file_mode'
-
-export async function fetchImportFileMode(): Promise<ImportFileMode> {
-  try {
-    const res = await fetch(`${BASE}/settings/${IMPORT_FILE_MODE_KEY}`)
-    if (res.ok) {
-      const data = await res.json() as { value: string | null }
-      if (data.value === 'backend') return 'backend'
-    }
-  } catch {}
-  return 'frontend'
-}
-
-export async function saveImportFileMode(mode: ImportFileMode): Promise<void> {
-  await fetch(`${BASE}/settings/${IMPORT_FILE_MODE_KEY}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value: mode }),
-  })
-}
 
 export function patternToRegex(pattern: string): RegExp {
   const parts = pattern.split(/(\{[^}]+\})/)

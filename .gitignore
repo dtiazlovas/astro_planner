@@ -12,4 +12,7 @@ data/*
 # data. Refresh it with: sqlite3 data/astro_planner.db "VACUUM INTO 'data/seed.db'"
 !data/seed.db
 
+# Database snapshots written by `npm run db:snapshot`.
+backups/
+
 /.claude/settings.local.json

@@ -6,7 +6,7 @@ import {
   updateFilter, createFilter,
   checkImported, recordImported,
   getPlans, setPlanSession, createPlan, createPlanDetail,
-  analyzeFitsViaBackend, copyFilesViaBackend, deleteSourceFilesViaBackend, saveImportedAnalysis, getImportedRecords, getPsfswAnchors, openFitsFile,
+  saveImportedAnalysis, getImportedRecords, getPsfswAnchors,
   type ImportedRecord,
 } from '../api'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
@@ -37,7 +37,7 @@ interface ImportResult {
 import {
   DEFAULT_PATTERN, fetchPatterns, parseFileMulti, dateKey, toDatetimeLocal,
   matchObject, matchFilter, matchExposure, getPatternAcceptMulti,
-  fetchDayStartHour, fetchImportFileMode, type ImportFileMode,
+  fetchDayStartHour,
 } from '../utils/filePattern'
 
 interface ImportEntry {
@@ -169,7 +169,6 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [sessions, setSessions] = useState<ApSession[]>([])
   const [patterns, setPatterns] = useState<string[]>([DEFAULT_PATTERN])
   const [dayStartHour, setDayStartHour] = useState(16)
-  const [importFileMode, setImportFileMode] = useState<ImportFileMode>('frontend')
   const [lookupReady, setLookupReady] = useState(false)
 
   const [rawFiles, setRawFiles] = useState<File[]>([])
@@ -264,9 +263,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   }, [])
 
   useEffect(() => {
-    Promise.all([getObjects(activeId), getFilters(), getExposures(), fetchPatterns(), getObjectTypes(), getSessions(activeId), getPlans(undefined, activeId), fetchDayStartHour(), fetchImportFileMode()])
-      .then(([o, f, e, p, ot, s, pl, dsh, ifm]) => {
-        setObjects(o); setFilters(f); setExposures(e); setPatterns(p); setObjectTypes(ot); setSessions(s); setAllPlans(pl); setDayStartHour(dsh); setImportFileMode(ifm)
+    Promise.all([getObjects(activeId), getFilters(), getExposures(), fetchPatterns(), getObjectTypes(), getSessions(activeId), getPlans(undefined, activeId), fetchDayStartHour()])
+      .then(([o, f, e, p, ot, s, pl, dsh]) => {
+        setObjects(o); setFilters(f); setExposures(e); setPatterns(p); setObjectTypes(ot); setSessions(s); setAllPlans(pl); setDayStartHour(dsh)
         setLookupReady(true)
       })
       .catch(() => setError('Failed to load lookup data'))
@@ -623,35 +622,15 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       } catch { setHistoricalByGroup(new Map()) }
       await ensureGroupAnchors(history)
 
-      if (importFileMode === 'backend') {
-        // Server mode: the backend locates files by name near its images
-        // folder. Analyze in batches so results stream in.
-        const total = importableFileNames.length
-        const BATCH = 6
-        for (let i = 0; i < total; i += BATCH) {
-          if (ctrl.signal.aborted) break
-          try {
-            const batch = await analyzeFitsViaBackend(importableFileNames.slice(i, i + BATCH), false, ctrl.signal)
-            raw.push(...batch)
-            for (const r of batch) rawAnalysisRef.current.set(r.fileName, { psfsw: r.snr, fwhm: r.fwhm })
-          } catch (err) {
-            if (err instanceof DOMException && err.name === 'AbortError') break
-            throw err
-          }
-          setImportProgress({ step: 'Analyzing frame quality…', current: Math.min(i + BATCH, total), total })
-          commit()
-        }
-      } else {
-        // Browser mode: analyze the picked File objects directly, in a worker,
-        // committing each frame as the worker returns it.
-        const fileByName = new Map(rawFiles.map(f => [f.name, f]))
-        const files = importableFileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined)
-        await analyzeFitsFiles(files, (done, total, result) => {
-          if (result) { raw.push(result); rawAnalysisRef.current.set(result.fileName, { psfsw: result.snr, fwhm: result.fwhm }) }
-          setImportProgress({ step: 'Analyzing frame quality…', current: done, total })
-          commit()
-        }, ctrl.signal)
-      }
+      // Analyze the picked File objects directly, in a worker, committing each
+      // frame as the worker returns it.
+      const fileByName = new Map(rawFiles.map(f => [f.name, f]))
+      const files = importableFileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined)
+      await analyzeFitsFiles(files, (done, total, result) => {
+        if (result) { raw.push(result); rawAnalysisRef.current.set(result.fileName, { psfsw: result.snr, fwhm: result.fwhm }) }
+        setImportProgress({ step: 'Analyzing frame quality…', current: done, total })
+        commit()
+      }, ctrl.signal)
 
       // First-light pairs had no history to anchor to; now that their frames are
       // measured they can be anchored to this batch, and the re-commit puts the
@@ -659,9 +638,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       await ensureGroupAnchors(history)
       commit() // final scaling over the full set
     } catch {
-      setError(importFileMode === 'backend'
-        ? 'Quality analysis failed — is the images folder set and reachable on the server?'
-        : 'Quality analysis failed')
+      setError('Quality analysis failed')
     } finally {
       analyzeAbortRef.current = null
       setAnalyzing(false)
@@ -825,7 +802,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     }))
     let imagesDir: FileSystemDirectoryHandle | null = null
     let copyWarning: string | null = null
-    if (wantsCopy && importFileMode === 'frontend') {
+    if (wantsCopy) {
       imagesDir = await ensureImagesFolderAccess()
       if (!imagesDir) copyWarning = 'Images folder not accessible — no files were copied. Choose it in Settings and grant access.'
     }
@@ -977,13 +954,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         }
       }
       let filesCopied = 0, filesSkipped = 0, filesNotFound = 0, filesFailed = 0
-      if (copyGroups.length && importFileMode === 'backend') {
-        const totalFiles = copyGroups.reduce((n, i) => n + i.fileNames.length, 0)
-        setImportProgress({ step: `Copying ${totalFiles} file${totalFiles !== 1 ? 's' : ''}…`, current: 0, total: 0 })
-        const stats = await copyFilesViaBackend(copyGroups).catch(() => null)
-        if (stats) { filesCopied = stats.copied; filesSkipped = stats.skipped; filesNotFound = stats.notFound; filesFailed = stats.failed }
-        else copyWarning = 'File copying failed on the server.'
-      } else if (copyGroups.length && imagesDir) {
+      if (copyGroups.length && imagesDir) {
         const copyItems: CopyItem[] = copyGroups.map(g => ({
           files: g.fileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined),
           objectFolder: g.objectFolder, filterName: g.filterName,
@@ -1041,19 +1012,15 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     if (!sourceDeleteNames.length) return
     setDeletingSources(true); setSourceDeleteMsg(null)
     try {
-      let stats: { deleted: number; failed: number; notFound: number; skipped?: number }
-      if (importFileMode === 'backend') {
-        stats = await deleteSourceFilesViaBackend(sourceDeleteNames)
-      } else {
-        // The browser only grants delete access to a folder the user picks, and
-        // the files came in through a file input — which carries no handle. The
-        // picker is the first await here so the click's activation still holds.
-        const dir = await pickSourceFolder()
-        if (!dir) return // cancelled
-        if (await isInsideImagesFolder(dir))
-          throw new Error('That folder is inside the images folder — the imported copies live there. Pick the folder the subs were captured to.')
-        stats = await deleteFilesFromDirectory(dir, sourceDeleteNames)
-      }
+      // The browser only grants delete access to a folder the user picks, and
+      // the files came in through a file input — which carries no handle. The
+      // picker is the first await here so the click's activation still holds.
+      const dir = await pickSourceFolder()
+      if (!dir) return // cancelled
+      if (await isInsideImagesFolder(dir))
+        throw new Error('That folder is inside the images folder — the imported copies live there. Pick the folder the subs were captured to.')
+      const stats: { deleted: number; failed: number; notFound: number; skipped?: number } =
+        await deleteFilesFromDirectory(dir, sourceDeleteNames)
       const parts = [
         `${stats.deleted} source file${stats.deleted !== 1 ? 's' : ''} deleted`,
         stats.notFound > 0 ? `${stats.notFound} not found` : null,
@@ -1158,7 +1125,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                     {/* Frontend mode only — backend mode never has the frames
                         in the browser, and shipping raw subs over HTTP to blink
                         them is not viable at ~50 MB each. */}
-                    {importFileMode === 'frontend' && blinkFiles.length > 0 && (
+                    {blinkFiles.length > 0 && (
                       <button className="btn btn-secondary" onClick={() => setBlinkOpen(true)} disabled={importing}
                         title="Flick through this target/filter's frames and keep or drop them by eye">
                         ◫ Blink {blinkFiles.length}
@@ -1203,7 +1170,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                       onThresholdChange={v => activeGroup && setThresholds(t => ({ ...t, [activeGroup.key]: v }))}
                       metricLabel={metricLabel} goodDirection={goodDirection} historical={historicalForMetric} disabled={analyzing}
                       droppedFiles={droppedFrames}
-                      onOpenFile={p => openFitsFile(p.fileName)} />
+                      />
                   ) : (
                     <p className="cell-muted" style={{ fontSize: '0.85rem', padding: '2rem 0', textAlign: 'center' }}>
                       Waiting for frames…
@@ -1229,9 +1196,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
               )}
               {!analyzing && snrResults.size > 0 && analyzedCountAll === 0 && (
                 <div className="import-warnings">
-                  {importFileMode === 'backend'
-                    ? 'No SNR could be measured — files may be missing from the images folder, or not mono FITS.'
-                    : 'No SNR could be measured — files may not be mono FITS images.'}
+                  No SNR could be measured — files may not be mono FITS images.
                 </div>
               )}
 
@@ -1495,16 +1460,14 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                         {culledDeleteCount > 0 && copiedDeleteCount > 0 ? ` (${copiedDeleteCount} imported · ${culledDeleteCount} culled)` : ''}?
                       </span>
                       <button className="btn btn-danger" onClick={handleDeleteSources} disabled={deletingSources}>
-                        {deletingSources ? 'Deleting…' : importFileMode === 'backend' ? 'Yes, delete' : 'Choose folder & delete'}
+                        {deletingSources ? 'Deleting…' : 'Choose folder & delete'}
                       </button>
                       <button className="btn btn-ghost" onClick={() => setConfirmDeleteSources(false)} disabled={deletingSources}>Cancel</button>
                     </>
                   ) : (
                     <button className="btn btn-danger" onClick={() => { setSourceDeleteMsg(null); setConfirmDeleteSources(true) }}
                       disabled={deletingSources || sourceDeleteNames.length === 0}
-                      title={importFileMode === 'backend'
-                        ? 'Deletes them where the server found them — files inside the images folder are never touched'
-                        : 'You pick the folder they came from; the browser only allows deleting inside a folder you choose'}>
+                      title='You pick the folder they came from; the browser only allows deleting inside a folder you choose'>
                       🗑 Delete {sourceDeleteNames.length} source sub{sourceDeleteNames.length !== 1 ? 's' : ''}
                     </button>
                   )}

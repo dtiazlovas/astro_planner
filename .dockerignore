@@ -1,0 +1,15 @@
+# node_modules must never reach the image: the host's copy holds a Windows
+# better-sqlite3 binding that a Linux container cannot load. The image installs
+# its own.
+node_modules/
+dist/
+
+# The live database and its WAL sidecars. The container keeps its own on a named
+# volume — see compose.yaml — and baking data into an image layer would leak it
+# to anyone the image is shared with.
+data/
+backups/
+
+.git/
+.env
+.claude/

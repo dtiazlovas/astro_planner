@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { checkImported, recordImported, relinkImported, cullImported, copyFilesToObjectFolders, getAllImported, removeImported, listObjectFolderFiles, deleteObjectFolderFiles, deleteSourceFiles, saveImportedAnalysis, type CopyItem, type CopyStats } from '../services/apImportedService.js'
+import { checkImported, recordImported, relinkImported, cullImported, getAllImported, removeImported, saveImportedAnalysis } from '../services/apImportedService.js'
 
 const router = Router()
 
@@ -44,43 +44,6 @@ router.post('/remove', async (req: Request, res: Response) => {
   }
 })
 
-router.post('/object-files', async (req: Request, res: Response) => {
-  const { objectFolder } = req.body as { objectFolder?: string }
-  if (typeof objectFolder !== 'string' || !objectFolder.trim()) { res.status(400).json({ error: 'objectFolder is required' }); return }
-  try {
-    const files = await listObjectFolderFiles(objectFolder.trim())
-    if (files === null) { res.status(409).json({ error: 'Images folder not set' }); return }
-    res.json(files)
-  } catch {
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-router.post('/delete-object-files', async (req: Request, res: Response) => {
-  const { objectFolder, fileNames } = req.body as { objectFolder?: string; fileNames?: string[] }
-  if (typeof objectFolder !== 'string' || !objectFolder.trim()) { res.status(400).json({ error: 'objectFolder is required' }); return }
-  if (!Array.isArray(fileNames) || !fileNames.length) { res.status(400).json({ error: 'fileNames must be a non-empty array' }); return }
-  try {
-    const stats = await deleteObjectFolderFiles(objectFolder.trim(), fileNames)
-    if (stats === null) { res.status(409).json({ error: 'Images folder not set' }); return }
-    res.json(stats)
-  } catch {
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-router.post('/delete-source-files', async (req: Request, res: Response) => {
-  const { fileNames } = req.body as { fileNames?: string[] }
-  if (!Array.isArray(fileNames) || !fileNames.length) { res.status(400).json({ error: 'fileNames must be a non-empty array' }); return }
-  try {
-    const stats = await deleteSourceFiles(fileNames)
-    if (stats === null) { res.status(409).json({ error: 'Images folder not set' }); return }
-    res.json(stats)
-  } catch {
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
 router.post('/check', async (req: Request, res: Response) => {
   const { names } = req.body as { names?: string[] }
   if (!Array.isArray(names)) { res.status(400).json({ error: 'names must be an array' }); return }
@@ -110,17 +73,6 @@ router.post('/relink', async (req: Request, res: Response) => {
   if (typeof objectSessionId !== 'number') { res.status(400).json({ error: 'objectSessionId must be a number' }); return }
   try {
     res.json({ relinked: await relinkImported(names, objectSessionId) })
-  } catch {
-    res.status(500).json({ error: 'Internal server error' })
-  }
-})
-
-router.post('/copy-to-object-folders', async (req: Request, res: Response) => {
-  const { items } = req.body as { items?: CopyItem[] }
-  if (!Array.isArray(items)) { res.status(400).json({ error: 'items must be an array' }); return }
-  try {
-    const stats: CopyStats = await copyFilesToObjectFolders(items)
-    res.json({ ok: true, ...stats })
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, getObjectFolderFilesViaBackend, analyzeFitsViaBackend, deleteObjectFilesViaBackend, saveImportedAnalysis, getPsfswAnchors, savePsfswAnchor, openFitsFile, type PsfswAnchorRow } from '../api'
+import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, saveImportedAnalysis, getPsfswAnchors, savePsfswAnchor, type PsfswAnchorRow } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
-import { fetchPatterns, fetchImportFileMode, fetchDayStartHour, type ImportFileMode } from '../utils/filePattern'
+import { fetchPatterns, fetchDayStartHour } from '../utils/filePattern'
 import { ensureImagesFolderAccess, listObjectFolderFiles, getObjectFolderFiles, deleteObjectFolderFiles } from '../utils/imagesFolder'
 import { scanObjectFiles, applyObjectSync, cullSubset, type SyncScanResult } from '../utils/objectSync'
 import { groupRecords, ensureAnchor, toAnchorMap, medianOf, scaleBy, anchorKeyOf, type AnchorMap, type GroupedRecord } from '../utils/psfsw'
@@ -57,7 +57,6 @@ export default function ObjectsPage() {
   const [activePlanObjectIds, setActivePlanObjectIds] = useState<Set<number>>(new Set())
   const [assigningIds, setAssigningIds] = useState<Set<number>>(new Set())
   const [dragOverId, setDragOverId] = useState<number | null>(null)
-  const [importFileMode, setImportFileMode] = useState<ImportFileMode>('frontend')
   const [syncingId, setSyncingId] = useState<number | null>(null)
   const [syncPreview, setSyncPreview] = useState<{ obj: ApObject; scan: SyncScanResult } | null>(null)
   const [syncApplying, setSyncApplying] = useState(false)
@@ -136,7 +135,6 @@ export default function ObjectsPage() {
 
   // Loaded up-front so the sync click can request folder permission while the
   // click's transient user activation is still fresh.
-  useEffect(() => { fetchImportFileMode().then(setImportFileMode) }, [])
 
   // A pair with no anchor yet just falls back to a local median until one is
   // established, so a failure here is not worth surfacing.
@@ -149,14 +147,9 @@ export default function ObjectsPage() {
   // Reads the object's folder and diffs it against the DB. Separate from the
   // dialog state so the cull can scan, apply and re-scan in one go.
   const scanObject = async (obj: ApObject): Promise<SyncScanResult> => {
-    let present: string[]
-    if (importFileMode === 'backend') {
-      present = await getObjectFolderFilesViaBackend(obj.folder!)
-    } else {
-      const dir = await ensureImagesFolderAccess()
-      if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
-      present = await listObjectFolderFiles(dir, obj.folder!)
-    }
+    const scanDir = await ensureImagesFolderAccess()
+    if (!scanDir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+    const present = await listObjectFolderFiles(scanDir, obj.folder!)
     const [filters, exposures, patterns, sessions, imported, dayStartHour] = await Promise.all([
       getFilters(), getExposures(), fetchPatterns(), getSessions(), getImportedRecords(), fetchDayStartHour(),
     ])
@@ -432,29 +425,14 @@ export default function ObjectsPage() {
 
       if (names.length) {
         setQualityProgress({ current: 0, total: names.length })
-        if (importFileMode === 'backend') {
-          const BATCH = 6
-          for (let i = 0; i < names.length; i += BATCH) {
-            if (ctrl.signal.aborted) break
-            try {
-              raw.push(...await analyzeFitsViaBackend(names.slice(i, i + BATCH), false, ctrl.signal))
-            } catch (err) {
-              if (err instanceof DOMException && err.name === 'AbortError') break
-              throw err
-            }
-            setQualityProgress({ current: Math.min(i + BATCH, names.length), total: names.length })
-            commit()
-          }
-        } else {
-          const dir = await ensureImagesFolderAccess()
-          if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
-          const files = await getObjectFolderFiles(dir, syncPreview.obj.folder, names)
-          await analyzeFitsFiles(files, (done, _total, result) => {
-            raw.push(result)
-            setQualityProgress({ current: done, total: files.length })
-            commit()
-          }, ctrl.signal)
-        }
+        const dir = await ensureImagesFolderAccess()
+        if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+        const files = await getObjectFolderFiles(dir, syncPreview.obj.folder, names)
+        await analyzeFitsFiles(files, (done, _total, result) => {
+          raw.push(result)
+          setQualityProgress({ current: done, total: files.length })
+          commit()
+        }, ctrl.signal)
 
         // Persist what was just measured on the files' import records.
         const fileByName = new Map(qualityFilterFiles.map(f => [f.name, f]))
@@ -480,14 +458,9 @@ export default function ObjectsPage() {
     if (!syncPreview?.obj.folder || !cullFiles.length) return
     setQualityDeleting(true); setError(null)
     try {
-      let stats: { deleted: number; failed: number }
-      if (importFileMode === 'backend') {
-        stats = await deleteObjectFilesViaBackend(syncPreview.obj.folder, cullFiles)
-      } else {
-        const dir = await ensureImagesFolderAccess()
-        if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
-        stats = await deleteObjectFolderFiles(dir, syncPreview.obj.folder, cullFiles)
-      }
+      const dir = await ensureImagesFolderAccess()
+      if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+      const stats = await deleteObjectFolderFiles(dir, syncPreview.obj.folder, cullFiles)
       if (stats.failed > 0) setError(`${stats.failed} file${stats.failed !== 1 ? 's' : ''} could not be deleted`)
       // These files are gone; keeping them flagged would re-count them against
       // the next scan's cull total.
@@ -1141,7 +1114,7 @@ export default function ObjectsPage() {
                   {/* Frontend mode only — backend mode never has the subs in
                       the browser, and shipping them over HTTP to blink is not
                       viable at ~50 MB each. */}
-                  {importFileMode === 'frontend' && qualityFilterFiles.length > 0 && (
+                  {qualityFilterFiles.length > 0 && (
                     <button className="btn btn-secondary" onClick={handleBlink}
                       disabled={blinkLoading || qualityAnalyzing || qualityDeleting || syncApplying}
                       title="Flick through this filter's subs and drop the bad ones by eye">
@@ -1207,7 +1180,7 @@ export default function ObjectsPage() {
                       metricLabel={qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM (px)'}
                       goodDirection={qualityMetric === 'psfsw' ? 'above' : 'below'}
                       droppedFiles={droppedSubs} disabled={qualityAnalyzing}
-                      onOpenFile={p => openFitsFile(p.fileName)} />
+                      />
                   </>
                 )}
                 {/* Outside the chart's own gate: blinking and dropping by eye

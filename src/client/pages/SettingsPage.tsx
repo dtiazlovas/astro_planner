@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, FormEvent } from 'react'
 import { getFilters, createFilter, updateFilter, deleteFilter, getObjects } from '../api'
 import type { ApFilter, ApObject } from '../types'
-import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour, fetchImagesFolder, saveImagesFolder, pickFolder, fetchImportFileMode, saveImportFileMode, inferPattern, buildPattern, PATTERN_FIELD_ORDER, REQUIRED_PATTERN_FIELDS, type ImportFileMode, type PatternInference, type PatternFieldKind } from '../utils/filePattern'
+import { DEFAULT_PATTERN, PLACEHOLDER_DOCS, patternToRegex, parseFile, fetchPatterns, savePatterns, fetchDayStartHour, saveDayStartHour, inferPattern, buildPattern, PATTERN_FIELD_ORDER, REQUIRED_PATTERN_FIELDS, type PatternInference, type PatternFieldKind } from '../utils/filePattern'
 import { getStoredImagesFolder, pickImagesFolder, isFolderAccessSupported } from '../utils/imagesFolder'
 import { fetchLatitude, saveLatitude, DEFAULT_LATITUDE } from '../utils/astro'
 import { cacheStats, clearCache, formatBytes, CACHE_CAP_BYTES } from '../utils/previewCache'
@@ -25,9 +25,6 @@ export default function SettingsPage() {
   const [imagesFolderName, setImagesFolderName] = useState<string | null>(null)
   const [imagesFolderPicking, setImagesFolderPicking] = useState(false)
   const [imagesFolderError, setImagesFolderError] = useState<string | null>(null)
-  const [importFileMode, setImportFileMode] = useState<ImportFileMode>('frontend')
-  const [imagesFolder, setImagesFolder] = useState('')
-  const [imagesFolderSaving, setImagesFolderSaving] = useState(false)
   const [latitude, setLatitude] = useState(DEFAULT_LATITUDE)
   const [cacheStatsValue, setCacheStatsValue] = useState<{ count: number; bytes: number } | null>(null)
   const [clearingCache, setClearingCache] = useState(false)
@@ -53,15 +50,8 @@ export default function SettingsPage() {
   useEffect(() => { fetchPatterns().then(setPatterns) }, [])
   useEffect(() => { fetchDayStartHour().then(setDayStartHour) }, [])
   useEffect(() => { getStoredImagesFolder().then(h => setImagesFolderName(h?.name ?? null)) }, [])
-  useEffect(() => { fetchImportFileMode().then(setImportFileMode) }, [])
-  useEffect(() => { fetchImagesFolder().then(setImagesFolder) }, [])
   useEffect(() => { fetchLatitude().then(setLatitude) }, [])
   useEffect(() => { cacheStats().then(setCacheStatsValue) }, [])
-
-  const handleModeChange = async (mode: ImportFileMode) => {
-    setImportFileMode(mode)
-    await saveImportFileMode(mode)
-  }
 
   useEffect(() => {
     getFilters()
@@ -210,35 +200,17 @@ export default function SettingsPage() {
           Folder where imported frames are copied, organized into object/filter subfolders.
         </p>
 
-        <div className="form-field" style={{ marginBottom: '1rem' }}>
-          <label>File handling</label>
-          <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 400 }}>
-              <input type="radio" name="import-file-mode" checked={importFileMode === 'frontend'}
-                onChange={() => handleModeChange('frontend')} />
-              In this browser (recommended)
-            </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 400 }}>
-              <input type="radio" name="import-file-mode" checked={importFileMode === 'backend'}
-                onChange={() => handleModeChange('backend')} />
-              On the server
-            </label>
-          </div>
-          <p className="cell-muted" style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
-            {importFileMode === 'frontend'
-              ? 'Quality analysis and copying run in the browser on the files you pick — they can come from any drive. Needs Chrome or Edge, opened directly (not embedded).'
-              : 'The server locates files by name in the images folder’s parent tree and copies them itself. Source files must be on the server machine, near the images folder.'}
-          </p>
-        </div>
+        <p className="cell-muted" style={{ fontSize: '0.8rem', marginBottom: '1rem' }}>
+          Quality analysis and copying run in this browser on the files you pick — they can come
+          from any drive. Needs Chrome or Edge, opened directly (not embedded).
+        </p>
 
-        {importFileMode === 'frontend' ? (
-          <>
-            {!isFolderAccessSupported ? (
-              <div className="error-banner">
-                This browser does not support local folder access (File System Access API).
-                Use a Chromium-based browser (Chrome, Edge), or switch to server-side file handling above.
-              </div>
-            ) : (
+        {!isFolderAccessSupported ? (
+          <div className="error-banner">
+            This browser does not support local folder access (File System Access API).
+            Use a Chromium-based browser (Chrome, Edge).
+          </div>
+        ) : (
               <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
                 <button
                   className="btn btn-secondary"
@@ -264,49 +236,10 @@ export default function SettingsPage() {
                 {imagesFolderName
                   ? <span style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>📁 {imagesFolderName}</span>
                   : <span className="cell-muted" style={{ fontSize: '0.85rem' }}>No folder selected</span>}
-              </div>
-            )}
-            {imagesFolderError && (
-              <div className="error-banner" style={{ marginTop: '0.75rem' }}>{imagesFolderError}</div>
-            )}
-          </>
-        ) : (
-          <div className="form-field">
-            <label htmlFor="images-folder">Folder path on server</label>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <input
-                id="images-folder"
-                value={imagesFolder}
-                onChange={e => setImagesFolder(e.target.value)}
-                onBlur={async () => {
-                  setImagesFolderSaving(true)
-                  try { await saveImagesFolder(imagesFolder.trim()) } finally { setImagesFolderSaving(false) }
-                }}
-                placeholder="e.g. D:\Astrophotography\Images"
-                style={{ fontFamily: 'monospace', fontSize: '0.85rem', flex: 1 }}
-                spellCheck={false}
-              />
-              <button
-                className="btn btn-secondary"
-                disabled={imagesFolderPicking}
-                onClick={async () => {
-                  setImagesFolderPicking(true)
-                  try {
-                    const picked = await pickFolder()
-                    if (picked) {
-                      setImagesFolder(picked)
-                      await saveImagesFolder(picked)
-                    }
-                  } finally {
-                    setImagesFolderPicking(false)
-                  }
-                }}
-              >
-                {imagesFolderPicking ? '…' : 'Browse…'}
-              </button>
-              {imagesFolderSaving && <span className="cell-muted" style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}>saving…</span>}
-            </div>
           </div>
+        )}
+        {imagesFolderError && (
+          <div className="error-banner" style={{ marginTop: '0.75rem' }}>{imagesFolderError}</div>
         )}
       </div>
 

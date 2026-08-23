@@ -1,5 +1,4 @@
 import type { ApObject, ObjectFilterStat, PlanProgressItem, ApObjectType, ApSession, CreateApObjectDto, CreateApSessionDto, ApObjectSession, CreateApObjectSessionDto, ApExposure, ApFilter, ApPlan, ApPlanDetail, ApPlanSession, ApEquipment, CreateApEquipmentDto } from '../types'
-import type { FitsAnalysis } from '../utils/fits'
 
 const BASE = '/api'
 
@@ -185,22 +184,6 @@ export const removeImported = (names: string[]): Promise<{ removed: number }> =>
     body: JSON.stringify({ names }),
   }).then(json<{ removed: number }>)
 
-// Lists files present in an object's folder on the server ('backend' file mode).
-export const getObjectFolderFilesViaBackend = (objectFolder: string): Promise<string[]> =>
-  fetch(`${BASE}/imported/object-files`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ objectFolder }),
-  }).then(json<string[]>)
-
-// Deletes subs (and their derived copies) from an object's folder on the server.
-export const deleteObjectFilesViaBackend = (objectFolder: string, fileNames: string[]): Promise<{ deleted: number; failed: number }> =>
-  fetch(`${BASE}/imported/delete-object-files`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ objectFolder, fileNames }),
-  }).then(json<{ deleted: number; failed: number }>)
-
 // ── PSFSW display anchors ──────────────────────────────────────────────────
 // The frozen divisor each target+filter's PSFSW is shown against, so the same
 // sub reads the same number on every screen and in every session.
@@ -218,50 +201,6 @@ export const savePsfswAnchor = (object: number, filter: number, anchor: number, 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ object, filter, anchor, subs, replace }),
   }).then(json<PsfswAnchorRow>)
-
-// Deletes the subs an import copied from, wherever the server finds them
-// outside the images folder. Files inside it are the copies — never touched.
-export const deleteSourceFilesViaBackend = (fileNames: string[]): Promise<{ deleted: number; failed: number; notFound: number; skipped: number }> =>
-  fetch(`${BASE}/imported/delete-source-files`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileNames }),
-  }).then(json<{ deleted: number; failed: number; notFound: number; skipped: number }>)
-
-// ── Server-side file operations — used only in 'backend' import file mode ───
-// The server locates files by name in the images folder's parent tree, so
-// sources must live on the server machine; the browser never reads the bytes.
-
-export interface BackendCopyItem { fileNames: string[]; objectFolder: string; filterName: string }
-export interface BackendCopyStats { copied: number; skipped: number; notFound: number; failed: number }
-
-export const copyFilesViaBackend = (items: BackendCopyItem[]): Promise<BackendCopyStats> =>
-  fetch(`${BASE}/imported/copy-to-object-folders`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ items }),
-  }).then(json<BackendCopyStats>)
-
-export const analyzeFitsViaBackend = (fileNames: string[], normalize = true, signal?: AbortSignal): Promise<FitsAnalysis[]> =>
-  fetch(`${BASE}/fits/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileNames, normalize }),
-    signal,
-  }).then(json<FitsAnalysis[]>)
-
-// Opens a sub in the OS default app on the server machine. The server's message
-// is the useful part here (folder not set, file not found), so it's unwrapped.
-export const openFitsFile = async (fileName: string): Promise<{ path: string }> => {
-  const res = await fetch(`${BASE}/fits/open`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName }),
-  })
-  const body = await res.json().catch(() => null) as { path?: string; error?: string } | null
-  if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`)
-  return { path: body?.path ?? '' }
-}
 
 export const getPlans = (objectId?: number, equipment?: number | null): Promise<ApPlan[]> => {
   const params = [objectId !== undefined ? `object=${objectId}` : '', equipment != null ? `equipment=${equipment}` : ''].filter(Boolean)

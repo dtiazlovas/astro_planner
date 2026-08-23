@@ -26,14 +26,6 @@ interface Props {
   /** When true (e.g. while analysis is still streaming), the threshold handle can't be dragged. */
   disabled?: boolean
   /**
-   * When supplied, subs become clickable: the chart asks for confirmation and
-   * then calls this. Rejecting with an Error shows its message in the dialog.
-   */
-  // Return type is plain void so a handler may return anything (the result is
-  // awaited but discarded) — `Promise<void> | void` would reject a handler that
-  // simply forwards an API call returning a value.
-  onOpenFile?: (point: SnrPoint) => void
-  /**
    * Files dropped by hand in the blink viewer. An extra veto on top of the
    * threshold, never an override of it — without this the legend and the point
    * colours would disagree with what the import is actually going to do.
@@ -49,7 +41,7 @@ const REJECTED = '#6b7280'
 const LINE = '#f59e0b'
 const BAND = '#818cf8'
 
-export default function SnrChart({ points, threshold, onThresholdChange, metricLabel = 'PSFSW', goodDirection = 'above', historical, disabled = false, onOpenFile, droppedFiles }: Props) {
+export default function SnrChart({ points, threshold, onThresholdChange, metricLabel = 'PSFSW', goodDirection = 'above', historical, disabled = false, droppedFiles }: Props) {
   const isApproved = (p: SnrPoint) => {
     if (droppedFiles?.has(p.fileName)) return false
     return goodDirection === 'above' ? p.snr >= threshold : p.snr <= threshold
@@ -67,9 +59,6 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
   const [hover, setHover] = useState<number | null>(null)
   /** last cursor x in SVG user units — kept in a ref so re-snapping costs no render */
   const hoverXRef = useRef<number | null>(null)
-  const [confirmOpen, setConfirmOpen] = useState<SnrPoint | null>(null)
-  const [opening, setOpening] = useState(false)
-  const [openError, setOpenError] = useState<string | null>(null)
 
   useEffect(() => {
     const el = wrapRef.current
@@ -265,18 +254,6 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
             setHover(h => h === i ? h : i) // same index → React bails out, no re-render
           }}
           onPointerLeave={() => { hoverXRef.current = null; setHover(null) }}
-          style={{ cursor: onOpenFile ? 'pointer' : 'default' }}
-          onClick={e => {
-            const svg = svgRef.current
-            if (!onOpenFile || !svg || !sorted.length) return
-            // Resolved from the click itself rather than hover state, so a tap
-            // that never produced a pointermove still hits the right sub.
-            const r = svg.getBoundingClientRect()
-            const p = sorted[idxAt(((e.clientX - r.left) / r.width) * w)]
-            if (!p) return
-            setOpenError(null)
-            setConfirmOpen(p)
-          }}
         />
 
         {/* crosshair + readout for the hovered sub (hidden mid-drag) */}
@@ -289,10 +266,9 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
           const value = hoverPoint.pending ? 'measuring…' : `${metricLabel} ${hoverPoint.snr.toFixed(3)}`
           const meta = `#${i + 1}/${sorted.length}`
           const line2 = `${value}  ·  ${meta}`
-          const hint = onOpenFile ? 'click to open in default app' : null
           // ~6.1px per char at 11px in the default UI font — close enough to size the box.
-          const boxW = Math.max(name.length, line2.length, hint?.length ?? 0) * 6.1 + 16
-          const boxH = hint ? 53 : 38
+          const boxW = Math.max(name.length, line2.length) * 6.1 + 16
+          const boxH = 38
           const flip = x + 12 + boxW > M.left + plotW
           const bx = Math.max(M.left + 2, flip ? x - 12 - boxW : x + 12)
           const by = Math.max(M.top + 2, Math.min(M.top + plotH - boxH - 2, py - boxH / 2))
@@ -307,7 +283,6 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
                 <tspan fill={hoverPoint.pending ? '#9ca3af' : ok ? APPROVED : REJECTED}>{value}</tspan>
                 <tspan fill="#6b7280">{'  ·  '}{meta}</tspan>
               </text>
-              {hint && <text x={bx + 8} y={by + 45} fontSize="10" fill="#6b7280">{hint}</text>}
             </g>
           )
         })()}
@@ -328,41 +303,6 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
         </g>
       </svg>
 
-      {confirmOpen && (
-        <div className="modal-backdrop" onClick={() => { if (!opening) setConfirmOpen(null) }}>
-          <div className="modal-dialog" onClick={e => e.stopPropagation()}>
-            <div className="modal-dialog__header">
-              <span className="modal-dialog__title">Open this sub?</span>
-            </div>
-            <p style={{ color: '#e2e8f0', margin: 0, wordBreak: 'break-all', fontFamily: 'monospace', fontSize: '0.85rem' }}>
-              {confirmOpen.fileName}
-            </p>
-            <p className="cell-muted" style={{ fontSize: '0.85rem', margin: 0 }}>
-              Opens in the default application for this file type, on the machine running the server.
-            </p>
-            {openError && <div className="error-banner">{openError}</div>}
-            <div className="form-actions">
-              <button className="btn btn-primary" onClick={async () => {
-                if (!onOpenFile) return
-                setOpening(true)
-                setOpenError(null)
-                try {
-                  await onOpenFile(confirmOpen)
-                  setConfirmOpen(null)
-                } catch (err) {
-                  // Kept open so the reason (folder not set, file not found) stays visible.
-                  setOpenError(err instanceof Error ? err.message : 'Failed to open the file')
-                } finally {
-                  setOpening(false)
-                }
-              }} disabled={opening}>
-                {opening ? 'Opening…' : 'Open'}
-              </button>
-              <button className="btn btn-ghost" onClick={() => setConfirmOpen(null)} disabled={opening}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
