@@ -66,6 +66,33 @@ services:
       # holds a snapshot open — it is written once and closed.
       - ./backups:/backups
 
+  # One snapshot a day into ./backups, pruned to the last week. Runs in the
+  # stack rather than as a host cron/Task Scheduler entry so it needs no
+  # per-machine setup: anyone who starts the stack gets backups.
+  #
+  # It reuses the image `app` builds — hence depends_on, which orders the build
+  # as well as the start. No ports; it never serves anything.
+  backup:
+    image: astro-planner:dev
+    container_name: astro-planner-backup
+    depends_on:
+      - app
+    restart: unless-stopped
+    command: ["node", "scripts/backup-daily.js"]
+    environment:
+      # Container-local time. The image is UTC unless TZ is set here.
+      BACKUP_AT: "03:00"
+      BACKUP_KEEP: "7"
+      # TZ: Europe/Vilnius
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+      # Read-write, not :ro — VACUUM INTO opens the source database, and SQLite
+      # needs to create the -shm file to open one in WAL mode. It only ever
+      # reads: the snapshot itself is written to /backups.
+      - data:/app/data
+      - ./backups:/backups
+
 # `name:` pins the real volume name. Without it these would be prefixed with the
 # project name (astro-planner_data), which is fine but makes the name depend on
 # a setting rather than saying what it is. Pinning also means renaming the

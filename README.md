@@ -51,6 +51,44 @@ docker run -p 5000:5000 -v astro-planner-data:/app/data astro-planner:prod
 
 `npm run db:snapshot` also works outside Docker, writing to `./backups`.
 
+#### Backups
+
+The stack includes a `backup` service that snapshots the database once a day
+into `./backups` and keeps the last seven. It runs inside compose rather than as
+a cron or Task Scheduler entry, so it needs no per-machine setup — starting the
+stack is enough. Tune it on the service in `compose.yaml`:
+
+| | |
+|---|---|
+| `BACKUP_AT` | time of day, container-local. Default `03:00` — UTC unless you set `TZ` |
+| `BACKUP_KEEP` | how many to retain. Default `7` |
+
+It takes one immediately on start if none exists for that day, so a machine only
+switched on during the day still gets backed up. Only files it wrote are pruned
+(`astro_planner-<timestamp>.db`) — a copy you make by hand keeps its own name
+and is never touched.
+
+Restore one over the live database with the app stopped:
+
+```
+docker compose down
+docker compose run --rm -e SQLITE_PATH=/backups/astro_planner-<stamp>.db \
+  app npm run db:snapshot -- /app/data/astro_planner.db
+docker compose up -d
+```
+
+#### Initialising the database volume
+
+`astro-planner-data` starts empty and the app creates its schema on first boot,
+so an empty database needs nothing. To start from an existing one instead, run
+the restore above with `-v "/path/to/data:/import"` and `SQLITE_PATH` pointing
+into `/import`. The mount must be writable, not `:ro` — SQLite creates a `-shm`
+file to open a WAL database, and read-only fails with `SQLITE_CANTOPEN`.
+
+Note the app's own `data/seed.db` fallback never fires under Docker: the volume
+is mounted over `/app/data`, which hides the repo's copy. Seed explicitly with
+the same command.
+
 ### Your image files
 
 The server never touches them. Picking folders, reading FITS, measuring frame
