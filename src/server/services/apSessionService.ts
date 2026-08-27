@@ -3,10 +3,13 @@ import type { ApSession, CreateApSessionDto, UpdateApSessionDto } from '../model
 
 // Exposure thrown away with the culled subs, taken from the entry each record
 // is linked to. A record with no entry — its whole entry was culled, or the
-// entry has since been deleted — falls back to the night's average seconds per
-// frame, which is exact unless that night mixed exposure lengths.
+// entry has since been deleted — falls back to the exposure stored on the
+// record itself, and failing that to the night's average seconds per frame,
+// which is exact unless that night mixed exposure lengths. The average is the
+// last resort for a reason: a night that kept nothing has no entries to average
+// and would otherwise report its whole loss as zero.
 const CULLED_SECONDS = `
-  CAST(COALESCE(SUM(COALESCE(ce.duration, (
+  CAST(COALESCE(SUM(COALESCE(ce.duration, ie.duration, (
     SELECT CAST(SUM(os2.frames * e2.duration) AS REAL) / NULLIF(SUM(os2.frames), 0)
       FROM ap_object_session os2
       JOIN ap_exposure e2 ON e2.id = os2.exposure
@@ -28,6 +31,7 @@ const SELECT_WITH_CALC = `
        FROM ap_imported i
        LEFT JOIN ap_object_session cos ON cos.id = i.object_session_id
        LEFT JOIN ap_exposure ce ON ce.id = cos.exposure
+       LEFT JOIN ap_exposure ie ON ie.id = i.exposure
       WHERE i.session_id = s.id AND i.culled = 1) AS culled_seconds
   FROM ap_session s
   LEFT JOIN ap_object_session os ON os.session = s.id

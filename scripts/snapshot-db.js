@@ -39,11 +39,14 @@ export const snapshotTo = (source, target) => {
   fs.mkdirSync(path.dirname(target), { recursive: true })
   // VACUUM INTO refuses to write to a file that already exists, which is the
   // behaviour we want for a timestamped snapshot but not for an explicit
-  // destination the caller reused. The -wal and -shm sidecars have to go with
-  // it: left behind, they belong to the database just deleted, and SQLite fails
-  // with SQLITE_CANTOPEN rather than adopting them. That matters when the
-  // destination is a live database path — restoring over one is exactly this case.
-  for (const suffix of ['', '-wal', '-shm']) fs.rmSync(target + suffix, { force: true })
+  // destination the caller reused. The sidecars have to go with it: left
+  // behind, they belong to the database just deleted, and SQLite either fails
+  // with SQLITE_CANTOPEN or — worse, for -journal — rolls an unrelated
+  // transaction back over the new file. That matters when the destination is a
+  // live database path: restoring over one is exactly this case. All three
+  // suffixes, because both journal modes turn up here — a WAL database has
+  // -wal/-shm, while a snapshot is written in rollback mode and gets -journal.
+  for (const suffix of ['', '-wal', '-shm', '-journal']) fs.rmSync(target + suffix, { force: true })
 
   const db = new Database(source, { readonly: true })
   try {

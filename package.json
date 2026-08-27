@@ -19,6 +19,7 @@
     "db:pull": "tsx deploy/vercel/blob-db.ts pull",
     "db:info": "tsx deploy/vercel/blob-db.ts info",
     "db:snapshot": "node scripts/snapshot-db.js",
+    "db:upload": "node scripts/blob-upload.js",
     "typecheck": "tsc -b tsconfig.json"
   },
   "dependencies": {

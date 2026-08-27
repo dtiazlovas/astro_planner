@@ -55,13 +55,14 @@ router.post('/check', async (req: Request, res: Response) => {
 })
 
 router.post('/record', async (req: Request, res: Response) => {
-  const { names, sessionId, objectSessionId, culled } = req.body as { names?: string[]; sessionId?: number; objectSessionId?: number | null; culled?: boolean }
+  const { names, sessionId, objectSessionId, culled, exposureId } = req.body as { names?: string[]; sessionId?: number; objectSessionId?: number | null; culled?: boolean; exposureId?: number | null }
   if (!Array.isArray(names)) { res.status(400).json({ error: 'names must be an array' }); return }
   if (typeof sessionId !== 'number') { res.status(400).json({ error: 'sessionId must be a number' }); return }
   if (objectSessionId != null && typeof objectSessionId !== 'number') { res.status(400).json({ error: 'objectSessionId must be a number' }); return }
   if (culled != null && typeof culled !== 'boolean') { res.status(400).json({ error: 'culled must be a boolean' }); return }
+  if (exposureId != null && typeof exposureId !== 'number') { res.status(400).json({ error: 'exposureId must be a number' }); return }
   try {
-    await recordImported(names, sessionId, objectSessionId ?? null, culled ?? false)
+    await recordImported(names, sessionId, objectSessionId ?? null, culled ?? false, exposureId ?? null)
     res.json({ ok: true })
   } catch {
     res.status(500).json({ error: 'Internal server error' })

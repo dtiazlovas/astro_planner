@@ -9,6 +9,11 @@ development. Nothing here is imported by `npm run dev`, `npm run build` or
 | `handler.ts` | The serverless function. Mounts the same routers as the local server via `createApiApp()`, waits for the database to come down from Blob, and flushes it back after the response. |
 | `blob-db.ts` | CLI for moving the SQLite file between here and the Blob store by hand — `npm run db:list` / `db:push` / `db:pull` / `db:info`. |
 
+One more entry point lives outside this folder: `scripts/blob-upload.js`
+(`npm run db:upload`) sends a backup — by default the newest one the daily
+backup task wrote — up to the store. It sits with the other backup scripts
+because that folder is what it reads, and it is plain JS to match them.
+
 ## Two files that can't live here
 
 Vercel finds both by filesystem convention at the deployment root, and neither

@@ -17,14 +17,17 @@ export const checkImported = async (names: string[]): Promise<string[]> => {
 // `culled` records a sub the import rejected: no file was copied anywhere, and
 // the row exists only to be counted against its night. Re-importing a file that
 // was culled before clears the flag, since the row then describes a real sub.
-export const recordImported = async (names: string[], sessionId: number, objectSessionId: number | null = null, culled = false): Promise<void> => {
+// `exposureId` is how long the sub was shot for, kept on the row itself so a
+// culled sub with no entry behind it still knows what it cost. A caller that
+// doesn't know it leaves the stored value alone rather than erasing it.
+export const recordImported = async (names: string[], sessionId: number, objectSessionId: number | null = null, culled = false, exposureId: number | null = null): Promise<void> => {
   if (!names.length) return
   const db = connectToDatabase()
-  const insert = db.prepare('INSERT OR IGNORE INTO ap_imported (filename, session_id, object_session_id, culled) VALUES (@filename, @sessionId, @objectSessionId, @culled)')
-  const update = db.prepare('UPDATE ap_imported SET session_id = @sessionId, object_session_id = @objectSessionId, culled = @culled WHERE filename = @filename')
+  const insert = db.prepare('INSERT OR IGNORE INTO ap_imported (filename, session_id, object_session_id, culled, exposure) VALUES (@filename, @sessionId, @objectSessionId, @culled, @exposureId)')
+  const update = db.prepare('UPDATE ap_imported SET session_id = @sessionId, object_session_id = @objectSessionId, culled = @culled, exposure = COALESCE(@exposureId, exposure) WHERE filename = @filename')
   db.transaction((ns: string[]) => {
     for (const filename of ns) {
-      const params = { filename, sessionId, objectSessionId, culled: culled ? 1 : 0 }
+      const params = { filename, sessionId, objectSessionId, culled: culled ? 1 : 0, exposureId }
       if (insert.run(params).changes === 0) update.run(params)
     }
   })(names)

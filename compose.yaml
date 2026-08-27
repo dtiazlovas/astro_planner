@@ -66,9 +66,10 @@ services:
       # holds a snapshot open — it is written once and closed.
       - ./backups:/backups
 
-  # One snapshot a day into ./backups, pruned to the last week. Runs in the
-  # stack rather than as a host cron/Task Scheduler entry so it needs no
-  # per-machine setup: anyone who starts the stack gets backups.
+  # One snapshot a day into ./backups, pruned to the last week, plus one on
+  # every start — `docker compose restart backup` forces one. Runs in the stack
+  # rather than as a host cron/Task Scheduler entry so it needs no per-machine
+  # setup: anyone who starts the stack gets backups.
   #
   # It reuses the image `app` builds — hence depends_on, which orders the build
   # as well as the start. No ports; it never serves anything.

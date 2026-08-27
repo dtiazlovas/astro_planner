@@ -127,11 +127,13 @@ export const checkImported = (names: string[]): Promise<string[]> =>
 // under; deleting that entry then deletes these records too.
 // `culled` records subs the import rejected: no file was copied anywhere, and
 // the record exists only so the night can report what was thrown away.
-export const recordImported = (names: string[], sessionId: number, objectSessionId: number | null = null, culled = false): Promise<void> =>
+// `exposureId` is the sub's own exposure length. It matters for culled records
+// with no entry to take it from — the night still spent that time.
+export const recordImported = (names: string[], sessionId: number, objectSessionId: number | null = null, culled = false, exposureId: number | null = null): Promise<void> =>
   fetch(`${BASE}/imported/record`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ names, sessionId, objectSessionId, culled }),
+    body: JSON.stringify({ names, sessionId, objectSessionId, culled, exposureId }),
   }).then(() => undefined)
 
 // Flags existing records as culled rather than deleting them — used when subs

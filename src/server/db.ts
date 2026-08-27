@@ -166,6 +166,12 @@ function initSchema(database: Database.Database): void {
   // would silently drop records (and their saved analysis) when a file sync
   // merges duplicate entries.
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN object_session_id INTEGER REFERENCES ap_object_session(id)') } catch {}
+  // Migrate: the exposure the sub was shot at, as the import parsed it from the
+  // filename. Records that belong to an entry take their length from the entry,
+  // so this only has to answer for the ones that don't: a night whose every sub
+  // was culled has no entry to ask, and without this its cull time would be
+  // zero no matter how long it spent shooting.
+  try { database.exec('ALTER TABLE ap_imported ADD COLUMN exposure INTEGER REFERENCES ap_exposure(id)') } catch {}
   // One row per file. Without this, `INSERT OR IGNORE` was a plain insert and
   // a file could sit in two rows — the entry link is only authoritative if a
   // second, unlinked row for the same file can't exist. Fold any duplicates

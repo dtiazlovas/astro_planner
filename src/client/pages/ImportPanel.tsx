@@ -22,6 +22,7 @@ import BlinkViewer from '../components/BlinkViewer'
 interface ImportResult {
   sessionsCreated: number
   entriesOk: number
+  culledRecorded: number  // rejects written against their night, entry or not
   entriesFailed: Array<{ target: string; filter: string }>
   entriesSkipped: Array<{ target: string; filter: string; reason: string }>
   filesCopied: number
@@ -753,6 +754,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   // import actually writes, and what the preview shows.
   const approvedFrames = (entry: ImportEntry): number => entry.fileNames.filter(isApproved).length
   const importableCount = preview?.flatMap(s => s.entries).filter(e => e.canImport && approvedFrames(e) > 0).length ?? 0
+  // Gates the import controls. Not `importableCount > 0`: pulling the approve
+  // line above every sub in the batch leaves no entry to create but plenty to
+  // record, and hiding the button there makes a night that culled everything
+  // impossible to import at all.
+  const hasImportableFiles = importableFileNames.length > 0
 
   // Blinking is scoped to one target+filter: comparing frames only tells you
   // anything when they are the same field through the same filter. Capture
@@ -820,7 +826,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         }))
     )
     const entriesFailed: Array<{ target: string; filter: string }> = []
-    let entryCount = 0, sessionsCreated = 0
+    let entryCount = 0, sessionsCreated = 0, culledRecorded = 0
 
     const sessionByDate = new Map<string, number>()
     for (const s of sessions) {
@@ -832,24 +838,45 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     const entriesByObject = new Map<number, ImportEntry[]>()
     const allRecordedNames: string[] = []
 
+    // Rejects with no entry to hang on, because their entry kept nothing. Still
+    // written one entry at a time rather than in a single call: each carries the
+    // exposure it was shot at, which is the only thing left that says what the
+    // night lost once no entry survives to say it.
+    const recordCulledWithoutEntry = async (entries: ImportEntry[], sessionId: number) => {
+      for (const e of entries) {
+        const culled = culledOf(e)
+        if (!culled.length) continue
+        try { await recordImported(culled, sessionId, null, true, e.exposureId) } catch {}
+        allRecordedNames.push(...culled)
+        culledRecorded += culled.length
+      }
+    }
+
+    // The session a night's records go against, created on demand. Nights that
+    // kept nothing reach this too: the observing happened, the sky was spent,
+    // and a night that shows no session at all reads as one that never ran.
+    const sessionForNight = async (s: ImportSession): Promise<number | null> => {
+      const existing = sessionByDate.get(s.dateKey)
+      if (existing != null) return existing
+      try {
+        const created = await createSession({
+          name: s.name, start: toDatetimeLocal(s.startTime),
+          duration: null, duration_set: false, comment: 'Imported from folder',
+          equipment: activeId,
+        })
+        sessionByDate.set(s.dateKey, created.id)
+        sessionsCreated++
+        return created.id
+      } catch {
+        return null
+      }
+    }
+
     try {
       setImportProgress({ step: 'Importing entries…', current: 0, total: totalEntries })
       for (const s of sessionsToImport) {
-        let sessionId: number
-        try {
-          if (sessionByDate.has(s.dateKey)) {
-            sessionId = sessionByDate.get(s.dateKey)!
-          } else {
-            const created = await createSession({
-              name: s.name, start: toDatetimeLocal(s.startTime),
-              duration: null, duration_set: false, comment: 'Imported from folder',
-              equipment: activeId,
-            })
-            sessionId = created.id
-            sessionByDate.set(s.dateKey, sessionId)
-            sessionsCreated++
-          }
-        } catch {
+        const sessionId = await sessionForNight(s)
+        if (sessionId == null) {
           for (const entry of entriesToImport(s))
             entriesFailed.push({ target: entry.target, filter: entry.filter })
           continue
@@ -869,15 +896,16 @@ export default function ImportPanel({ onImported, onClose }: Props) {
             entriesByObject.set(objId, [...(entriesByObject.get(objId) ?? []), entry])
             // Recorded per entry, tied to the entry just created — deleting that
             // entry later takes exactly these files' records with it.
-            try { await recordImported(approved, sessionId, created.id) } catch {}
+            try { await recordImported(approved, sessionId, created.id, false, entry.exposureId) } catch {}
             allRecordedNames.push(...approved)
             // This entry's rejects, flagged culled so nothing reads them as
             // subs that went missing from the object folder. Same entry link:
             // it says which target and filter they were shot for.
             const culled = culledOf(entry)
             if (culled.length) {
-              try { await recordImported(culled, sessionId, created.id, true) } catch {}
+              try { await recordImported(culled, sessionId, created.id, true, entry.exposureId) } catch {}
               allRecordedNames.push(...culled)
+              culledRecorded += culled.length
             }
             entryCount++
             setImportProgress({ step: 'Importing entries…', current: entryCount, total: totalEntries })
@@ -889,26 +917,21 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         // Entries the line rejected outright: nothing was imported, so there is
         // no entry to hang their records on, but the night still lost the
         // frames and says so.
-        const wholesaleCulled = s.entries.filter(e => e.canImport && approvedOf(e).length === 0).flatMap(culledOf)
-        if (wholesaleCulled.length) {
-          try { await recordImported(wholesaleCulled, sessionId, null, true) } catch {}
-          allRecordedNames.push(...wholesaleCulled)
-        }
+        await recordCulledWithoutEntry(s.entries.filter(e => e.canImport && approvedOf(e).length === 0), sessionId)
       }
 
       // Nights where every importable frame was culled never reached the loop
-      // above — no entry means no session was created. Their rejects are only
-      // attributable when a session for that date already exists; inventing one
-      // for a night that produced nothing keepable is not this import's call.
-      for (const s of preview ?? []) {
-        if (sessionsToImport.includes(s)) continue
-        const sessionId = sessionByDate.get(s.dateKey)
+      // above — no entry means it was never given a session there. They get one
+      // here: a night that kept nothing still happened, and it is the only night
+      // whose whole story is what it threw away.
+      const culledOnlyNights = (preview ?? []).filter(s =>
+        !sessionsToImport.includes(s) && s.entries.some(e => e.canImport && culledOf(e).length > 0))
+      if (culledOnlyNights.length) setImportProgress({ step: 'Recording culled subs…', current: 0, total: 0 })
+      for (const s of culledOnlyNights) {
+        const culledEntries = s.entries.filter(e => e.canImport && culledOf(e).length > 0)
+        const sessionId = await sessionForNight(s)
         if (sessionId == null) continue
-        const culled = s.entries.filter(e => e.canImport).flatMap(culledOf)
-        if (culled.length) {
-          try { await recordImported(culled, sessionId, null, true) } catch {}
-          allRecordedNames.push(...culled)
-        }
+        await recordCulledWithoutEntry(culledEntries, sessionId)
       }
 
       // Persist quality analysis measured during this import onto the records —
@@ -969,7 +992,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
       setImportProgress(null)
       setImportResult({
-        sessionsCreated, entriesOk: entryCount, entriesFailed, entriesSkipped,
+        sessionsCreated, entriesOk: entryCount, culledRecorded, entriesFailed, entriesSkipped,
         filesCopied, filesSkipped, filesNotFound, filesFailed, copyWarning,
         // Only subs with a copy destination count as safe to delete at the
         // source: one belonging to an object with no folder was never copied
@@ -1074,20 +1097,25 @@ export default function ImportPanel({ onImported, onClose }: Props) {
               <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
                 <span className="cell-muted">
                   {parsedCount} files matched · {skippedCount} skipped · {preview.length} session{preview.length !== 1 ? 's' : ''} · {importableCount} importable entr{importableCount !== 1 ? 'ies' : 'y'}
+                  {rejectedCountAll > 0 && ` · ${rejectedCountAll} culled`}
                 </span>
                 {duplicateCount > 0 && (
                   <span className="import-duplicate-warn">
                     {duplicateCount} duplicate{duplicateCount !== 1 ? 's' : ''} already imported, skipped
                   </span>
                 )}
-                {importableCount > 0 && (
+                {hasImportableFiles && (
                   <button className="btn btn-secondary" onClick={handleAnalyzeSnr} disabled={analyzing || importing}>
                     {analyzing ? 'Analyzing…' : snrResults.size ? '↻ Re-analyze quality' : '📈 Analyze quality'}
                   </button>
                 )}
-                {importableCount > 0 && (
+                {hasImportableFiles && (
                   <button className="btn btn-primary" onClick={handleImport} disabled={importing || analyzing}>
-                    {importing ? 'Importing…' : `Import ${importableCount} entr${importableCount !== 1 ? 'ies' : 'y'}`}
+                    {/* With nothing left above the line there is no entry to
+                        import, so the button says what it will actually do. */}
+                    {importing ? 'Importing…'
+                      : importableCount > 0 ? `Import ${importableCount} entr${importableCount !== 1 ? 'ies' : 'y'}`
+                      : `Record ${rejectedCountAll} culled sub${rejectedCountAll !== 1 ? 's' : ''}`}
                   </button>
                 )}
               </div>
@@ -1371,6 +1399,13 @@ export default function ImportPanel({ onImported, onClose }: Props) {
                 ✓ {importResult.entriesOk} {importResult.entriesOk === 1 ? 'entry' : 'entries'} imported
                 {importResult.sessionsCreated > 0 && <span className="import-result-sub"> · {importResult.sessionsCreated} new session{importResult.sessionsCreated !== 1 ? 's' : ''} created</span>}
               </div>
+              {/* The whole result for a night that kept nothing, so the dialog
+                  never reports an import that looks like it did nothing. */}
+              {importResult.culledRecorded > 0 && (
+                <div className="import-result-row import-result-row--muted">
+                  — {importResult.culledRecorded} culled sub{importResult.culledRecorded !== 1 ? 's' : ''} recorded against {importResult.culledRecorded !== 1 ? 'their nights' : 'its night'}
+                </div>
+              )}
               {importResult.entriesSkipped.length > 0 && (
                 <div className="import-result-row import-result-row--warn">
                   <button className="import-result-toggle" onClick={() => setResultExpanded(v => v === 'skipped' ? null : 'skipped')}>

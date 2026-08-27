@@ -63,16 +63,39 @@ stack is enough. Tune it on the service in `compose.yaml`:
 | `BACKUP_AT` | time of day, container-local. Default `03:00` — UTC unless you set `TZ` |
 | `BACKUP_KEEP` | how many to retain. Default `7` |
 
-It takes one immediately on start if none exists for that day, so a machine only
-switched on during the day still gets backed up. Only files it wrote are pruned
-(`astro_planner-<timestamp>.db`) — a copy you make by hand keeps its own name
-and is never touched.
+It also takes one on every start, so cycling the service is how you force a
+backup — and a machine that is switched off at `BACKUP_AT` still gets one when
+it comes up:
 
-Restore one over the live database with the app stopped:
+```
+docker compose restart backup
+```
+
+The scheduled run is skipped when that day already has a snapshot, so a restart
+during the day does not add a second one at 03:00. Only files it wrote are
+pruned (`astro_planner-<timestamp>.db`) — a copy you make by hand keeps its own
+name and is never touched.
+
+Each run leaves two files:
+
+| | |
+|---|---|
+| `backups/astro_planner-<timestamp>.db` | the history, pruned to `BACKUP_KEEP` |
+| `backups/astro_planner.db` | the newest one under the database's own name, replaced every run |
+
+The second is the point of the folder for everyday use: the database lives on a
+named volume, out of Explorer's reach, and this is it at a path you can type —
+open it in a SQLite browser, copy it to another machine, hand it to
+`npm run db:upload` — without first reading a timestamp out of a directory
+listing. It is never pruned, and the name follows `SQLITE_PATH`, so pointing
+that elsewhere renames this too.
+
+Restore over the live database with the app stopped — the latest, or a specific
+day from the history:
 
 ```
 docker compose down
-docker compose run --rm -e SQLITE_PATH=/backups/astro_planner-<stamp>.db \
+docker compose run --rm -e SQLITE_PATH=/backups/astro_planner.db \
   app npm run db:snapshot -- /app/data/astro_planner.db
 docker compose up -d
 ```
@@ -261,7 +284,35 @@ npm run db:push              # local SQLITE_PATH → blob (seed it, or overwrite
 npm run db:push -- data/seed.db
 npm run db:pull              # blob → local SQLITE_PATH (inspect production)
 npm run db:pull -- /tmp/prod.db
+npm run db:upload            # newest ./backups snapshot → blob (see below)
+npm run db:upload -- backups/astro_planner-2026-08-27T03-00-00-004.db
 ```
 
 `db:push` overwrites unconditionally — it is the deliberate-override escape
 hatch, so it does not do the conflict dance the server does.
+
+### Sending a local database to Vercel
+
+The deployment's database is the blob, so putting local data online means
+replacing that file. `npm run db:upload` does it from a backup:
+
+```
+npm run db:upload                        # the newest snapshot in ./backups
+npm run db:upload -- <file>              # a specific backup, or a live database
+docker compose run --rm app npm run db:upload   # same, from inside the stack
+```
+
+It is `db:push` aimed at the backup folder, with two additions: the file is
+staged through `VACUUM INTO` first — which folds in the WAL if you pointed it at
+a live database, and fails on a truncated or corrupt file *before* anything in
+the store is touched — and whatever the store held is copied to
+`<BLOB_DB_KEY>.previous` before the overwrite, so a wrong upload is one copy
+away from being undone. `npm run db:list` shows both keys.
+
+The hosted app picks the new file up on its next request: instances revalidate
+against the store's etag rather than trusting the copy they booted with.
+
+Uploading is deliberate, never scheduled. It is a one-way overwrite: anything
+entered in the hosted app since the last upload is replaced by this machine's
+copy — recoverable from `<BLOB_DB_KEY>.previous`, but only by hand. Run it when
+you mean to publish local data, not on a timer.
