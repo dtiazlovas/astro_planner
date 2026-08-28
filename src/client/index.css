@@ -107,6 +107,36 @@ body {
   white-space: nowrap;
 }
 
+/* Current moon phase, kept with the totals: the tail of the strip on a narrow
+   screen, the last row of the rail column on a wide one. */
+.moon-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+/* Only present so the wide layout can push the percentage to the far edge the
+   way the filter rows do. */
+.moon-phase__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.moon-phase__glyph { display: block; flex-shrink: 0; }
+
+.moon-phase__name {
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+
+.moon-phase__pct {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
 .app-side__brand {
   display: flex;
   align-items: center;
@@ -309,6 +339,15 @@ body {
     margin-left: 0;
     text-align: right;
     padding-top: 0.2rem;
+    border-top: 1px solid #17172b;
+  }
+
+  /* Its own row under the totals, laid out like a filter row: glyph and name
+     left, illumination right. */
+  .moon-phase {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 0.45rem;
     border-top: 1px solid #17172b;
   }
 
@@ -2734,6 +2773,16 @@ body {
 
   /* Clipped, not removed — the name stays available to screen readers. */
   .totals-bar .type-badge:has(.filter-badge-dot) .type-badge__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  /* Same treatment as the filter names: the glyph carries the meaning, and the
+     text stays available to screen readers (and the tooltip). */
+  .moon-phase__name {
     position: absolute;
     width: 1px;
     height: 1px;

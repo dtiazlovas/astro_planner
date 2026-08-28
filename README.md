@@ -34,9 +34,9 @@ docker compose build                             # after a dependency change
 a plain bind mount breaks this app on Windows — a Linux-native `node_modules`,
 the database on a named volume rather than the host drive, and a backups folder
 to get snapshots back out. The reasoning is in the comments there; the short
-version is that SQLite's WAL mode needs filesystem semantics a Windows bind
-mount does not provide, so the database deliberately does not live on your
-Windows drive. `npm run db:snapshot` writes a consistent copy that does.
+version is that SQLite's file locking needs semantics a Windows bind mount does
+not provide, so the database deliberately does not live on your Windows drive.
+`npm run db:snapshot` writes a consistent copy that does.
 
 Editing works normally: the source is bind-mounted and watched by polling
 (`CHOKIDAR_USEPOLLING`), because bind mounts on Windows drives do not deliver
@@ -105,8 +105,9 @@ docker compose up -d
 `astro-planner-data` starts empty and the app creates its schema on first boot,
 so an empty database needs nothing. To start from an existing one instead, run
 the restore above with `-v "/path/to/data:/import"` and `SQLITE_PATH` pointing
-into `/import`. The mount must be writable, not `:ro` — SQLite creates a `-shm`
-file to open a WAL database, and read-only fails with `SQLITE_CANTOPEN`.
+into `/import`. The mount must be writable, not `:ro` — SQLite needs to be able
+to create a journal file beside the database even to read it, and read-only
+fails with `SQLITE_CANTOPEN`.
 
 Note the app's own `data/seed.db` fallback never fires under Docker: the volume
 is mounted over `/app/data`, which hides the repo's copy. Seed explicitly with

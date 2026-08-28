@@ -57,10 +57,13 @@ services:
       # including the database in `data` below.
       - node_modules:/app/node_modules
       # SQLite stays on the VM's own filesystem rather than the Windows drive.
-      # WAL needs shared-memory files and byte-range locking, and the bind-mount
-      # layer provides neither reliably — "database is locked" at best, a
-      # corrupted database at worst. The cost is that the file is no longer
-      # visible in Explorer; `npm run db:snapshot` writes a consistent copy out.
+      # SQLite locks with fcntl byte ranges, and the bind-mount layer does not
+      # provide those reliably — "database is locked" at best, a corrupted
+      # database at worst. Half of the original reason is gone (WAL's
+      # shared-memory file, which the database no longer uses since db.ts moved
+      # to rollback-journal mode) but the locking half stands, and nobody has
+      # tested a bind-mounted database since. The cost is that the file is not
+      # visible in Explorer; `npm run db:snapshot` writes a copy out that is.
       - data:/app/data
       # Where that copy lands. A plain bind mount is fine here because nothing
       # holds a snapshot open — it is written once and closed.
@@ -89,8 +92,8 @@ services:
       - .:/app
       - node_modules:/app/node_modules
       # Read-write, not :ro — VACUUM INTO opens the source database, and SQLite
-      # needs to create the -shm file to open one in WAL mode. It only ever
-      # reads: the snapshot itself is written to /backups.
+      # needs to be able to create a journal beside it to take even a read
+      # transaction. It only ever reads: the snapshot goes to /backups.
       - data:/app/data
       - ./backups:/backups
 

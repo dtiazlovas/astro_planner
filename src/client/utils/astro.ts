@@ -73,3 +73,92 @@ export function astronomicalDarknessHours(date: Date, latDeg: number): number {
   const Hdeg = Math.acos(cosH) / RAD // half-arc the Sun spends above −18°, in degrees
   return 24 - (2 * Hdeg) / 15         // remaining hours are astronomical night
 }
+
+const sinDeg = (deg: number) => Math.sin(deg * RAD)
+const norm360 = (deg: number) => ((deg % 360) + 360) % 360
+
+// Mean synodic month — the average new-moon-to-new-moon interval.
+const SYNODIC_DAYS = 29.530588853
+
+// Days elapsed since J2000.0 (2000-01-01 12:00 UT). UT is used in place of TT;
+// the ~70 s difference is far below the precision of the series below.
+function daysSinceJ2000(date: Date): number {
+  return date.getTime() / 86400000 - 10957.5
+}
+
+// Geocentric ecliptic longitudes of the Sun and Moon, plus the Moon's ecliptic
+// latitude, all in degrees. Truncated Meeus series — good to a few arcminutes,
+// which is far finer than a phase readout needs.
+function sunMoonPositions(d: number) {
+  const Ms = norm360(357.5291 + 0.98560028 * d)          // Sun mean anomaly
+  const sunLon = norm360(280.459 + 0.98564736 * d + 1.915 * sinDeg(Ms) + 0.020 * sinDeg(2 * Ms))
+
+  const Lm = 218.316 + 13.176396 * d                     // Moon mean longitude
+  const Mm = 134.963 + 13.064993 * d                     // Moon mean anomaly
+  const F = 93.272 + 13.229350 * d                       // argument of latitude
+  const D = 297.850 + 12.190749 * d                      // mean elongation from the Sun
+  const moonLon = norm360(
+    Lm + 6.289 * sinDeg(Mm) + 1.274 * sinDeg(2 * D - Mm) + 0.658 * sinDeg(2 * D)
+    + 0.214 * sinDeg(2 * Mm) - 0.186 * sinDeg(Ms) - 0.114 * sinDeg(2 * F)
+  )
+  const moonLat = 5.128 * sinDeg(F)
+
+  return { sunLon, moonLon, moonLat }
+}
+
+export interface MoonPhase {
+  /** Illuminated fraction of the disc, 0 (new) to 1 (full). */
+  illumination: number
+  /** Position in the cycle: 0 new, 0.25 first quarter, 0.5 full, 0.75 last quarter. */
+  age: number
+  /** True while the lit limb is growing (age < 0.5). */
+  waxing: boolean
+  /** Human label, e.g. "Waxing gibbous". */
+  name: string
+  /** Whole days until the next new moon — the useful number for planning. */
+  daysToNewMoon: number
+}
+
+// Named windows around the four principal phases. ±0.02 of a cycle is ±~14h,
+// so "Full moon" shows for roughly the night either side of the exact instant.
+function phaseName(age: number): string {
+  if (age < 0.02 || age >= 0.98) return 'New moon'
+  if (age < 0.23) return 'Waxing crescent'
+  if (age < 0.27) return 'First quarter'
+  if (age < 0.48) return 'Waxing gibbous'
+  if (age < 0.52) return 'Full moon'
+  if (age < 0.73) return 'Waning gibbous'
+  if (age < 0.77) return 'Last quarter'
+  return 'Waning crescent'
+}
+
+/** Moon phase at `date` (default: now), computed locally. */
+export function moonPhase(date: Date = new Date()): MoonPhase {
+  const d = daysSinceJ2000(date)
+  const { sunLon, moonLon, moonLat } = sunMoonPositions(d)
+
+  // Elongation of the Moon east of the Sun: 0° at new, 180° at full.
+  const elongation = norm360(moonLon - sunLon)
+  // True angular separation, then the standard illuminated-fraction relation.
+  const cosPsi = Math.cos(moonLat * RAD) * Math.cos(elongation * RAD)
+  const illumination = (1 - cosPsi) / 2
+  const age = elongation / 360
+
+  // First guess from the mean rate, then Newton-style corrections against the
+  // real elongation; three passes settle to within minutes.
+  let t = d + ((360 - elongation) % 360) / 360 * SYNODIC_DAYS
+  for (let i = 0; i < 3; i++) {
+    const p = sunMoonPositions(t)
+    const e = norm360(p.moonLon - p.sunLon)
+    const signed = e > 180 ? e - 360 : e // degrees past new, negative if before
+    t -= (signed / 360) * SYNODIC_DAYS
+  }
+
+  return {
+    illumination,
+    age,
+    waxing: elongation < 180,
+    name: phaseName(age),
+    daysToNewMoon: Math.max(0, Math.round(t - d)),
+  }
+}

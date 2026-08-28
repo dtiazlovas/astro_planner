@@ -282,7 +282,22 @@ export const connectToDatabase = (): Database.Database => {
     seedIfAbsent(dbPath)
     console.log(`SQLite: ${dbPath}`)
     db = new Database(dbPath)
-    db.pragma('journal_mode = WAL')
+    // Rollback journal rather than WAL. One writer, a few dozen rows a session:
+    // WAL's concurrent readers buy nothing here, while its -shm shared-memory
+    // file costs — it is what keeps the database off a Windows bind mount, and
+    // it is a second sidecar to account for every time the file is copied or
+    // replaced. DELETE removes the journal at the end of each transaction, so
+    // at rest the database is exactly one file.
+    //
+    // Set explicitly even though it is SQLite's own default: the mode is
+    // persistent in the file header, so an existing WAL database converts only
+    // because this line runs, and converting is the point.
+    //
+    // The trade: a reader in another process — the backup container's VACUUM
+    // INTO — and a write here can now block each other, where WAL let them
+    // overlap. better-sqlite3 gives every connection a 5s busy timeout, which
+    // is ample for a megabyte.
+    db.pragma('journal_mode = DELETE')
     db.pragma('foreign_keys = ON')
     initSchema(db)
   }
