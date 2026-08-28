@@ -62,13 +62,14 @@ body {
   min-width: 0;
 }
 
+/* The nav below it carries the divider between the two, so this band is left
+   to its own darker fill. */
 .totals-bar {
   display: flex;
   align-items: center;
   gap: 1rem;
   padding: 0.4rem 2rem;
   background: #07070f;
-  border-bottom: 1px solid #17172b;
   flex-wrap: wrap;
 }
 
@@ -184,10 +185,18 @@ body {
   white-space: nowrap;
 }
 
+/* Ordered after the totals strip, which follows it in the DOM: as a top bar
+   the tabs want to sit directly above the content they switch, leaving the
+   strip with the header block whose Σ it breaks down. `order` rather than a
+   DOM swap so the nav still comes first for a screen reader; nothing in the
+   strip takes focus, so there is no focus order to desynchronise. The rail
+   puts it back. */
 .app-nav {
   display: flex;
+  order: 1;
   gap: 0.25rem;
-  padding: 0 1rem 0.6rem;
+  padding: 0.45rem 1rem 0.6rem;
+  border-top: 1px solid #17172b;
 }
 
 /* The page names carry the whole navigation, so they sit a step above the
@@ -343,10 +352,13 @@ body {
 
   .rig-selector__select { flex: 1; }
 
+  /* Back above the totals, which return to the foot of the rail. */
   .app-nav {
     flex-direction: column;
+    order: 0;
     gap: 0.15rem;
     padding: 0;
+    border-top: none;
   }
 
   /* In the rail each link is a full-width row, so it can afford the size and
@@ -370,7 +382,6 @@ body {
     margin-top: auto;
     padding: 0.9rem 0 0;
     background: none;
-    border-bottom: none;
     border-top: 1px solid #1e1e35;
   }
 
@@ -2754,7 +2765,7 @@ body {
 /* Small laptops / tablets — no rail yet, just trim the gutters. */
 @media (max-width: 899px) {
   .app-side__brand { padding: 0.7rem 1.25rem; gap: 0.5rem 1.25rem; }
-  .app-nav    { padding: 0 1.25rem 0.6rem; }
+  .app-nav    { padding: 0.45rem 1.25rem 0.6rem; }
   .totals-bar { padding: 0.4rem 1.25rem; }
   .app-main   { padding: 1.5rem 1.25rem; }
 }
@@ -2774,9 +2785,13 @@ body {
   /* Five tabs have to share one phone-width row, so they give up the space
      between them and their own padding — both tied to the viewport — before
      the type starts shrinking. The sideways scroll stays as the last resort
-     for a screen narrower than any of that can absorb. */
+     for a screen narrower than any of that can absorb.
+
+     The rule the base sets above them is what stops the tabs reading as a
+     stray line of text: with the same background running through the whole
+     stack, they had no band of their own. */
   .app-nav {
-    padding: 0 0.85rem 0.6rem;
+    padding: 0.45rem 0.85rem 0.5rem;
     gap: clamp(1px, 0.6vw, 0.25rem);
     overflow-x: auto;
     scrollbar-width: none;
@@ -2792,7 +2807,26 @@ body {
     white-space: nowrap;
     text-align: center;
     padding: 0.4rem clamp(0.15rem, 1.2vw, 0.7rem);
-    font-size: clamp(0.7rem, 3vw, 0.95rem);
+    /* Bigger than the rail's, and lighter to pay for it: at this size a 600
+       would thicken the row into a solid bar of type. The floor is what all
+       five labels still fit a 360px row at — past that the scroll takes over. */
+    font-size: clamp(0.82rem, 3.2vw, 1.05rem);
+    font-weight: 500;
+    /* Brighter than the rail's resting grey — these sit on their own line with
+       nothing else to lend them contrast. */
+    color: #cbd5e1;
+  }
+
+  /* Carries the accent bar too, along the bottom edge here rather than the
+     leading one the rail uses. With every label brightened, the fill alone was
+     doing too much of the work of saying which tab you are on. */
+  .nav-link--active {
+    color: #f5f3ff;
+    background: #2a2352;
+    box-shadow: inset 0 -2px 0 #a78bfa;
+    /* One step up from its neighbours rather than the rail's two: the fill and
+       the accent bar are already saying this louder than weight could. */
+    font-weight: 600;
   }
 
   /* Clipped rather than `display: none` — the wrapping <label> is what names
@@ -2836,6 +2870,16 @@ body {
     overflow-x: auto;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
+    /* Scrolling is only ever wanted sideways, but a scroll container clips on
+       both axes — `overflow-x: auto` forces `overflow-y` to `auto` — and the
+       clip lands on the padding edge. The badges' outlines are painted outside
+       their border box, so they get shaved: top and bottom on every badge, and
+       on the left of the first one, which sits flush against that edge.
+       Padding moves the clip clear on both axes; the matching negative margins
+       hand the space back, so the strip keeps its height and the row still
+       starts on the bar's gutter. */
+    padding: 4px 3px;
+    margin: -4px -3px;
   }
 
   .totals-bar__items::-webkit-scrollbar { display: none; }
@@ -2854,14 +2898,26 @@ body {
   /* The colour dot alone identifies the filter here, and dropping the names
      fits the whole strip on one row. A filter with no known colour renders no
      dot, so :has() leaves those showing their name. */
+  /* Even box, even dot, so the dot is inset an exact 4px on every side. The
+     0.2rem padding this replaces was a 3.2px inset around a 9px dot, which
+     left the two circles on different subpixel phases: each rounded to the
+     device pixel grid on its own, and since the row's viewport-tied gaps put
+     every badge at a different fractional offset, the inner circle appeared
+     to wander around the outer one as the window width changed. Sizes are in
+     px rather than rem for the same reason — a root font-size that isn't a
+     multiple of 5 would put the fractions straight back. */
   .totals-bar .type-badge:has(.filter-badge-dot) {
     position: relative;
-    padding: 0.2rem;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
   }
 
   .totals-bar .type-badge:has(.filter-badge-dot) .filter-badge-dot {
-    width: 9px;
-    height: 9px;
+    width: 8px;
+    height: 8px;
     margin-right: 0;
   }
 
@@ -3218,7 +3274,7 @@ body {
 @media (max-width: 400px) {
   .app-main { padding: 0.85rem 0.6rem; }
   .app-side__brand { padding: 0.55rem 0.6rem; }
-  .app-nav { padding: 0 0.6rem 0.5rem; }
+  .app-nav { padding: 0.4rem 0.6rem 0.5rem; }
   .totals-bar { padding: 0.4rem 0.6rem; }
   .app-side__brand h1 { font-size: 0.95rem; }
   .app-side__rig { gap: 0.45rem; }
