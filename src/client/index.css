@@ -97,6 +97,10 @@ body {
   font-size: 0.82rem;
   font-weight: 600;
   color: #cbd5e1;
+  white-space: nowrap;
+  /* Equal-width digits: the times line up down the rail column, and no filter
+     is wider than another for having a 1 in it. */
+  font-variant-numeric: tabular-nums;
 }
 
 .totals-bar__grand {
@@ -107,8 +111,34 @@ body {
   white-space: nowrap;
 }
 
-/* Current moon phase, kept with the totals: the tail of the strip on a narrow
-   screen, the last row of the rail column on a wide one. */
+/* As a top bar the strip is left to the per-filter breakdown alone: the grand
+   total and the moon ride up beside the rig selector, and the rail block below
+   puts them back. */
+.totals-bar__grand,
+.totals-bar .moon-phase { display: none; }
+
+/* With nothing logged the bar is down to that hidden pair, so there is no
+   band worth drawing. */
+.totals-bar--empty { display: none; }
+
+/* The pair in its narrow-layout home. The wrapper around this and the rig
+   selector is what pins them to the right of the header row. */
+.totals-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.totals-summary__grand {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #a78bfa;
+  white-space: nowrap;
+}
+
+/* Current moon phase: beside the rig on a narrow screen, the last row of the
+   rail column on a wide one. */
 .moon-phase {
   display: inline-flex;
   align-items: center;
@@ -140,7 +170,8 @@ body {
 .app-side__brand {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
   padding: 0.7rem 1rem;
 }
 
@@ -185,8 +216,17 @@ body {
   font-weight: 700;
 }
 
-.rig-selector {
+/* Holds the totals summary and the rig selector together so a wrapping header
+   row can't strand one without the other. */
+.app-side__rig {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
   margin-left: auto;
+  min-width: 0;
+}
+
+.rig-selector {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -290,10 +330,16 @@ body {
     white-space: normal;
   }
 
-  .rig-selector {
+  /* Unwrapped back into the column: the summary is hidden here, so this is
+     just the rig selector on its own full-width row. */
+  .app-side__rig {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
     margin-left: 0;
-    gap: 0.4rem;
   }
+
+  .rig-selector { gap: 0.4rem; }
 
   .rig-selector__select { flex: 1; }
 
@@ -314,8 +360,9 @@ body {
 
   .nav-link--active { box-shadow: inset 2px 0 0 #a78bfa; }
 
-  /* Totals become a labelled column: there's vertical room here, so each
-     filter gets its own row with the name spelled out. */
+  /* Totals become a labelled column at the foot of the rail: there's vertical
+     room here, so each filter gets its own row with the name spelled out, and
+     the grand total and moon come back off the header. */
   .totals-bar {
     flex-direction: column;
     align-items: stretch;
@@ -326,6 +373,13 @@ body {
     border-bottom: none;
     border-top: 1px solid #1e1e35;
   }
+
+  .totals-bar--empty { display: flex; }
+  .totals-bar__grand { display: block; }
+  .totals-summary { display: none; }
+
+  /* Nothing above it to divide off when the moon is all the bar holds. */
+  .totals-bar--empty .moon-phase { padding-top: 0; border-top: none; }
 
   .totals-bar__items {
     flex-direction: column;
@@ -344,7 +398,7 @@ body {
 
   /* Its own row under the totals, laid out like a filter row: glyph and name
      left, illumination right. */
-  .moon-phase {
+  .totals-bar .moon-phase {
     display: flex;
     justify-content: space-between;
     padding-top: 0.45rem;
@@ -2699,7 +2753,7 @@ body {
 
 /* Small laptops / tablets — no rail yet, just trim the gutters. */
 @media (max-width: 899px) {
-  .app-side__brand { padding: 0.7rem 1.25rem; gap: 1.25rem; }
+  .app-side__brand { padding: 0.7rem 1.25rem; gap: 0.5rem 1.25rem; }
   .app-nav    { padding: 0 1.25rem 0.6rem; }
   .totals-bar { padding: 0.4rem 1.25rem; }
   .app-main   { padding: 1.5rem 1.25rem; }
@@ -2754,8 +2808,48 @@ body {
     white-space: nowrap;
   }
 
-  .totals-bar { padding: 0.4rem 0.85rem; gap: 0.5rem 0.75rem; }
-  .totals-bar__items { gap: 0.6rem; }
+  /* Positioned so the clipped label below has something to anchor to and can't
+     add scroll width to the page. */
+  .totals-bar { position: relative; padding: 0.4rem 0.85rem; gap: 0.5rem 0.75rem; }
+
+  /* The word costs ~60px of a phone row — a filter and a half — and the dots
+     plus the Σ in the header already say what the row is. Clipped, not
+     removed, so it still reads correctly to a screen reader. */
+  .totals-bar__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  /* Same bargain as the nav above: the row gives up the space between items,
+     tied to the viewport, before anything else, and scrolls sideways as the
+     last resort. Wrapping is off entirely, so a filter crossing from two- to
+     three-digit hours can no longer drop one of its neighbours onto a second
+     line — the row just gets marginally tighter. */
+  .totals-bar__items {
+    flex: 1;
+    min-width: 0;
+    flex-wrap: nowrap;
+    gap: clamp(0.3rem, 2vw, 0.6rem);
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .totals-bar__items::-webkit-scrollbar { display: none; }
+
+  /* Held at their natural width: with nowrap in force the default shrink would
+     squeeze the times instead of scrolling them. */
+  .totals-bar__item {
+    flex: none;
+    gap: clamp(0.15rem, 1vw, 0.35rem);
+  }
+
+  /* Sharing the header row with the title and the rig selector. */
+  .app-side__rig { gap: 0.6rem; }
+  .totals-summary { gap: 0.6rem; }
 
   /* The colour dot alone identifies the filter here, and dropping the names
      fits the whole strip on one row. A filter with no known colour renders no
@@ -3127,6 +3221,8 @@ body {
   .app-nav { padding: 0 0.6rem 0.5rem; }
   .totals-bar { padding: 0.4rem 0.6rem; }
   .app-side__brand h1 { font-size: 0.95rem; }
+  .app-side__rig { gap: 0.45rem; }
+  .totals-summary { gap: 0.45rem; }
   /* No fixed nav sizes here — the viewport-tied padding and type above already
      shrink past what these would have pinned them to. */
   .cal-cell { min-height: 50px; padding: 0.2rem 0.25rem; }

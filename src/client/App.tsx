@@ -4,7 +4,7 @@ import SessionsPage from './pages/SessionsPage'
 import CalendarPage from './pages/CalendarPage'
 import EquipmentPage from './pages/EquipmentPage'
 import SettingsPage from './pages/SettingsPage'
-import TotalsBar from './components/TotalsBar'
+import TotalsBar, { TotalsSummary } from './components/TotalsBar'
 import { useEquipment } from './context/EquipmentContext'
 import './index.css'
 
@@ -33,11 +33,17 @@ export default function App() {
   return (
     <div className="app">
       {/* Brand, nav and totals live together so they can be a left rail on a
-          wide screen and stack back into a top bar on a narrow one. */}
+          wide screen and stack back into a top bar on a narrow one. The rail
+          has room for the full totals at its foot; the top bar doesn't, so
+          there the headline numbers ride up beside the rig selector instead
+          and only the per-filter breakdown stays in the bar. */}
       <aside className="app-side">
         <div className="app-side__brand">
-          <h1>Astro Session Logger</h1>
-          <RigSelector />
+          <h1>Astro Planner</h1>
+          <div className="app-side__rig">
+            <TotalsSummary refreshKey={page} />
+            <RigSelector />
+          </div>
         </div>
         <nav className="app-nav">
           {(['objects', 'sessions', 'calendar', 'equipment', 'settings'] as Page[]).map(p => (
