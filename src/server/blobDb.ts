@@ -34,14 +34,6 @@ let knownEtag: string | null = null
 
 export const remoteEtag = (): string | null => knownEtag
 
-// Enough state to answer "is this actually working?" from outside the process,
-// which on a serverless host is the only way to ask. See /api/health.
-let lastUploadAt: string | null = null
-let lastError: string | null = null
-
-export const blobActivity = (): { lastUploadAt: string | null; lastError: string | null } =>
-  ({ lastUploadAt, lastError })
-
 // SQLite keeps recovery state in sidecar files next to the database. They belong
 // to the file they were created from, so leaving them beside a freshly
 // downloaded one would replay an unrelated log over it — corruption, not a
@@ -119,17 +111,6 @@ export const downloadDbToFile = async (target: string): Promise<boolean> => {
  * recovered by hand.
  */
 export const uploadDbFromFile = async (file: string): Promise<void> => {
-  try {
-    await writeToBlob(file)
-    lastUploadAt = new Date().toISOString()
-    lastError = null
-  } catch (error) {
-    lastError = `${new Date().toISOString()} ${error instanceof Error ? error.message : String(error)}`
-    throw error
-  }
-}
-
-const writeToBlob = async (file: string): Promise<void> => {
   const { put, copy, BlobPreconditionFailedError } = await sdk()
   const body = fs.readFileSync(file)
   const options = {

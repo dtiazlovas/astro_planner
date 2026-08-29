@@ -109,10 +109,6 @@ into `/import`. The mount must be writable, not `:ro` — SQLite needs to be abl
 to create a journal file beside the database even to read it, and read-only
 fails with `SQLITE_CANTOPEN`.
 
-Note the app's own `data/seed.db` fallback never fires under Docker: the volume
-is mounted over `/app/data`, which hides the repo's copy. Seed explicitly with
-the same command.
-
 ### Your image files
 
 The server never touches them. Picking folders, reading FITS, measuring frame
@@ -146,6 +142,38 @@ shipping `dist/` plus `node_modules/better-sqlite3` and, if a blob store is
 configured, `node_modules/@vercel/blob` — the dependencies left outside the
 server bundle.
 
+## Access control
+
+Set `API_SECRET` and every request needs HTTP Basic credentials — username
+`astro` (override with `API_USER`) and the secret as the password. Leave it
+unset and the app is open, which is the right answer for local dev and a box on
+the home LAN, and the wrong one for anything reachable from the internet: with
+no secret set, whoever finds the URL can read and overwrite the whole database.
+
+```
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+The check runs before the body parser and before the blob revalidation, so an
+unauthenticated request cannot make the process download the database or parse a
+body it was never allowed to send. On a serverless host both are billable.
+
+**Self-hosted**, `dist/server.js` serves the client too, so the credential covers
+the page itself and the browser asks on the first load, then sends it on
+everything after.
+
+**On Vercel** the CDN serves the client and only `/api/*` reaches the function,
+so the page loads before anything is authenticated and the prompt arrives on the
+first API call instead. If a browser declines to prompt on a background request,
+open `/api/objects` in the address bar once — a top-level navigation always
+raises the dialog, and the credentials are reused for the rest of the origin
+from then on.
+
+Basic credentials travel base64-encoded, not encrypted. Over HTTPS — which is
+every Vercel deployment — that is fine. Over plain HTTP on a LAN they are
+readable by anything on the wire, so treat that case as keeping honest devices
+out rather than as real protection.
+
 ## Deploying
 
 **Any Node host** runs `dist/server.js`, which serves the API and the client on
@@ -171,14 +199,9 @@ config `vercel.json` and the function `api/index.ts`, which is a re-export of
 Vercel gives a function no persistent disk — only `/tmp`, which is per-instance
 and wiped on every cold start. Vercel Blob covers that gap; see below.
 
-Refresh the seed the Vercel build ships with:
-
-```
-npm run db:snapshot -- data/seed.db
-```
-
-(Same `VACUUM INTO` the `sqlite3` CLI would do, without needing the CLI
-installed. In Docker, prefix with `docker compose run --rm app`.)
+Nothing under `data/` ships with the deployment. A fresh store is populated by
+pushing a database to it (`npm run db:push`), never by a file committed to the
+repo — the database is personal data and this repository is public.
 
 ## Vercel Blob storage
 
@@ -199,9 +222,9 @@ Setting it up:
    the function's environment. Creating a store is not enough on its own.
 2. Deploy. The server reads the database at `BLOB_DB_KEY`, which defaults to
    `astro_planner.db` — where it already sits in the `astro-planner-db` store.
-   If that key holds nothing, the first boot uploads whatever it opened instead
-   (on Vercel, the committed `data/seed.db`), so an empty store is populated
-   without a separate migration step.
+   If that key holds nothing, the first boot uploads whatever it opened — on
+   Vercel that is an empty schema, so push a real database with `npm run db:push`
+   to populate a new store.
 
 The key has to match the pathname exactly. A file put in the store by hand —
 the dashboard, or `vercel blob put` — keeps whatever name it was given, and can
@@ -211,29 +234,20 @@ different pathname is invisible to the server.
 
 ### Is it actually using the blob?
 
-`GET /api/health` answers this without going near the log viewer:
+The cold-start log answers this. There was an HTTP endpoint that reported the
+same thing, but it stated the blob key and the local database path to anyone who
+asked, unauthenticated, on a public deployment — not worth the convenience.
 
-```json
-{ "status": "ok",
-  "database": {
-    "instance": "j3ljce", "bootedAt": "…", "path": "/tmp/astro_planner.db",
-    "blob": { "enabled": true, "key": "astro_planner.db",
-              "restoredAtBoot": true, "pendingSnapshot": false,
-              "remoteVersion": "…", "lastUploadAt": "…", "lastError": null } } }
-```
-
-- `enabled: false` — the token is not in this environment. The store exists but
-  was never *connected to the project*. Every write is going to `/tmp` and dies
-  with the instance. This is the usual cause of "my changes disappeared".
-- `restoredAtBoot: false` — the token works, but nothing was found at `key`.
-  The instance has just uploaded its own copy there; if you expected existing
-  data, the key is wrong (`npm run db:list`).
-- `lastError` — the last upload that failed, with its message.
-- **`instance` changing across repeated calls** — more than one instance is
-  serving, and each has its own copy of the database. See below.
-
-The same picture is in the cold-start log: `Restored database from Vercel Blob`,
-or `No database in Vercel Blob yet`.
+- `Restored database from Vercel Blob` — the token works and there was existing
+  data at `BLOB_DB_KEY`. This is the healthy case.
+- `No database in Vercel Blob yet — uploading the local one` — the token works,
+  but that key held nothing. If you expected existing data, the key is wrong
+  (`npm run db:list` prints the pathnames the store actually holds).
+- Neither line, only `SQLite: /tmp/astro_planner.db` — the token is not in this
+  environment. The store exists but was never *connected to the project*. Every
+  write is going to `/tmp` and dies with the instance. This is the usual cause
+  of "my changes disappeared".
+- `Blob DB: snapshot failed` — an upload failed, with its message.
 
 ### Several instances
 
@@ -281,8 +295,8 @@ Moving the file by hand — needs `BLOB_READ_WRITE_TOKEN` in `.env`, or
 ```
 npm run db:list              # every blob in the store, with its pathname
 npm run db:info              # what the store holds at BLOB_DB_KEY
-npm run db:push              # local SQLITE_PATH → blob (seed it, or overwrite)
-npm run db:push -- data/seed.db
+npm run db:push              # local SQLITE_PATH → blob (populate it, or overwrite)
+npm run db:push -- backups/astro_planner-2026-08-27T03-00-00-004.db
 npm run db:pull              # blob → local SQLITE_PATH (inspect production)
 npm run db:pull -- /tmp/prod.db
 npm run db:upload            # newest ./backups snapshot → blob (see below)

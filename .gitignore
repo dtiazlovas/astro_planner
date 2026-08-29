@@ -9,13 +9,11 @@ dist/
 # keeps a token from being published the moment one is set.
 .env
 
-# SQLite database — the live file and its WAL sidecars stay local.
-# `data/*` rather than `data/`: git cannot re-include a file whose parent
-# directory is excluded, so the negation below would never apply.
-data/*
-# …except the seed snapshot, which is committed so a fresh host starts with
-# data. Refresh it with: sqlite3 data/astro_planner.db "VACUUM INTO 'data/seed.db'"
-!data/seed.db
+# SQLite database — the live file and its WAL sidecars stay local. Nothing in
+# here is committed: a fresh host builds its schema on first boot, and an
+# existing database reaches a deployment through `npm run db:push`, never
+# through the repo.
+data/
 
 # Leftover from the pre-refactor layout, when the server ran out of src/. The
 # rule above does not cover it — `data/*` is anchored at the repo root and does

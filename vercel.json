@@ -4,12 +4,12 @@
   "buildCommand": "npm run vercel",
   "outputDirectory": "dist/public",
   "env": {
-    "SQLITE_PATH": "/tmp/astro_planner.db"
+    "SQLITE_PATH": "/tmp/astro_planner.db",
+    "API_SECRET": "@otc0rhuaibFz1TuNEOmbB2YzBqfytHMUWr2Y56UarIo"
   },
   "functions": {
     "api/index.ts": {
-      "maxDuration": 30,
-      "includeFiles": "data/seed.db"
+      "maxDuration": 30
     }
   },
   "rewrites": [

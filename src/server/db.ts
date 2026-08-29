@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { blobActivity, blobKey, downloadDbToFile, isBlobEnabled, remoteEtag, remoteVersion, uploadDbFromFile } from './blobDb.js'
+import { downloadDbToFile, isBlobEnabled, remoteEtag, remoteVersion, uploadDbFromFile } from './blobDb.js'
 
 let db: Database.Database | null = null
 
@@ -16,23 +16,9 @@ const appRoot = (): string => {
   return process.env.NODE_ENV === 'development' ? path.join(here, '..', '..') : path.join(here, '..')
 }
 
-// Optional starting point for a database that doesn't exist yet: a checked-in
-// data/seed.db is copied into place on first boot. That's how data reaches a
-// host whose only writable storage is a fresh mounted disk. It is strictly a
-// seed — once the real file exists it is never touched again, so a redeploy
-// can't roll live data back to whatever the repo happened to hold.
-const seedIfAbsent = (target: string): void => {
-  if (fs.existsSync(target)) return
-  const seed = [path.resolve(process.cwd(), 'data', 'seed.db'), path.resolve(appRoot(), 'data', 'seed.db')]
-    .find(candidate => fs.existsSync(candidate))
-  if (!seed) return
-  fs.copyFileSync(seed, target)
-  console.log(`Seeded database from ${seed}`)
-}
-
 // Where the file lives, with its directory guaranteed to exist. Deliberately
 // free of side effects on the file itself, so the blob restore can drop a
-// database in before anything decides the file is missing and seeds one.
+// database in before anything decides the file is missing.
 export const dbFilePath = (): string => {
   const configured = process.env.SQLITE_PATH?.trim() || './data/astro_planner.db'
   const full = path.isAbsolute(configured) ? configured : path.resolve(appRoot(), configured)
@@ -279,7 +265,6 @@ function initSchema(database: Database.Database): void {
 export const connectToDatabase = (): Database.Database => {
   if (!db) {
     const dbPath = dbFilePath()
-    seedIfAbsent(dbPath)
     console.log(`SQLite: ${dbPath}`)
     db = new Database(dbPath)
     // Rollback journal rather than WAL. One writer, a few dozen rows a session:
@@ -318,15 +303,14 @@ export const initDatabase = async (): Promise<Database.Database> => {
 
   const dbPath = dbFilePath()
   const restored = await downloadDbToFile(dbPath)
-  restoredAtBoot = restored
   const database = connectToDatabase()
 
   if (restored) {
     console.log('Restored database from Vercel Blob')
   } else {
-    // Nothing stored yet. Whatever we just opened — a restored-from-seed copy on
-    // a fresh host, or a real local database — becomes the stored one, which is
-    // how data first gets into the store without a separate migration step.
+    // Nothing stored yet. Whatever we just opened — an empty schema on a fresh
+    // host, or a real local database — becomes the stored one. To populate a new
+    // store from an existing database instead, push it first: `npm run db:push`.
     console.log('No database in Vercel Blob yet — uploading the local one')
     markDatabaseDirty()
     await flushDatabaseToBlob()
@@ -340,39 +324,6 @@ export const initDatabase = async (): Promise<Database.Database> => {
 // each upload ships the entire file.
 let dirty = false
 let pending: Promise<void> = Promise.resolve()
-let restoredAtBoot: boolean | null = null
-
-// On a serverless host the process logs are the only window into what happened,
-// and each instance has its own. This is the same picture over HTTP, so
-// /api/health can answer "is the blob actually being used, and by which
-// instance" without digging through Vercel's log viewer. Hitting it repeatedly
-// and seeing the instance change is itself the finding: more than one instance
-// is serving, and they hold independent copies of the database.
-const INSTANCE = `${Math.random().toString(36).slice(2, 8)}`
-const BOOTED_AT = new Date().toISOString()
-
-export const databaseStatus = (): Record<string, unknown> => ({
-  instance: INSTANCE,
-  bootedAt: BOOTED_AT,
-  path: dbFilePath(),
-  blob: isBlobEnabled()
-    ? {
-        enabled: true,
-        key: blobKey(),
-        // null means initDatabase() has not run — the entrypoint never awaited it.
-        restoredAtBoot,
-        pendingSnapshot: dirty,
-        remoteVersion: remoteEtag(),
-        ...blobActivity(),
-      }
-    : {
-        enabled: false,
-        // The single most common deployment mistake: the store exists but was
-        // never connected to the project, so the token never reaches the code
-        // and every write dies with the instance.
-        reason: 'BLOB_READ_WRITE_TOKEN is not set in this environment',
-      },
-})
 
 export const markDatabaseDirty = (): void => { dirty = true }
 

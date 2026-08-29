@@ -1,14 +1,28 @@
 import { connectToDatabase } from '../db.js'
 
+// Every name in the IN list is bound as its own parameter, and one statement can
+// hold only SQLITE_MAX_VARIABLE_NUMBER of them — so a long enough list does not
+// return a wrong answer, it fails the statement outright. Chunking keeps the
+// statement a fixed size no matter how many names the caller sends. The other
+// functions here bind one row at a time inside a transaction and are already
+// bounded; this is the only query whose shape grows with its input.
+const CHECK_CHUNK = 500
+
 // Culled records are deliberately not "imported": their sub was rejected and
 // deleted, so offering the same file again is the right answer if it turns up
 // in a capture folder a second time.
 export const checkImported = async (names: string[]): Promise<string[]> => {
   if (!names.length) return []
   const db = connectToDatabase()
-  const placeholders = names.map((_, i) => `@n${i}`).join(', ')
-  const params = Object.fromEntries(names.map((n, i) => [`n${i}`, n]))
-  return (db.prepare(`SELECT filename FROM ap_imported WHERE filename IN (${placeholders}) AND culled = 0`).all(params) as { filename: string }[]).map(r => r.filename)
+  const found: string[] = []
+  for (let offset = 0; offset < names.length; offset += CHECK_CHUNK) {
+    const chunk = names.slice(offset, offset + CHECK_CHUNK)
+    const placeholders = chunk.map((_, i) => `@n${i}`).join(', ')
+    const params = Object.fromEntries(chunk.map((n, i) => [`n${i}`, n]))
+    const rows = db.prepare(`SELECT filename FROM ap_imported WHERE filename IN (${placeholders}) AND culled = 0`).all(params) as { filename: string }[]
+    for (const row of rows) found.push(row.filename)
+  }
+  return found
 }
 
 // `objectSessionId` ties each file to the session entry it was imported under,

@@ -1,7 +1,7 @@
+import crypto from 'node:crypto'
 import express from 'express'
 import { isBlobEnabled } from './blobDb.js'
 import { flushDatabaseToBlob, markDatabaseDirty, refreshDatabaseFromBlob } from './db.js'
-import healthRouter from './routes/health.js'
 import apObjectTypesRouter from './routes/apObjectTypes.js'
 import apObjectsRouter from './routes/apObjects.js'
 import apSessionsRouter from './routes/apSessions.js'
@@ -38,6 +38,35 @@ import apPsfswAnchorsRouter from './routes/apPsfswAnchors.js'
 // that is the right trade for the guarantee.
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
+// One shared credential rather than accounts: one person uses this app, and the
+// thing being protected is a single database. HTTP Basic because the browser
+// owns the prompt and then sends the header on every subsequent same-origin
+// request by itself — no client code, and nothing for the SPA to store.
+//
+// Unset means unset. A box on the home LAN with no API_SECRET behaves exactly as
+// it always has, so nothing has to change to keep running this at home; setting
+// the variable is what turns the check on, which is what a public deployment
+// wants.
+const API_SECRET = process.env.API_SECRET?.trim()
+const API_USER = process.env.API_USER?.trim() || 'astro'
+const expectedHeader = API_SECRET
+  ? `Basic ${Buffer.from(`${API_USER}:${API_SECRET}`).toString('base64')}`
+  : null
+
+const requireAuth: express.RequestHandler = (req, res, next) => {
+  if (!expectedHeader) return next()
+
+  const given = Buffer.from(req.get('authorization') ?? '')
+  const want = Buffer.from(expectedHeader)
+  // timingSafeEqual throws unless both sides are the same length, so length is
+  // compared first and short-circuits. That leaks how long the credential is
+  // and nothing about its contents; the comparison itself stays constant-time.
+  if (given.length === want.length && crypto.timingSafeEqual(given, want)) return next()
+
+  res.set('WWW-Authenticate', 'Basic realm="astro-planner", charset="UTF-8"')
+  res.status(401).json({ error: 'Unauthorized' })
+}
+
 // The other half of sharing a store between instances. Snapshotting on the way
 // out is pointless if this instance is working from a copy another one has
 // already superseded — the write would branch off the stale version and upload
@@ -70,7 +99,7 @@ const snapshotBeforeResponding: express.RequestHandler = (req, res, next) => {
     flushDatabaseToBlob()
       // The response still goes out on failure: the change is in the local
       // database and the dirty flag is re-armed, so the next write retries.
-      // /api/health reports it as blob.lastError.
+      // The failure is only visible in the process log.
       .catch(error => { console.error('Blob DB: snapshot failed', error) })
       .then(() => { sendResponse(...args) })
     return res
@@ -85,11 +114,21 @@ export const createApiApp = (): express.Express => {
   // No CORS: in every deployment the client is served from the same origin as
   // this router — our own process when it serves dist/public, Vercel's CDN in
   // front of the same domain there.
+  //
+  // Auth goes first, ahead of the body parser and of anything that reaches for
+  // the blob store. An unauthenticated request must not be able to make this
+  // process download the database or parse a body it is not allowed to send —
+  // on a serverless host both are real cost, not just wasted work.
+  //
+  // Mounted pathless rather than under /api, so when this process also serves
+  // the client (index.ts) the document itself is behind the same credential.
+  // That is what makes the browser ask on the first page load instead of on a
+  // background fetch.
+  app.use(requireAuth)
   app.use(express.json())
   app.use(revalidateBeforeHandling)
   app.use(snapshotBeforeResponding)
 
-  app.use('/api/health', healthRouter)
   app.use('/api/object-types', apObjectTypesRouter)
   app.use('/api/objects', apObjectsRouter)
   app.use('/api/sessions', apSessionsRouter)
