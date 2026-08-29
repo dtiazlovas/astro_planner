@@ -4,6 +4,11 @@ node_modules/
 # Build output
 dist/
 
+# Local environment. The file is documented in .env.example as the home for
+# BLOB_READ_WRITE_TOKEN, and this repo is public — an untracked .env is what
+# keeps a token from being published the moment one is set.
+.env
+
 # SQLite database — the live file and its WAL sidecars stay local.
 # `data/*` rather than `data/`: git cannot re-include a file whose parent
 # directory is excluded, so the negation below would never apply.
@@ -11,6 +16,11 @@ data/*
 # …except the seed snapshot, which is committed so a fresh host starts with
 # data. Refresh it with: sqlite3 data/astro_planner.db "VACUUM INTO 'data/seed.db'"
 !data/seed.db
+
+# Leftover from the pre-refactor layout, when the server ran out of src/. The
+# rule above does not cover it — `data/*` is anchored at the repo root and does
+# not match `src/data/`. Nothing reads from here any more.
+src/data/
 
 # Database snapshots written by `npm run db:snapshot`.
 backups/
