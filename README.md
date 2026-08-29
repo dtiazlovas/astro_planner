@@ -154,6 +154,14 @@ no secret set, whoever finds the URL can read and overwrite the whole database.
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
 
+Set it wherever that host keeps environment variables — `.env` locally (which is
+gitignored), the dashboard's **Environment Variables** on Vercel. Not in
+`vercel.json`: that file is committed, so a value written there is published, and
+the `@name` syntax in it means something else entirely (a lookup of a legacy
+`vercel secrets add` entry, which is why a pasted value there fails to deploy).
+Variables set in the dashboard reach the function through `process.env` on their
+own and need no declaration in the config.
+
 The check runs before the body parser and before the blob revalidation, so an
 unauthenticated request cannot make the process download the database or parse a
 body it was never allowed to send. On a serverless host both are billable.
