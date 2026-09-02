@@ -33,6 +33,18 @@ export const defaultBackupDir = () =>
 export const snapshotName = (at = new Date()) =>
   `astro_planner-${at.toISOString().replace(/[:.]/g, '-').replace('Z', '')}.db`
 
+/**
+ * The name every snapshot taken on one UTC day shares, so writing it again
+ * replaces that day's copy instead of adding another.
+ *
+ * This is what makes BACKUP_KEEP a number of days. With a full timestamp in the
+ * name, a week of container restarts — each one snapshots on start — left three
+ * or four days of history under BACKUP_KEEP=7, because every restart consumed a
+ * slot. It is also the file src/server/localBackup.ts rewrites after a write, so
+ * the two paths converge on one file per day rather than interleaving.
+ */
+export const dayName = (at = new Date()) => `astro_planner-${at.toISOString().slice(0, 10)}.db`
+
 export const snapshotTo = (source, target) => {
   if (!fs.existsSync(source)) throw new Error(`No database at ${source}`)
 
@@ -55,6 +67,30 @@ export const snapshotTo = (source, target) => {
     db.close()
   }
   return { target, size: fs.statSync(target).size }
+}
+
+/**
+ * snapshotTo() for a target that may already hold a snapshot worth keeping
+ * until the new one exists.
+ *
+ * snapshotTo() clears the target first, because VACUUM INTO refuses to write to
+ * a file that is already there. That is right for a name nothing has used yet
+ * and wrong for one being replaced: between the delete and the end of the VACUUM
+ * there is no snapshot under that name at all, and a run interrupted in that
+ * window destroys the copy it was supposed to improve on. Writing beside the
+ * target and renaming in makes the replacement atomic — at every instant the
+ * target is either the old snapshot or the new one, never a partial file and
+ * never missing.
+ */
+export const snapshotOver = (source, target) => {
+  const { size } = snapshotTo(source, `${target}.partial`)
+  // Sidecars sitting beside the target describe the file about to be replaced.
+  // Left in place, SQLite replays them over the new one. A snapshot is written
+  // in rollback mode so -journal is the likely one — after someone opened this
+  // copy in a SQLite browser — but a file switched to WAL leaves the other two.
+  for (const suffix of ['-wal', '-shm', '-journal']) fs.rmSync(target + suffix, { force: true })
+  fs.renameSync(`${target}.partial`, target)
+  return { target, size }
 }
 
 // Only when run directly, so backup-daily.js can import the functions above.

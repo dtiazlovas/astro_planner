@@ -10,15 +10,23 @@
 // way to force a snapshot on demand — and covers a machine that is switched off
 // at BACKUP_AT and would otherwise never reach it.
 //
+// This is the floor, not the whole story: the server rewrites the same day's
+// file a few seconds after each burst of writes (src/server/localBackup.ts), so
+// an import at 22:00 is in a snapshot at 22:00 rather than waiting for 03:00
+// tomorrow. What this job still covers is a day nothing was written, a day the
+// server was never up — and the one that matters most, a day that path has
+// quietly stopped working.
+//
 // Configuration (all optional):
 //   BACKUP_AT     HH:MM to run at, container-local time. Default 03:00.
 //                 The container is UTC unless TZ is set in compose.yaml.
-//   BACKUP_KEEP   how many snapshots to retain. Default 7.
+//   BACKUP_KEEP   how many days of snapshots to retain. Default 7. One file per
+//                 day, so this is a number of days rather than of runs.
 //   BACKUP_DIR    where to write them. Default /backups in a container.
 //   SQLITE_PATH   which database to copy. Default ./data/astro_planner.db.
 import fs from 'node:fs'
 import path from 'node:path'
-import { defaultBackupDir, snapshotName, snapshotTo, sourcePath } from './snapshot-db.js'
+import { dayName, defaultBackupDir, snapshotOver, sourcePath } from './snapshot-db.js'
 
 const dir = process.env.BACKUP_DIR?.trim() || defaultBackupDir()
 const keep = Math.max(1, Number(process.env.BACKUP_KEEP ?? 7) || 7)
@@ -28,14 +36,15 @@ const atMinute = Math.min(59, Math.max(0, Number(at[1]) || 0))
 
 const log = (...args) => console.log(`[backup ${new Date().toISOString()}]`, ...args)
 
-// Snapshots are named from their timestamp, so the prefix identifies ours and
-// nothing else in the folder is touched — a hand-made copy keeps its own name
-// and is never pruned.
+// Snapshots carry a date in the name, so the prefix identifies ours and nothing
+// else in the folder is touched — a hand-made copy keeps its own name and is
+// never pruned. `.db` at the end also excludes the `.partial` file a snapshot is
+// written through, which would otherwise be counted and pruned as history.
 const existing = () => {
   if (!fs.existsSync(dir)) return []
   return fs.readdirSync(dir)
     .filter(n => /^astro_planner-.*\.db$/.test(n))
-    .sort() // ISO timestamps sort chronologically
+    .sort() // ISO dates sort chronologically
 }
 
 const prune = () => {
@@ -46,15 +55,13 @@ const prune = () => {
   }
 }
 
-// The filenames are the record of what has run — there is no state file. UTC,
-// like the names themselves, which is the same day as BACKUP_AT while the
+// The filenames are the record of what has run — there is no state file, and
+// with the day in the name the check is just whether today's file is there.
+// UTC, like the name itself, which is the same day as BACKUP_AT while the
 // container is UTC; under a TZ far enough east that BACKUP_AT falls before
 // midnight UTC the two dates differ by one, and since both sides of the
 // comparison shift together that still comes to one snapshot a day.
-const takenToday = () => {
-  const today = new Date().toISOString().slice(0, 10)
-  return existing().some(n => n.startsWith(`astro_planner-${today}`))
-}
+const takenToday = () => fs.existsSync(path.join(dir, dayName()))
 
 // The newest snapshot is also kept under the database's own file name —
 // astro_planner.db, or whatever SQLITE_PATH is pointed at. The timestamped
@@ -100,7 +107,7 @@ const writeLatest = (snapshot) => {
 
 const runOnce = () => {
   try {
-    const { target, size } = snapshotTo(sourcePath(), path.join(dir, snapshotName()))
+    const { target, size } = snapshotOver(sourcePath(), path.join(dir, dayName()))
     log(`wrote ${path.basename(target)} (${(size / 1024).toFixed(0)} KB)`)
     writeLatest(target)
     prune()
@@ -115,8 +122,9 @@ const runOnce = () => {
 // loop's clock and the wall clock disagree by tens of parts per million, which
 // over 24 hours is seconds: the 03:00 wake-up reliably fired at 02:59:56 here.
 // Recomputing then found 03:00 still four seconds ahead and slept for it, so
-// every day produced two snapshots four seconds apart — and BACKUP_KEEP=7 held
-// three and a half days of history instead of seven. Anything closer than this
+// every day ran twice, four seconds apart. Day-named files absorb that now — the
+// second run overwrites the first — but the run is a VACUUM of the whole
+// database, so it is still worth not doing twice. Anything closer than this
 // counts as the target already met, and the next run belongs to tomorrow.
 const EARLY_TOLERANCE_MS = 5 * 60 * 1000
 
@@ -132,8 +140,8 @@ log(`daily at ${String(atHour).padStart(2, '0')}:${String(atMinute).padStart(2, 
 
 // Unconditionally, even if today already has one: a start is a deliberate act,
 // so `docker compose restart backup` is how you force a snapshot without
-// remembering a command. The cost is a spare snapshot after an idle restart,
-// which pruning absorbs.
+// remembering a command. It costs nothing now that the name is the day's — a
+// restart refreshes today's file rather than spending one of BACKUP_KEEP.
 log('snapshot on start')
 runOnce()
 

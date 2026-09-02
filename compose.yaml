@@ -67,12 +67,23 @@ services:
       - data:/app/data
       # Where that copy lands. A plain bind mount is fine here because nothing
       # holds a snapshot open — it is written once and closed.
+      #
+      # The app writes here too, not just the `backup` service below: a few
+      # seconds after any request that changed something, it rewrites today's
+      # snapshot (src/server/localBackup.ts). Both write the same file per day,
+      # so this being read-write is what keeps the newest backup as fresh as the
+      # last import rather than as fresh as 03:00.
       - ./backups:/backups
 
   # One snapshot a day into ./backups, pruned to the last week, plus one on
   # every start — `docker compose restart backup` forces one. Runs in the stack
   # rather than as a host cron/Task Scheduler entry so it needs no per-machine
   # setup: anyone who starts the stack gets backups.
+  #
+  # The floor rather than the whole of it. `app` rewrites the same day's file
+  # after each burst of writes, which is what makes the newest snapshot as recent
+  # as the last import; this covers a day nothing was written, a day the stack
+  # was down at BACKUP_AT, and a day that path has silently stopped working.
   #
   # It reuses the image `app` builds — hence depends_on, which orders the build
   # as well as the start. No ports; it never serves anything.

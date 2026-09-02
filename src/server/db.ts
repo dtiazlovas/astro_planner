@@ -11,7 +11,7 @@ let db: Database.Database | null = null
 // directory: SQLite creates a database when the file is absent, so a launch
 // from the wrong directory would silently open a brand-new empty one instead
 // of failing. dist/server.js is one level below the root, src/server/db.ts two.
-const appRoot = (): string => {
+export const appRoot = (): string => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   return process.env.NODE_ENV === 'development' ? path.join(here, '..', '..') : path.join(here, '..')
 }

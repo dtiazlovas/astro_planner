@@ -53,42 +53,62 @@ docker run -p 5000:5000 -v astro-planner-data:/app/data astro-planner:prod
 
 #### Backups
 
-The stack includes a `backup` service that snapshots the database once a day
-into `./backups` and keeps the last seven. It runs inside compose rather than as
-a cron or Task Scheduler entry, so it needs no per-machine setup — starting the
-stack is enough. Tune it on the service in `compose.yaml`:
+Snapshots go to `./backups`, one file per day, keeping the last seven. Two things
+write them, and both write the *same* file for a given day:
+
+- **The server, a few seconds after you write anything** — an import, a cull, a
+  plan edit. The whole burst of requests collapses into one snapshot once it goes
+  quiet, so an import at 22:00 is backed up at 22:00.
+- **The `backup` service in compose**, once a day and on every start. This is the
+  floor: it covers a day nothing was written, a day the server was never up, and
+  a day the path above has quietly stopped working.
+
+Together they mean the newest snapshot is never older than the last thing you
+did. Tune them with:
 
 | | |
 |---|---|
-| `BACKUP_AT` | time of day, container-local. Default `03:00` — UTC unless you set `TZ` |
-| `BACKUP_KEEP` | how many to retain. Default `7` |
+| `BACKUP_AT` | scheduled time of day, container-local. Default `03:00` — UTC unless you set `TZ` |
+| `BACKUP_KEEP` | how many days to retain. Default `7` |
+| `BACKUP_AFTER_WRITE_MS` | quiet period before the server snapshots. Default `10000`; `0` turns it off |
+| `BACKUP_DIR` | where snapshots go. Defaults to `/backups` in a container, `./backups` outside one |
 
-It also takes one on every start, so cycling the service is how you force a
-backup — and a machine that is switched off at `BACKUP_AT` still gets one when
-it comes up:
+The first two live on the `backup` service in `compose.yaml`; the last two are
+read by both, so `BACKUP_DIR` belongs on `app` as well if you move the folder.
+
+Cycling the service forces a scheduled snapshot, which also covers a machine that
+is switched off at `BACKUP_AT`:
 
 ```
 docker compose restart backup
 ```
 
-The scheduled run is skipped when that day already has a snapshot, so a restart
-during the day does not add a second one at 03:00. Only files it wrote are
-pruned (`astro_planner-<timestamp>.db`) — a copy you make by hand keeps its own
-name and is never touched.
+Because the name carries the date and not a full timestamp, writing again the
+same day replaces that day's file rather than spending one of `BACKUP_KEEP` — so
+seven really is a week of history, where before a few container restarts could
+quietly cut it to three days. Replacement is atomic: the new snapshot is written
+beside the old one and renamed in, so an interrupted run leaves the previous
+copy whole rather than nothing at all. Only files this wrote are pruned
+(`astro_planner-<date>.db`) — a copy you make by hand keeps its own name and is
+never touched.
 
-Each run leaves two files:
+The trade is within a day: the evening's snapshot replaces the morning's, so if
+a bad import is not the first of the day, the rollback is to yesterday rather
+than to this morning. Raise `BACKUP_KEEP` for a longer runway.
+
+Two files are left:
 
 | | |
 |---|---|
-| `backups/astro_planner-<timestamp>.db` | the history, pruned to `BACKUP_KEEP` |
+| `backups/astro_planner-<date>.db` | the history, pruned to `BACKUP_KEEP` days |
 | `backups/astro_planner.db` | the newest one under the database's own name, replaced every run |
 
 The second is the point of the folder for everyday use: the database lives on a
 named volume, out of Explorer's reach, and this is it at a path you can type —
 open it in a SQLite browser, copy it to another machine, hand it to
-`npm run db:upload` — without first reading a timestamp out of a directory
-listing. It is never pruned, and the name follows `SQLITE_PATH`, so pointing
-that elsewhere renames this too.
+`npm run db:upload` — without first reading a date out of a directory listing.
+It is never pruned, and the name follows `SQLITE_PATH`, so pointing that
+elsewhere renames this too.
 
 Restore over the live database with the app stopped — the latest, or a specific
 day from the history:

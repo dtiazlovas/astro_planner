@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import express from 'express'
 import { isBlobEnabled } from './blobDb.js'
 import { flushDatabaseToBlob, markDatabaseDirty, refreshDatabaseFromBlob } from './db.js'
+import { scheduleLocalBackup } from './localBackup.js'
 import apObjectTypesRouter from './routes/apObjectTypes.js'
 import apObjectsRouter from './routes/apObjects.js'
 import apSessionsRouter from './routes/apSessions.js'
@@ -108,6 +109,21 @@ const snapshotBeforeResponding: express.RequestHandler = (req, res, next) => {
   next()
 }
 
+// The local counterpart of the middleware above, for a deployment where the
+// database is a file on a disk that stays put. Same trigger — a request that
+// could have changed something and did not fail — and the opposite timing:
+// nothing is held up for it, because the snapshot lands on the disk the write
+// has already reached, and it runs once the writes stop rather than per request.
+// See localBackup.ts, including for why this and the scheduled job in
+// scripts/backup-daily.js both exist.
+const backupAfterWriting: express.RequestHandler = (req, res, next) => {
+  if (READ_METHODS.has(req.method)) return next()
+  // 'finish' rather than wrapping res.end(): there is nothing for the client to
+  // wait for, so there is no reason to sit in the response path.
+  res.on('finish', () => { if (res.statusCode < 400) scheduleLocalBackup() })
+  next()
+}
+
 export const createApiApp = (): express.Express => {
   const app = express()
 
@@ -128,6 +144,7 @@ export const createApiApp = (): express.Express => {
   app.use(express.json())
   app.use(revalidateBeforeHandling)
   app.use(snapshotBeforeResponding)
+  app.use(backupAfterWriting)
 
   app.use('/api/object-types', apObjectTypesRouter)
   app.use('/api/objects', apObjectsRouter)
