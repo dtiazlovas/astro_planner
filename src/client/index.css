@@ -1715,10 +1715,43 @@ body {
   gap: 0.4rem;
 }
 
-.snr-chart__threshold-label {
+.snr-chart__threshold {
   margin-left: auto;
+  gap: 0.35rem;
+}
+
+.snr-chart__threshold-label {
   color: #f59e0b;
   font-weight: 600;
+  /* Fixed width so stepping through values doesn't shuffle the buttons. */
+  min-width: 8.5ch;
+  justify-content: center;
+}
+
+.snr-chart__nudge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 1px solid #3730a3;
+  border-radius: 4px;
+  background: #1e1b4b;
+  color: #f59e0b;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.snr-chart__nudge:hover:not(:disabled) {
+  background: #312e81;
+  border-color: #f59e0b;
+}
+
+.snr-chart__nudge:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .snr-dot {
@@ -2997,7 +3030,8 @@ body {
   .import-session-header { flex-wrap: wrap; gap: 0.5rem; }
 
   .snr-chart__legend { flex-wrap: wrap; gap: 0.35rem 1rem; }
-  .snr-chart__threshold-label { margin-left: 0; }
+  .snr-chart__threshold { margin-left: 0; }
+  .snr-chart__nudge { width: 1.9rem; height: 1.9rem; }
 
   /* ── Touch targets ── */
   .btn { padding: 0.55rem 1rem; }

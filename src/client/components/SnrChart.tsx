@@ -41,6 +41,11 @@ const REJECTED = '#6b7280'
 const LINE = '#f59e0b'
 const BAND = '#818cf8'
 
+/** Nudge step for the threshold buttons — dragging the handle on a trackpad
+    can't reliably land on a specific hundredth, and that is the precision the
+    displayed value (and the approve/reject split) is quoted at. */
+const STEP = 0.01
+
 export default function SnrChart({ points, threshold, onThresholdChange, metricLabel = 'PSFSW', goodDirection = 'above', historical, disabled = false, droppedFiles }: Props) {
   const isApproved = (p: SnrPoint) => {
     if (droppedFiles?.has(p.fileName)) return false
@@ -90,6 +95,10 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
   }
 
   const thY = yFor(threshold)
+  const nudge = (delta: number) => {
+    if (disabled) return
+    onThresholdChange(Math.max(yMin, Math.round((threshold + delta) * 100) / 100))
+  }
   const measured = sorted.filter(p => !p.pending)
   const pendingCount = sorted.length - measured.length
   const approvedCount = measured.filter(p => isApproved(p)).length
@@ -172,7 +181,21 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
         {hist.length > 0 && (
           <span><span className="snr-dot" style={{ background: BAND }} /> Past subs · {hist.length}</span>
         )}
-        <span className="snr-chart__threshold-label">{metricLabel} {goodDirection === 'above' ? '≥' : '≤'} {threshold.toFixed(2)}</span>
+        <span className="snr-chart__threshold">
+          <button
+            type="button" className="snr-chart__nudge" disabled={disabled}
+            title={`Lower the threshold by ${STEP.toFixed(2)}`}
+            aria-label={`Lower the ${metricLabel} threshold by ${STEP.toFixed(2)}`}
+            onClick={() => nudge(-STEP)}
+          >▼</button>
+          <span className="snr-chart__threshold-label">{metricLabel} {goodDirection === 'above' ? '≥' : '≤'} {threshold.toFixed(2)}</span>
+          <button
+            type="button" className="snr-chart__nudge" disabled={disabled}
+            title={`Raise the threshold by ${STEP.toFixed(2)}`}
+            aria-label={`Raise the ${metricLabel} threshold by ${STEP.toFixed(2)}`}
+            onClick={() => nudge(STEP)}
+          >▲</button>
+        </span>
       </div>
       <svg ref={svgRef} width="100%" height={H} viewBox={`0 0 ${w} ${H}`} style={{ touchAction: 'none', userSelect: 'none' }}>
         {/* historical density band (behind everything) */}
