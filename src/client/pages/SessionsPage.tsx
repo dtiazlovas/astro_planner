@@ -157,63 +157,11 @@ export default function SessionsPage() {
           <button className={`btn ${showImport ? 'btn-ghost' : 'btn-contents'}`} onClick={() => { setShowImport(v => !v); if (showForm) handleCancel() }}>
             {showImport ? 'Hide Import' : '📁 Import'}
           </button>
-          <button className={`btn ${showForm && editingId === null ? 'btn-ghost' : 'btn-primary'}`} onClick={showForm && editingId === null ? handleCancel : openAdd}>
-            {showForm && editingId === null ? 'Cancel' : '+ Add Session'}
-          </button>
+          <button className="btn btn-primary" onClick={openAdd}>+ Add Session</button>
         </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
-
-      {showForm && editingId === null && (
-        <form className="object-form" onSubmit={handleSubmit}>
-          <p className="form-title">New Session</p>
-          <div className="form-grid">
-            <div className="form-field form-field--full">
-              <label htmlFor="ses-name">Name</label>
-              <input id="ses-name" value={form.name} onChange={set('name')} required placeholder="e.g. Backyard session 2026-06-07" autoFocus />
-            </div>
-
-            <div className="form-field">
-              <label htmlFor="ses-start">Start</label>
-              <input id="ses-start" type="datetime-local" value={form.start} onChange={set('start')} required />
-            </div>
-
-            <div className="form-field">
-              <label htmlFor="ses-equipment">Rig</label>
-              <select id="ses-equipment" value={form.equipment} onChange={set('equipment')}>
-                <option value="">— none —</option>
-                {equipment.map(eq => <option key={eq.id} value={eq.id}>{eq.name}</option>)}
-              </select>
-            </div>
-
-            <div className="form-field form-field--check" style={{ alignSelf: 'flex-end', paddingBottom: '0.1rem' }}>
-              <label className="check-label">
-                <input type="checkbox" checked={form.duration_set} onChange={e => setForm(f => ({ ...f, duration_set: e.target.checked, duration: e.target.checked ? f.duration : '' }))} />
-                Set duration
-              </label>
-            </div>
-
-            {form.duration_set && (
-              <div className="form-field form-field--full">
-                <label htmlFor="ses-duration">End / Duration</label>
-                <input id="ses-duration" type="datetime-local" value={form.duration} onChange={set('duration')} />
-              </div>
-            )}
-
-            <div className="form-field form-field--full">
-              <label htmlFor="ses-comment">Comment</label>
-              <textarea id="ses-comment" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
-            </div>
-          </div>
-
-          <div className="form-actions">
-            <button type="submit" className="btn btn-primary" disabled={submitting}>
-              {submitting ? 'Saving…' : 'Save Session'}
-            </button>
-          </div>
-        </form>
-      )}
 
       {showImport && (
         <ImportPanel
@@ -228,7 +176,7 @@ export default function SessionsPage() {
       {loading ? (
         <p className="state-msg">Loading…</p>
       ) : sessions.length === 0 ? (
-        <p className="state-msg">No sessions yet — add one above.</p>
+        <p className="state-msg">No sessions yet — add one with “+ Add Session”.</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table data-table--cards data-table--sessions">
@@ -284,62 +232,70 @@ export default function SessionsPage() {
                       </td>
                     </tr>
                   )}
-                  {editingId === ses.id && showForm && (
-                    <tr className="row--editor">
-                      <td colSpan={5} style={{ padding: 0 }}>
-                        <form className="object-form object-form--inline" onSubmit={handleSubmit}>
-                          <div className="form-actions">
-                            <button type="submit" className="btn btn-primary" disabled={submitting}>
-                              {submitting ? 'Saving…' : 'Update Session'}
-                            </button>
-                            <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
-                          </div>
-                          <div className="form-grid">
-                            <div className="form-field form-field--full">
-                              <label htmlFor="ses-name-inline">Name</label>
-                              <input id="ses-name-inline" value={form.name} onChange={set('name')} required placeholder="e.g. Backyard session 2026-06-07" autoFocus />
-                            </div>
-
-                            <div className="form-field">
-                              <label htmlFor="ses-start-inline">Start</label>
-                              <input id="ses-start-inline" type="datetime-local" value={form.start} onChange={set('start')} required />
-                            </div>
-
-                            <div className="form-field">
-                              <label htmlFor="ses-equipment-inline">Rig</label>
-                              <select id="ses-equipment-inline" value={form.equipment} onChange={set('equipment')}>
-                                <option value="">— none —</option>
-                                {equipment.map(eq => <option key={eq.id} value={eq.id}>{eq.name}</option>)}
-                              </select>
-                            </div>
-
-                            <div className="form-field form-field--check" style={{ alignSelf: 'flex-end', paddingBottom: '0.1rem' }}>
-                              <label className="check-label">
-                                <input type="checkbox" checked={form.duration_set} onChange={e => setForm(f => ({ ...f, duration_set: e.target.checked, duration: e.target.checked ? f.duration : '' }))} />
-                                Set duration
-                              </label>
-                            </div>
-
-                            {form.duration_set && (
-                              <div className="form-field form-field--full">
-                                <label htmlFor="ses-duration-inline">End / Duration</label>
-                                <input id="ses-duration-inline" type="datetime-local" value={form.duration} onChange={set('duration')} />
-                              </div>
-                            )}
-
-                            <div className="form-field form-field--full">
-                              <label htmlFor="ses-comment-inline">Comment</label>
-                              <textarea id="ses-comment-inline" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
-                            </div>
-                          </div>
-                        </form>
-                      </td>
-                    </tr>
-                  )}
                 </Fragment>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Add and edit share one dialog — same fields, same submit handler. */}
+      {showForm && (
+        <div className="modal-backdrop" onClick={handleCancel}>
+          <div className="modal-dialog modal-dialog--form" onClick={e => e.stopPropagation()}>
+            <div className="modal-dialog__header">
+              <span className="modal-dialog__title">{editingId !== null ? 'Edit session' : 'New session'}</span>
+              <button className="btn btn-ghost" onClick={handleCancel}>✕</button>
+            </div>
+            {error && <div className="error-banner">{error}</div>}
+            <form onSubmit={handleSubmit}>
+              <div className="form-grid">
+                <div className="form-field form-field--full">
+                  <label htmlFor="ses-name">Name</label>
+                  <input id="ses-name" value={form.name} onChange={set('name')} required placeholder="e.g. Backyard session 2026-06-07" autoFocus />
+                </div>
+
+                <div className="form-field">
+                  <label htmlFor="ses-start">Start</label>
+                  <input id="ses-start" type="datetime-local" value={form.start} onChange={set('start')} required />
+                </div>
+
+                <div className="form-field">
+                  <label htmlFor="ses-equipment">Rig</label>
+                  <select id="ses-equipment" value={form.equipment} onChange={set('equipment')}>
+                    <option value="">— none —</option>
+                    {equipment.map(eq => <option key={eq.id} value={eq.id}>{eq.name}</option>)}
+                  </select>
+                </div>
+
+                <div className="form-field form-field--check" style={{ alignSelf: 'flex-end', paddingBottom: '0.1rem' }}>
+                  <label className="check-label">
+                    <input type="checkbox" checked={form.duration_set} onChange={e => setForm(f => ({ ...f, duration_set: e.target.checked, duration: e.target.checked ? f.duration : '' }))} />
+                    Set duration
+                  </label>
+                </div>
+
+                {form.duration_set && (
+                  <div className="form-field form-field--full">
+                    <label htmlFor="ses-duration">End / Duration</label>
+                    <input id="ses-duration" type="datetime-local" value={form.duration} onChange={set('duration')} />
+                  </div>
+                )}
+
+                <div className="form-field form-field--full">
+                  <label htmlFor="ses-comment">Comment</label>
+                  <textarea id="ses-comment" value={form.comment} onChange={set('comment')} placeholder="Optional notes…" rows={2} />
+                </div>
+              </div>
+
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary" disabled={submitting}>
+                  {submitting ? 'Saving…' : editingId !== null ? 'Update Session' : 'Save Session'}
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

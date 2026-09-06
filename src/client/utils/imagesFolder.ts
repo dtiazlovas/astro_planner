@@ -74,9 +74,8 @@ export async function ensureImagesFolderAccess(): Promise<FileSystemDirectoryHan
 }
 
 // Opens the folder picker for a one-off source folder (the capture dump an
-// import read from). Deliberately not persisted: the images folder is a fixed
-// place, a source folder is wherever this batch happened to come from.
-// Returns null only if the user cancelled.
+// import read from). Not persisted: a source folder is wherever this batch came
+// from. Returns null only if the user cancelled.
 export async function pickSourceFolder(): Promise<FileSystemDirectoryHandle | null> {
   if (!isFolderAccessSupported) throw new Error('This browser does not support local folder access')
   try {
@@ -206,11 +205,10 @@ export async function deleteObjectFolderFiles(root: FileSystemDirectoryHandle, o
 
 export interface SourceDeleteStats { deleted: number; failed: number; notFound: number }
 
-// Deletes the named subs from a source folder tree. Exact file names only —
-// unlike an object folder, a capture dump holds the originals themselves, so
-// there are no derived copies to sweep up and nothing to gain from matching
-// loosely. Names not found are reported, not treated as failures: an import
-// batch can span more than one source folder.
+// Deletes the named subs from a source folder tree. Exact file names only: a
+// capture dump holds the originals, so there are no derived copies to sweep up.
+// Names not found are reported rather than failed — an import batch can span
+// more than one source folder.
 export async function deleteFilesFromDirectory(dir: FileSystemDirectoryHandle, fileNames: string[]): Promise<SourceDeleteStats> {
   const wanted = new Set(fileNames)
   const stats: SourceDeleteStats = { deleted: 0, failed: 0, notFound: 0 }

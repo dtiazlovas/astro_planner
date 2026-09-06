@@ -835,19 +835,6 @@ body {
   gap: 1.25rem;
 }
 
-.object-form--inline {
-  background: #1c1c24;
-  border-radius: 0;
-  border-left: none;
-  border-right: none;
-  border-top: 2px solid #3730a3;
-  border-bottom: 2px solid #3730a3;
-}
-
-.row--editor td {
-  padding: 0;
-}
-
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1252,6 +1239,98 @@ body {
 .expand-caret {
   font-size: 0.7rem;
   opacity: 0.7;
+}
+
+/* Labelled disclosure control — a bare caret reads as decoration, not a button. */
+.expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+  border-radius: 5px;
+  border: 1px solid #2d3f55;
+  background: #1a2740;
+  color: #cbd5e1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.expand-btn:hover {
+  background: #243450;
+  border-color: #4a90d9;
+  color: #e2e8f0;
+}
+
+.expand-btn--open {
+  background: #1e1b4b;
+  border-color: #4338ca;
+  color: #c7d2fe;
+}
+
+.expand-btn__caret {
+  display: inline-block;
+  font-size: 0.7rem;
+  transition: transform 0.12s ease;
+}
+
+.expand-btn--open .expand-btn__caret {
+  transform: rotate(90deg);
+}
+
+/* The open row and its detail panel read as one block, so neither picks up the
+   zebra striping or the row hover of the table they sit in. */
+.row--expanded > td {
+  background: #14142a;
+  border-bottom: none;
+}
+
+.row--expanded:hover > td {
+  background: #1c1c38;
+}
+
+.row--detail,
+.row--detail:hover {
+  background: transparent;
+}
+
+.row--detail > td {
+  background: #14142a;
+  padding: 0 0.75rem;
+}
+
+.plan-details {
+  background: #181820;
+  border: 1px solid #2a2a35;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  margin: 0 0 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.plan-details__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.plan-details__title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+.plan-details__total {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.plan-details .data-table {
+  margin: 0;
 }
 
 .filter-stats-panel {
@@ -3013,6 +3092,8 @@ body {
     gap: 0.75rem;
     padding: 0.85rem 1rem;
   }
+
+  .expand-btn { padding: 0.35rem 0.7rem; }
 
   /* 16px is the threshold below which iOS Safari zooms in on focus. */
   .form-field input,

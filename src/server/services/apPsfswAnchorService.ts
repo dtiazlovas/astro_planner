@@ -2,11 +2,10 @@ import { connectToDatabase } from '../db.js'
 
 // ── PSFSW display anchors ────────────────────────────────────────────────────
 // PSF Signal Weight is dimensionless but its magnitude depends on the target,
-// the filter and the sky, so it is always shown as a ratio against a reference.
-// That reference is stored here, per object+filter, and never recomputed on its
-// own: the whole point is that a sub measured last winter reads the same number
-// today. The median itself is computed on the client, which is where filenames
-// are parsed into a target and a filter.
+// filter and sky, so it is shown as a ratio against a reference. That reference
+// is stored here per object+filter and never recomputed on its own: the point is
+// that a sub measured last winter reads the same number today. The median is
+// computed on the client, where filenames are parsed into target and filter.
 
 export interface PsfswAnchor {
   object: number
@@ -20,11 +19,10 @@ export const getPsfswAnchors = async (): Promise<PsfswAnchor[]> =>
   connectToDatabase().prepare('SELECT object, filter, anchor, subs, set_at FROM ap_psfsw_anchor').all() as PsfswAnchor[]
 
 /**
- * Establishes the anchor for a pair, or leaves the existing one alone.
- *
- * First writer wins: two screens can reach for the same scale at once, and a
- * later one must not quietly redefine what the numbers already on screen mean.
- * Returns the anchor now in force, whichever of the two it is.
+ * Establishes the anchor for a pair, or leaves the existing one alone. First
+ * writer wins — two screens can reach for the same scale at once, and a later
+ * one must not redefine what the numbers already on screen mean. Returns the
+ * anchor now in force.
  */
 export const ensurePsfswAnchor = async (object: number, filter: number, anchor: number, subs: number): Promise<PsfswAnchor> => {
   const db = connectToDatabase()

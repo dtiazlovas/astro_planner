@@ -109,9 +109,8 @@ export default function BlinkViewer({
     return () => clearInterval(id)
   }, [playing, fps, total, step])
 
-  // Dropping moves on to the next frame, so a run can be culled without
-  // reaching for the arrows; un-dropping stays put, since you are reconsidering
-  // the frame in front of you.
+  // Dropping moves on, so a run can be culled without reaching for the arrows;
+  // un-dropping stays put, since you are reconsidering the frame in front of you.
   const toggleDrop = useCallback(() => {
     const f = files[index]
     if (!onToggleDrop || !f) return

@@ -123,12 +123,10 @@ export const checkImported = (names: string[]): Promise<string[]> =>
     body: JSON.stringify({ names }),
   }).then(json<string[]>)
 
-// `objectSessionId` links the files to the session entry they were imported
-// under; deleting that entry then deletes these records too.
-// `culled` records subs the import rejected: no file was copied anywhere, and
-// the record exists only so the night can report what was thrown away.
-// `exposureId` is the sub's own exposure length. It matters for culled records
-// with no entry to take it from — the night still spent that time.
+// `objectSessionId` links the files to the entry they were imported under, so
+// deleting it deletes these records. `culled` marks subs the import rejected —
+// no file anywhere, kept only so the night can report what it threw away — and
+// `exposureId` is what a culled record with no entry takes its time from.
 export const recordImported = (names: string[], sessionId: number, objectSessionId: number | null = null, culled = false, exposureId: number | null = null): Promise<void> =>
   fetch(`${BASE}/imported/record`, {
     method: 'POST',
@@ -145,9 +143,8 @@ export const cullImported = (names: string[]): Promise<{ culled: number }> =>
     body: JSON.stringify({ names }),
   }).then(json<{ culled: number }>)
 
-// Points existing records at a session entry — used by the object file sync to
-// attribute records that predate the link, and to move records off entries it
-// is about to merge away.
+// Used by the object file sync to attribute records predating the entry link,
+// and to move records off entries it is about to merge away.
 export const relinkImported = (names: string[], objectSessionId: number): Promise<{ relinked: number }> =>
   fetch(`${BASE}/imported/relink`, {
     method: 'POST',
@@ -158,14 +155,14 @@ export const relinkImported = (names: string[], objectSessionId: number): Promis
 export interface ImportedRecord {
   filename: string
   session_id: number | null
-  // the session entry this file was imported under, null for records predating
-  // the link or belonging to a multi-entry session no sync has attributed yet
+  // null for records predating the link, or in a multi-entry session no sync has
+  // attributed yet
   object_session_id: number | null
-  // persisted quality analysis: raw PSFSW and FWHM in pixels
+  // raw PSFSW and FWHM in pixels
   psfsw: number | null
   fwhm: number | null
-  // 1 when the sub was culled — rejected and deleted, so no file backs this
-  // record. Anything reasoning about the library's files must skip these.
+  // 1 when the sub was culled — no file backs this record, so anything reasoning
+  // about the library's files must skip it
   culled: number
 }
 

@@ -1,11 +1,8 @@
 import { connectToDatabase } from '../db.js'
 
-// Every name in the IN list is bound as its own parameter, and one statement can
-// hold only SQLITE_MAX_VARIABLE_NUMBER of them — so a long enough list does not
-// return a wrong answer, it fails the statement outright. Chunking keeps the
-// statement a fixed size no matter how many names the caller sends. The other
-// functions here bind one row at a time inside a transaction and are already
-// bounded; this is the only query whose shape grows with its input.
+// The only query here whose shape grows with its input: past
+// SQLITE_MAX_VARIABLE_NUMBER bound names the statement fails outright, so it is
+// chunked to a fixed size.
 const CHECK_CHUNK = 500
 
 // Culled records are deliberately not "imported": their sub was rejected and
@@ -26,14 +23,12 @@ export const checkImported = async (names: string[]): Promise<string[]> => {
 }
 
 // `objectSessionId` ties each file to the session entry it was imported under,
-// so deleting that entry can take its records with it. Re-recording a known
-// file re-points it rather than leaving the old link in place.
+// so deleting that entry takes its records with it.
 // `culled` records a sub the import rejected: no file was copied anywhere, and
-// the row exists only to be counted against its night. Re-importing a file that
-// was culled before clears the flag, since the row then describes a real sub.
-// `exposureId` is how long the sub was shot for, kept on the row itself so a
-// culled sub with no entry behind it still knows what it cost. A caller that
-// doesn't know it leaves the stored value alone rather than erasing it.
+// the row exists only to be counted against its night. Re-importing a culled
+// file clears the flag, since the row then describes a real sub.
+// `exposureId` is kept on the row so a culled sub with no entry behind it still
+// knows what it cost; a caller that doesn't know it leaves the stored value.
 export const recordImported = async (names: string[], sessionId: number, objectSessionId: number | null = null, culled = false, exposureId: number | null = null): Promise<void> => {
   if (!names.length) return
   const db = connectToDatabase()
@@ -47,10 +42,9 @@ export const recordImported = async (names: string[], sessionId: number, objectS
   })(names)
 }
 
-// Flags existing records as culled instead of deleting them: the subs are off
-// disk, but what they cost the night they were shot on is worth keeping. The
-// session and entry links stay, so the record is still cleaned up when its
-// session is deleted.
+// Flags records as culled instead of deleting them: the subs are off disk, but
+// what they cost their night is worth keeping. The session and entry links stay,
+// so the record is still cleaned up when its session is deleted.
 export const cullImported = async (names: string[]): Promise<number> => {
   if (!names.length) return 0
   const db = connectToDatabase()

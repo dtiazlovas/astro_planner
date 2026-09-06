@@ -180,18 +180,15 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [parsedCount, setParsedCount] = useState(0)
   const [skippedCount, setSkippedCount] = useState(0)
 
-  // object target state
   const [targetOverrides, setTargetOverrides] = useState<Record<string, number>>({})
   const [targetAliasTo, setTargetAliasTo] = useState<Record<string, string>>({})
   const [ignoredTargets, setIgnoredTargets] = useState<string[]>([])
   const [resolvingTarget, setResolvingTarget] = useState<string | null>(null)
 
-  // create-object dialog
   const [createDialog, setCreateDialog] = useState<string | null>(null)
   const [createDialogForm, setCreateDialogForm] = useState({ name: '', typeId: '', aliases: '', position_json: '', active: true, folder: '', comment: '' })
   const [createDialogSubmitting, setCreateDialogSubmitting] = useState(false)
 
-  // filter state
   const [filterOverrides, setFilterOverrides] = useState<Record<string, number>>({})
   const [filterAliasTo, setFilterAliasTo] = useState<Record<string, string>>({})
   const [ignoredFilters, setIgnoredFilters] = useState<string[]>([])
@@ -215,23 +212,19 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
   // ── quality analysis / frame approval ─────────────────────────
   const [snrResults, setSnrResults] = useState<Map<string, FitsAnalysis>>(new Map())
-  // Both metrics are measured in one pass; this selects which is shown and
-  // culled against. PSFSW: higher is better (normalized to median ≈ 1.0);
-  // FWHM: lower is better (raw pixels).
+  // Both metrics are measured in one pass; this picks which one is culled
+  // against. PSFSW: higher is better (normalized ≈ 1.0). FWHM: lower is better
+  // (raw pixels).
   const [qualityMetric, setQualityMetric] = useState<'psfsw' | 'fwhm'>('psfsw')
-  // Previously-analyzed subs (different files) grouped by the target+filter they
-  // belong to, time-ordered — background context for the chart. Raw values;
-  // PSFSW is normalized against the active group's median when rendered.
+  // Previously-analyzed subs (different files) per target+filter, time-ordered.
+  // Raw values — normalized when rendered.
   const [historicalByGroup, setHistoricalByGroup] = useState<Map<string, HistoricalRecord[]>>(new Map())
-  // Approve line per target+filter group. A single line across groups would be
+  // Approve line per target+filter group. One line across groups would be
   // meaningless: PSFSW is relative to each group's own median.
   const [thresholds, setThresholds] = useState<Record<string, number>>({})
   const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null)
-  /**
-   * Frames dropped by eye in the blink viewer. This only ever removes frames:
-   * not being dropped means "let the approve line decide", not "keep no matter
-   * what", so a frame you leave alone is still culled if it scores badly.
-   */
+  // Frames dropped by eye in the blink viewer. Only ever removes frames: not
+  // being dropped means "let the approve line decide", not "keep regardless".
   const [droppedFrames, setDroppedFrames] = useState<Set<string>>(new Set())
   const [analyzing, setAnalyzing] = useState(false)
   const [showRejectedList, setShowRejectedList] = useState(false)
@@ -239,24 +232,19 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
   const analyzeAbortRef = useRef<AbortController | null>(null)
-  // Mirrors qualityMetric so the streaming commit() can pick the right
-  // approve-line default without stale closure state.
+  // Mirrors qualityMetric so the streaming commit() isn't reading a stale copy.
   const qualityMetricRef = useRef<'psfsw' | 'fwhm'>('psfsw')
-  // Raw (un-normalized) analysis values, persisted onto the import records on import.
+  // Raw (un-normalized) values, persisted onto the import records on import.
   const rawAnalysisRef = useRef<Map<string, { psfsw: number | null; fwhm: number | null }>>(new Map())
-  // All import records, prefetched when files are selected so the chart's
-  // historical band can be matched synchronously the instant Analyze is clicked
-  // — fetching them behind the click raced the chart's first mount, so the band
-  // was missing on the first analyze and only appeared on re-analyze.
+  // Prefetched on file selection so the chart's historical band can be matched
+  // synchronously when Analyze is clicked; fetching behind the click raced the
+  // chart's first mount and left the band missing until a re-analyze.
   const importedRecordsRef = useRef<ImportedRecord[] | null>(null)
-  // The frozen per-target+filter PSFSW scales. A ref because `commit()` runs
-  // inside the analysis loop and must not read a stale copy; the counter is
-  // what tells the chart to redraw when one is established.
+  // The frozen per-target+filter PSFSW scales. A ref because commit() runs inside
+  // the analysis loop; the counter is what redraws the chart when one is set.
   const anchorsRef = useRef<AnchorMap>(new Map())
   const [anchorVersion, setAnchorVersion] = useState(0)
 
-  // Closing the panel stops a running analysis instead of letting it keep
-  // hammering the worker / server in the background.
   useEffect(() => () => analyzeAbortRef.current?.abort(), [])
 
   useEffect(() => {
@@ -270,8 +258,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         setLookupReady(true)
       })
       .catch(() => setError('Failed to load lookup data'))
-    // Separate from the lookups above: a missing anchor table shouldn't stop
-    // the panel loading, it just means no pair is anchored yet.
+    // Separate from the lookups above: a missing anchor table shouldn't stop the
+    // panel loading, it just means no pair is anchored yet.
     getPsfswAnchors()
       .then(rows => { anchorsRef.current = toAnchorMap(rows); setAnchorVersion(v => v + 1) })
       .catch(() => {})
@@ -299,8 +287,6 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setFilterOverrides({}); setFilterAliasTo({}); setIgnoredFilters([])
     setSnrResults(new Map()); setThresholds({}); setHistoricalByGroup(new Map()); setActiveGroupKey(null)
 
-    // Prefetch the import records now so the historical band is ready to match
-    // the moment Analyze is clicked (no fetch racing the chart's first mount).
     try { importedRecordsRef.current = await getImportedRecords() } catch { importedRecordsRef.current = [] }
 
     let alreadyImported: string[] = []
@@ -506,20 +492,17 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const activeGroup = qualityGroups.find(g => g.key === activeGroupKey) ?? qualityGroups[0] ?? null
   const activeThreshold = activeGroup ? thresholds[activeGroup.key] ?? null : null
 
-  // Previously-analyzed subs (persisted psfsw/fwhm, different files) whose parsed
-  // target+filter matches an importable entry in this batch — the chart's
-  // historical context, and the population a pair's anchor is set from. Matched
-  // synchronously from the prefetched records so the band is available
-  // immediately when analysis starts. Raw values, time-ordered.
+  // Previously-analyzed subs whose parsed target+filter matches a group in this
+  // batch — the chart's historical context, and the population a pair's anchor is
+  // set from. Raw values, time-ordered.
   const matchHistoricalRecords = (): Map<string, HistoricalRecord[]> => {
     const records = importedRecordsRef.current
     if (!records?.length) return new Map()
     const pairSet = new Set(qualityGroups.map(g => g.key))
     if (!pairSet.size) return new Map()
-    // The batch's own files are excluded: they are what the history is context
-    // for, and on a re-import they may already carry a stored analysis. Culled
-    // subs are excluded too — the history is what the kept population looks
-    // like, and a scale anchored to rejected frames is pulled towards them.
+    // The batch's own files are excluded — on a re-import they may already carry
+    // a stored analysis — and so are culled subs: the history is what the kept
+    // population looks like, and a scale anchored to rejects is pulled towards them.
     const grouped = groupRecords(records.filter(r => !r.culled), objects, filters, patterns, new Set(importableFileNames))
     const out = new Map<string, HistoricalRecord[]>()
     for (const [key, list] of grouped) {
@@ -529,13 +512,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   }
 
   /**
-   * Makes sure every group on screen has a frozen PSFSW scale, so the numbers
-   * this import shows are the ones the object's own analysis will show later.
-   *
-   * A pair is anchored to its history where it has any; a first-light pair has
-   * only this batch to go on, so it anchors to that — which is also why this
-   * runs again after measuring, for the groups that had nothing to anchor to
-   * beforehand.
+   * Gives every group on screen a frozen PSFSW scale, so the numbers this import
+   * shows are the ones the object's own analysis will show later. A pair anchors
+   * to its history where it has any; a first-light pair has only this batch, so
+   * this runs again after measuring.
    */
   const ensureGroupAnchors = async (history: Map<string, HistoricalRecord[]>) => {
     let changed = false
@@ -562,19 +542,16 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     analyzeAbortRef.current = ctrl
 
     // Accumulated raw frames, re-normalized and pushed to the chart after each
-    // batch / frame so results render live while analysis is still running.
+    // one so results render live while analysis is still running.
     const raw: FitsAnalysis[] = []
-    // Captured now: the groups can't change mid-analysis, and commit() would
-    // otherwise close over whatever `preview` was at render time.
     const fileGroup = groupKeyOfFile
 
     const commit = () => {
       if (!raw.length) return
-      // Frames are scaled within their own target+filter group, against that
-      // pair's frozen anchor — the same divisor the object's own analysis uses,
-      // so a sub reads the same number there as here, tonight and next year.
-      // Until a first-light pair has an anchor, its own median stands in and the
-      // final commit redraws it against the anchor once one is written.
+      // Frames are scaled against their own pair's frozen anchor — the same
+      // divisor the object's analysis uses, so a sub reads the same number there
+      // as here, tonight and next year. A first-light pair uses its own median as
+      // a stand-in until the final commit redraws it against the written anchor.
       // FWHM stays raw (pixels).
       const byGroup = new Map<string, FitsAnalysis[]>()
       for (const r of raw) {
@@ -606,15 +583,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     try {
       setImportProgress({ step: 'Analyzing frame quality…', current: 0, total: importableFileNames.length })
 
-      // Match the historical spread up front, per target+filter: PSFSW + FWHM of
-      // previously-analyzed subs (different files) whose parsed target+filter
-      // matches a group in this batch. The records were prefetched on file
-      // selection, so this is a synchronous match with no fetch racing the
-      // chart's first mount — the band is present on the very first analyze, not
-      // only on re-analyze. The prefetch may not have run (or may have failed),
-      // so fetch as a fallback. The history is also what a pair's scale is
-      // anchored to, so it is established here — before the first frame is
-      // committed, or the chart would start on a stand-in scale and jump.
+      // Matched up front, from the prefetched records where possible. The history
+      // is what a pair's scale is anchored to, so it has to be established before
+      // the first frame is committed or the chart starts on a stand-in scale and
+      // jumps.
       let history = new Map<string, HistoricalRecord[]>()
       try {
         if (importedRecordsRef.current == null) importedRecordsRef.current = await getImportedRecords()
@@ -623,8 +595,6 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       } catch { setHistoricalByGroup(new Map()) }
       await ensureGroupAnchors(history)
 
-      // Analyze the picked File objects directly, in a worker, committing each
-      // frame as the worker returns it.
       const fileByName = new Map(rawFiles.map(f => [f.name, f]))
       const files = importableFileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined)
       await analyzeFitsFiles(files, (done, total, result) => {
@@ -633,9 +603,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         commit()
       }, ctrl.signal)
 
-      // First-light pairs had no history to anchor to; now that their frames are
-      // measured they can be anchored to this batch, and the re-commit puts the
-      // chart on that scale for good.
+      // First-light pairs can now be anchored to this batch, and the re-commit
+      // puts the chart on that scale for good.
       await ensureGroupAnchors(history)
       commit() // final scaling over the full set
     } catch {
@@ -659,14 +628,11 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const goodDirection: 'above' | 'below' = qualityMetric === 'psfsw' ? 'above' : 'below'
   const metricLabel = qualityMetric === 'psfsw' ? 'PSFSW' : 'FWHM (px)'
 
-  // The chart shows one group at a time; everything below it is scoped to that
-  // group, while the import-wide totals are computed separately.
+  // The chart shows one group at a time; the import-wide totals are separate.
   const activeResults = [...snrResults.values()].filter(r => groupKeyOfFile.get(r.fileName) === activeGroup?.key)
 
   // Past subs for this group, on the same scale as the live frames because both
-  // divide by the pair's frozen anchor — no longer by whatever this batch's
-  // median happens to be, which made the band shift as frames arrived and put
-  // it on a different scale from the object's own analysis. FWHM is raw px.
+  // divide by the pair's frozen anchor. FWHM is raw px.
   const activeAnchor = activeGroup ? anchorsRef.current.get(activeGroup.key) ?? null : null
   const historicalForMetric: number[] = (() => {
     void anchorVersion // recompute when a scale is established
@@ -682,9 +648,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const measuredPoints: SnrPoint[] = activeResults
     .filter(r => metricValue(r) != null)
     .map(r => ({ fileName: r.fileName, snr: metricValue(r) as number, time: timeForFile(r.fileName) }))
-  // While analysis is running, seed a baseline point for every file in this group
-  // not yet measured so the chart lays out its full x-axis immediately and each
-  // point rises in place as its value arrives.
+  // Seed a baseline point per unmeasured file so the chart lays out its full
+  // x-axis immediately and each point rises in place as its value arrives.
   const pendingPoints: SnrPoint[] = analyzing
     ? (activeGroup?.fileNames ?? [])
         .filter(n => !snrResults.has(n))
@@ -717,17 +682,13 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const isApproved = (fileName: string): boolean =>
     !droppedFrames.has(fileName) && clearsLine(fileName)
 
-  // Everything the active group will skip, whether the line or a hand call put
-  // it there. Built from the group's own file list rather than the measured
-  // points, so a frame dropped by eye before it was measured is included.
+  // Built from the group's own file list rather than the measured points, so a
+  // frame dropped by eye before it was measured is included.
   const rejectedFiles = (activeGroup?.fileNames ?? []).filter(n => !isApproved(n))
   const rejectedCount = rejectedFiles.length
   const handDroppedActive = (activeGroup?.fileNames ?? []).filter(n => droppedFrames.has(n)).length
-  /** Analysis has produced usable numbers — the approve line and chart need this. */
   const measured = snrResults.size > 0 && analyzedCountAll > 0
-  // Every group's own line plus any hand calls — what the import will actually
-  // skip. Counted over the importable set rather than the measured results, so
-  // a frame dropped by eye before it was measured still shows up here.
+  // What the import will actually skip, across every group.
   const rejectedCountAll = importableFileNames.filter(n => !isApproved(n)).length
 
   // Reset every group's approve line to "keep everything" for the newly selected
@@ -750,23 +711,18 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   }
 
   // ── import ───────────────────────────────────────────────────
-  // Frames an entry contributes once the approve line is applied — what the
-  // import actually writes, and what the preview shows.
+  // Frames an entry contributes once the approve line is applied.
   const approvedFrames = (entry: ImportEntry): number => entry.fileNames.filter(isApproved).length
   const importableCount = preview?.flatMap(s => s.entries).filter(e => e.canImport && approvedFrames(e) > 0).length ?? 0
   // Gates the import controls. Not `importableCount > 0`: pulling the approve
-  // line above every sub in the batch leaves no entry to create but plenty to
-  // record, and hiding the button there makes a night that culled everything
-  // impossible to import at all.
+  // line above every sub leaves no entry to create but plenty to record, and
+  // hiding the button there makes a night that culled everything unimportable.
   const hasImportableFiles = importableFileNames.length > 0
 
-  // Blinking is scoped to one target+filter: comparing frames only tells you
-  // anything when they are the same field through the same filter. Capture
-  // order comes from the file names. Memoized because BlinkViewer rebuilds its
-  // previews whenever this array identity changes.
-  // Depend on the names by value, not by array identity: qualityGroups is
-  // rebuilt on every render, so `activeGroup.fileNames` is a new array each
-  // time and would re-trigger the viewer's preview build continuously.
+  // Blinking is scoped to one target+filter — comparing frames only says
+  // anything when they are the same field through the same filter. Keyed by the
+  // names' values, not the array identity: qualityGroups is rebuilt every render,
+  // which would re-trigger the viewer's preview build continuously.
   const groupNamesKey = (activeGroup?.fileNames ?? []).join('\n')
   const blinkFiles = useMemo(() => {
     if (!groupNamesKey) return []
@@ -778,29 +734,26 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     setImporting(true); setError(null); setImportResult(null); setResultExpanded(null)
     setConfirmDeleteSources(false); setSourceDeleteMsg(null)
 
-    // Culled frames never reach an entry's frame count: counting them would
-    // overstate the integration and leave the object folder short of the subs
-    // the DB claims. They are still recorded — flagged culled, which keeps them
-    // out of every file-based reckoning while the night keeps the tally of what
-    // it threw away. Every write below uses this approved set, resolved once so
-    // the approve lines can't shift underneath a half-finished import.
+    // Culled frames never reach an entry's frame count — that would overstate the
+    // integration and leave the object folder short of the subs the DB claims —
+    // but they are still recorded, flagged culled, so the night keeps the tally of
+    // what it threw away. Resolved once so the approve lines can't shift
+    // underneath a half-finished import.
     const approvedByEntry = new Map<ImportEntry, string[]>()
     for (const s of preview ?? [])
       for (const e of s.entries) approvedByEntry.set(e, e.fileNames.filter(isApproved))
     const approvedOf = (e: ImportEntry): string[] => approvedByEntry.get(e) ?? e.fileNames
-    // Resolved from the same snapshot: what the lines rejected is what the
-    // source cleanup can offer to delete outright, since none of it is copied.
+    // From the same snapshot: what the lines rejected is what the source cleanup
+    // can offer to delete outright, since none of it is copied.
     const approvedSet = new Set([...approvedByEntry.values()].flat())
     const culledNames = importableFileNames.filter(n => !approvedSet.has(n))
     const culledOf = (e: ImportEntry): string[] => e.fileNames.filter(n => !approvedSet.has(n))
-    // An entry whose every frame was culled has nothing to import — creating a
-    // zero-frame entry for it would be the same stale row in another guise.
+    // An entry whose every frame was culled has nothing to import.
     const entriesToImport = (s: ImportSession) => s.entries.filter(e => e.canImport && approvedOf(e).length > 0)
     const sessionsToImport = (preview ?? []).filter(s => entriesToImport(s).length > 0)
 
-    // In browser mode files are copied via the File System Access API. Acquire
-    // folder access first: a permission prompt needs this click's transient
-    // user activation, which would be long expired once copying starts.
+    // Folder access is acquired first: the permission prompt needs this click's
+    // transient user activation, long expired by the time copying starts.
     const fileByName = new Map(rawFiles.map(f => [f.name, f]))
     const wantsCopy = sessionsToImport.some(s => entriesToImport(s).some(e => {
       const obj = objects.find(o => o.id === e.objectId)
@@ -838,10 +791,9 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     const entriesByObject = new Map<number, ImportEntry[]>()
     const allRecordedNames: string[] = []
 
-    // Rejects with no entry to hang on, because their entry kept nothing. Still
-    // written one entry at a time rather than in a single call: each carries the
-    // exposure it was shot at, which is the only thing left that says what the
-    // night lost once no entry survives to say it.
+    // Rejects whose entry kept nothing, so they have no entry to hang on. Written
+    // one entry at a time because each carries the exposure it was shot at — the
+    // only thing left to say what the night lost.
     const recordCulledWithoutEntry = async (entries: ImportEntry[], sessionId: number) => {
       for (const e of entries) {
         const culled = culledOf(e)
@@ -852,9 +804,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       }
     }
 
-    // The session a night's records go against, created on demand. Nights that
-    // kept nothing reach this too: the observing happened, the sky was spent,
-    // and a night that shows no session at all reads as one that never ran.
+    // Created on demand, including for nights that kept nothing: the observing
+    // happened, and a night with no session at all reads as one that never ran.
     const sessionForNight = async (s: ImportSession): Promise<number | null> => {
       const existing = sessionByDate.get(s.dateKey)
       if (existing != null) return existing
@@ -894,13 +845,12 @@ export default function ImportPanel({ onImported, onClose }: Props) {
             const objId = entry.objectId!
             createdObjSessionsByObject.set(objId, [...(createdObjSessionsByObject.get(objId) ?? []), created.id])
             entriesByObject.set(objId, [...(entriesByObject.get(objId) ?? []), entry])
-            // Recorded per entry, tied to the entry just created — deleting that
-            // entry later takes exactly these files' records with it.
+            // Tied to the entry just created, so deleting that entry later takes
+            // exactly these files' records with it.
             try { await recordImported(approved, sessionId, created.id, false, entry.exposureId) } catch {}
             allRecordedNames.push(...approved)
-            // This entry's rejects, flagged culled so nothing reads them as
-            // subs that went missing from the object folder. Same entry link:
-            // it says which target and filter they were shot for.
+            // This entry's rejects, flagged culled so nothing reads them as subs
+            // that went missing from the object folder.
             const culled = culledOf(entry)
             if (culled.length) {
               try { await recordImported(culled, sessionId, created.id, true, entry.exposureId) } catch {}
@@ -914,16 +864,13 @@ export default function ImportPanel({ onImported, onClose }: Props) {
           }
         }
 
-        // Entries the line rejected outright: nothing was imported, so there is
-        // no entry to hang their records on, but the night still lost the
-        // frames and says so.
+        // Entries the line rejected outright: no entry to hang their records on,
+        // but the night still lost the frames and says so.
         await recordCulledWithoutEntry(s.entries.filter(e => e.canImport && approvedOf(e).length === 0), sessionId)
       }
 
       // Nights where every importable frame was culled never reached the loop
-      // above — no entry means it was never given a session there. They get one
-      // here: a night that kept nothing still happened, and it is the only night
-      // whose whole story is what it threw away.
+      // above, so they were never given a session. They get one here.
       const culledOnlyNights = (preview ?? []).filter(s =>
         !sessionsToImport.includes(s) && s.entries.some(e => e.canImport && culledOf(e).length > 0))
       if (culledOnlyNights.length) setImportProgress({ step: 'Recording culled subs…', current: 0, total: 0 })
@@ -934,8 +881,7 @@ export default function ImportPanel({ onImported, onClose }: Props) {
         await recordCulledWithoutEntry(culledEntries, sessionId)
       }
 
-      // Persist quality analysis measured during this import onto the records —
-      // culled subs included: what they measured is why they were culled.
+      // Culled subs included: what they measured is why they were culled.
       const analysisItems = allRecordedNames
         .map(n => ({ n, a: rawAnalysisRef.current.get(n) }))
         .filter((x): x is { n: string; a: { psfsw: number | null; fwhm: number | null } } => !!x.a && (x.a.psfsw != null || x.a.fwhm != null))
@@ -994,9 +940,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       setImportResult({
         sessionsCreated, entriesOk: entryCount, culledRecorded, entriesFailed, entriesSkipped,
         filesCopied, filesSkipped, filesNotFound, filesFailed, copyWarning,
-        // Only subs with a copy destination count as safe to delete at the
-        // source: one belonging to an object with no folder was never copied
-        // anywhere, so its source file is still the only copy.
+        // Only subs with a copy destination: one belonging to an object with no
+        // folder was never copied, so its source file is still the only copy.
         copiedNames: [...new Set(copyGroups.flatMap(g => g.fileNames))],
         culledNames,
       })
@@ -1010,18 +955,14 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   }
 
   // ── source cleanup ───────────────────────────────────────────
-  // The imported subs now live in the object folders, so their originals in the
-  // capture folder are redundant. Offered only when the copy actually landed:
-  // if any file failed to copy we can't tell which, and deleting a source whose
-  // copy never arrived loses the sub.
+  // Offered only when the copy actually landed: if any file failed we can't tell
+  // which, and deleting a source whose copy never arrived loses the sub.
   const canDeleteCopied = !!importResult
     && importResult.copiedNames.length > 0
     && importResult.filesFailed === 0
     && !importResult.copyWarning
-  // The culled subs go with them: they were never copied anywhere, so leaving
-  // them behind just refills the folder the cleanup was meant to empty. Their
-  // records are flagged culled, so deleting the files strands nothing — no
-  // entry counts them and no sync goes looking for them.
+  // The culled subs go with them: never copied anywhere, and their records are
+  // flagged culled, so deleting the files strands nothing.
   const sourceDeleteNames = importResult
     ? [...new Set([
         ...(canDeleteCopied ? importResult.copiedNames : []),
@@ -1035,9 +976,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     if (!sourceDeleteNames.length) return
     setDeletingSources(true); setSourceDeleteMsg(null)
     try {
-      // The browser only grants delete access to a folder the user picks, and
-      // the files came in through a file input — which carries no handle. The
-      // picker is the first await here so the click's activation still holds.
+      // A file input carries no directory handle, so the folder has to be picked
+      // again. First await here, so the click's activation still holds.
       const dir = await pickSourceFolder()
       if (!dir) return // cancelled
       if (await isInsideImagesFolder(dir))

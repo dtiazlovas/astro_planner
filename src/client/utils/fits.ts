@@ -120,7 +120,7 @@ function estimateSky(px: Float32Array): { bg: number; sigma: number } {
 //            transparency, moonlight)
 //   K      — normalization constant; PixInsight calibrates it to unit median.
 //
-// Approximations vs the reference implementation (all documented for honesty):
+// Approximations vs the reference implementation:
 //   • Flux/mean-flux come from moment-based ("hybrid PSF/aperture") photometry
 //     rather than a full nonlinear PSF fit.
 //   • σ is the iterative k-sigma sky noise (PI uses MRS multiresolution noise).
@@ -281,7 +281,6 @@ export function decodeImageBuffer(buf: ArrayBuffer): DecodedImage {
     : decodeFits(buf)
 }
 
-// Dispatches on the file signature: XISF or FITS.
 export function analyzeFitsBuffer(fileName: string, buf: ArrayBuffer): FitsAnalysis {
   const { px, width, height, dateObs } = decodeImageBuffer(buf)
   const { weight, stars, fwhm } = computePsfSignalWeight(px, width, height)

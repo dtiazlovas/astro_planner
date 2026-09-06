@@ -53,10 +53,9 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
   }
   const wrapRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
-  // SVG geometry captured at drag start. Using a fixed rect for the whole
-  // gesture stops layout shifts mid-drag (e.g. cull controls appearing and
-  // resizing/recentering the surrounding modal) from feeding back into the
-  // computed value and rubber-banding the handle.
+  // SVG geometry captured at drag start, so a layout shift mid-drag (cull
+  // controls appearing and resizing the modal) can't feed back into the value
+  // and rubber-band the handle.
   const dragRectRef = useRef<{ top: number; height: number } | null>(null)
   const [w, setW] = useState(720)
   const [dragging, setDragging] = useState(false)
@@ -150,7 +149,6 @@ export default function SnrChart({ points, threshold, onThresholdChange, metricL
       const rect = dragRectRef.current
       if (!rect) return
       // The SVG scales to its box, so convert client px to SVG user units.
-      // rect is fixed at drag start so mid-drag layout shifts don't feed back.
       const py = ((e.clientY - rect.top) / rect.height) * H
       onThresholdChange(Math.round(yToValue(py) * 100) / 100)
     }

@@ -5,26 +5,17 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createApiApp } from '../../src/server/api.js'
 import { flushDatabaseToBlob, initDatabase } from '../../src/server/db.js'
 
-// Module scope, not per-request: a warm instance reuses the connection, the app
-// and — when one is configured — the database pulled down from Vercel Blob.
-// Started here rather than awaited, so the download overlaps with whatever else
-// the platform is doing to bring the instance up; the handler below is what
-// actually waits on it.
+// Module scope, not per-request, so a warm instance reuses it. Started rather
+// than awaited: the download overlaps with the rest of instance startup, and the
+// handler is what waits on it.
 const ready = initDatabase()
 
 const app = createApiApp()
 
-// An Express app *is* an (req, res) handler, so the platform could invoke it
-// directly — but two things have to bracket it here.
-//
-// Before: the database has to have finished downloading, or the first request
-// on a cold instance would read an empty file.
-//
-// After: a safety net only. The snapshot itself happens inside the request,
-// before the response is sent (see snapshotBeforeResponding in api.ts), because
-// work left running after the response is not guaranteed to finish here. This
-// final flush catches anything marked dirty outside that path and is a no-op in
-// the normal case.
+// The app could be invoked directly, but two things bracket it: the database has
+// to have finished downloading, or a cold instance's first request reads an
+// empty file; and the trailing flush is a safety net for anything marked dirty
+// outside snapshotBeforeResponding, which is where the real snapshot happens.
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   await ready
 

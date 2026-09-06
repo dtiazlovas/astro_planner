@@ -47,9 +47,23 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
   const [confirmingDetailId, setConfirmingDetailId] = useState<number | null>(null)
   const [deletingDetailId, setDeletingDetailId] = useState<number | null>(null)
 
+  const loadDetails = (planId: number) => {
+    setLoadingDetailIds(prev => new Set(prev).add(planId))
+    getPlanDetails(planId)
+      .then(d => setPlanDetails(prev => new Map(prev).set(planId, d)))
+      .catch(() => {})
+      .finally(() => setLoadingDetailIds(prev => { const s = new Set(prev); s.delete(planId); return s }))
+  }
+
   useEffect(() => {
     Promise.all([getPlans(objectId, activeId), getFilters()])
-      .then(([p, f]) => { setPlans(p); setFilters(f) })
+      .then(([p, f]) => {
+        setPlans(p); setFilters(f)
+        // The per-filter targets are the point of a plan, so the one being shot
+        // is opened for you — a single plan counts even if it isn't flagged active.
+        const auto = p.find(x => x.active) ?? (p.length === 1 ? p[0] : undefined)
+        if (auto) { setExpandedPlanIds(prev => new Set(prev).add(auto.id)); loadDetails(auto.id) }
+      })
       .catch(() => setError('Failed to load plans'))
       .finally(() => setLoading(false))
   }, [objectId, activeId])
@@ -62,13 +76,7 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
       return
     }
     setExpandedPlanIds(prev => new Set(prev).add(plan.id))
-    if (!planDetails.has(plan.id)) {
-      setLoadingDetailIds(prev => new Set(prev).add(plan.id))
-      getPlanDetails(plan.id)
-        .then(d => setPlanDetails(prev => new Map(prev).set(plan.id, d)))
-        .catch(() => {})
-        .finally(() => setLoadingDetailIds(prev => { const s = new Set(prev); s.delete(plan.id); return s }))
-    }
+    if (!planDetails.has(plan.id) && !loadingDetailIds.has(plan.id)) loadDetails(plan.id)
   }
 
   const openEditPlan = (plan: ApPlan) => {
@@ -98,6 +106,11 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
         const next = [...plans, created]
         setPlans(next)
         onActivePlanChange?.(next.some(p => p.active))
+        // A new plan is empty and the next step is always its per-filter targets,
+        // so open it and the add form rather than making that two more clicks.
+        setPlanDetails(prev => new Map(prev).set(created.id, []))
+        setExpandedPlanIds(prev => new Set(prev).add(created.id))
+        setAddingDetailFor(created.id); setEditingDetailId(null); setDetailForm(emptyDetailForm)
       }
       handleCancelPlan()
     } catch {
@@ -255,25 +268,34 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
               <tr>
                 <th>Name</th>
                 <th>Active</th>
-                <th>Details</th>
+                <th>Targets</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {plans.map(plan => (
                 <Fragment key={plan.id}>
-                  <tr className={editingPlanId === plan.id ? 'row--editing' : ''}>
+                  <tr className={`${editingPlanId === plan.id ? 'row--editing' : ''} ${expandedPlanIds.has(plan.id) ? 'row--expanded' : ''}`.trim()}>
                     <td className="cell-name">{plan.name}</td>
                     <td>
                       <button className={`toggle ${plan.active ? 'toggle--on' : ''}`}
                         onClick={() => handleToggleActive(plan)}
                         title={plan.active ? 'Active' : 'Inactive'} />
                     </td>
-                    <td className="cell-total--clickable" onClick={() => toggleExpand(plan)} title="Click to see details">
-                      <span className="expand-caret">{expandedPlanIds.has(plan.id) ? '▾' : '▸'}</span>
-                      {planDetails.has(plan.id)
-                        ? ` ${planDetails.get(plan.id)!.length} line${planDetails.get(plan.id)!.length !== 1 ? 's' : ''}`
-                        : ''}
+                    <td>
+                      <button
+                        type="button"
+                        className={`expand-btn ${expandedPlanIds.has(plan.id) ? 'expand-btn--open' : ''}`}
+                        onClick={() => toggleExpand(plan)}
+                        aria-expanded={expandedPlanIds.has(plan.id)}
+                        title={expandedPlanIds.has(plan.id) ? 'Hide the per-filter targets' : 'Show the per-filter targets'}>
+                        <span className="expand-btn__caret" aria-hidden="true">▸</span>
+                        {expandedPlanIds.has(plan.id)
+                          ? 'Hide targets'
+                          : planDetails.has(plan.id)
+                            ? `${planDetails.get(plan.id)!.length} target${planDetails.get(plan.id)!.length !== 1 ? 's' : ''}`
+                            : 'Show targets'}
+                      </button>
                     </td>
                     <td className="cell-action">
                       {confirmingPlanId === plan.id ? (
@@ -295,23 +317,30 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
                   </tr>
 
                   {expandedPlanIds.has(plan.id) && (
-                    <tr>
-                      <td colSpan={4} style={{ padding: 0 }}>
-                        <div className="filter-stats-panel" style={{ paddingBottom: '0.5rem' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                            <span className="filter-stats-panel__title">{plan.name} — details</span>
+                    <tr className="row--detail">
+                      <td colSpan={4}>
+                        <div className="plan-details">
+                          <div className="plan-details__header">
+                            <span className="plan-details__title">
+                              {plan.name} — per-filter targets
+                              {(planDetails.get(plan.id)?.length ?? 0) > 0 && (
+                                <span className="plan-details__total">
+                                  {' '}· {fmtDuration(planDetails.get(plan.id)!.reduce((s, d) => s + d.duration, 0))} planned
+                                </span>
+                              )}
+                            </span>
                             <button
                               className={`btn btn-sm ${addingDetailFor === plan.id && editingDetailId === null ? 'btn-ghost' : 'btn-primary'}`}
                               onClick={() => {
                                 if (addingDetailFor === plan.id && editingDetailId === null) handleCancelDetail()
                                 else { setAddingDetailFor(plan.id); setEditingDetailId(null); setDetailForm(emptyDetailForm) }
                               }}>
-                              {addingDetailFor === plan.id && editingDetailId === null ? 'Cancel' : '+ Add'}
+                              {addingDetailFor === plan.id && editingDetailId === null ? 'Cancel' : '+ Add target'}
                             </button>
                           </div>
 
                           {addingDetailFor === plan.id && (
-                            <form className="contents-add-form" style={{ marginBottom: '0.5rem' }}
+                            <form className="contents-add-form"
                               onSubmit={e => handleSubmitDetail(plan.id, e)}>
                               <div className="contents-form-row">
                                 <div className="form-field">
@@ -345,7 +374,7 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
                           {loadingDetailIds.has(plan.id) ? (
                             <span className="cell-muted">Loading…</span>
                           ) : (planDetails.get(plan.id)?.length ?? 0) === 0 ? (
-                            <span className="cell-muted">No details yet.</span>
+                            <span className="cell-muted">No targets yet — add one per filter you intend to shoot.</span>
                           ) : (
                             <table className="data-table">
                               <thead>

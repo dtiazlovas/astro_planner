@@ -146,11 +146,11 @@ export function parseFile(filename: string, regex: RegExp): ParsedFile | null {
 }
 
 // ── Pattern inference ────────────────────────────────────────────────────────
-// Reads a real filename and proposes the pattern that would parse it, so a new
-// user can point at one of their own subs instead of writing placeholder
-// syntax. Every guess is shown for acceptance before anything is saved — the
-// rules below are heuristics, and the one thing they must never do is quietly
-// produce a pattern that mis-reads a night.
+// Reads a real filename and proposes the pattern that would parse it, so a user
+// can point at one of their own subs instead of writing placeholder syntax.
+// Every guess is shown for acceptance before anything is saved: these are
+// heuristics, and they must never quietly produce a pattern that mis-reads a
+// night.
 
 export type PatternFieldKind = 'target' | 'duration' | 'filter' | 'short_datetime' | 'filenumber'
 
@@ -185,10 +185,9 @@ export interface PatternInference {
 const FRAME_TYPE_WORDS = /^(light|dark|flat|bias|dark ?flat|master|stack|calibrated|cal|registered|reg)$/i
 const BINNING_WORD = /^bin\d+$/i
 
-// Splits a name into segments and the separators between them. '-' is left
-// inside segments: it separates the halves of "20260822-131045" but it is also
-// part of target names like "Sh2-155", and keeping it costs nothing — the
-// datetime rule reads through it.
+// Splits a name into segments and the separators between them. '-' stays inside
+// segments: it splits "20260822-131045" but is also part of target names like
+// "Sh2-155", and the datetime rule reads through it anyway.
 const splitName = (fileName: string): { parts: string[]; seps: string[]; extension: string } => {
   const dot = fileName.lastIndexOf('.')
   const stem = dot > 0 ? fileName.slice(0, dot) : fileName
@@ -227,10 +226,8 @@ const plausibleDate = (digits: string): Date | null => {
 /**
  * Propose a pattern for `fileNames[0]`, using any further names only to tell
  * which unrecognised segments vary (wildcards) and which are fixed text.
- *
- * `objects` and `filters` are what the guesses for target and filter are drawn
- * from — matching against the user's own library beats guessing by position,
- * which is why this takes them rather than working on the name alone.
+ * Target and filter are guessed against `objects` and `filters` — matching the
+ * user's own library beats guessing by position.
  */
 export function inferPattern(fileNames: string[], objects: ApObject[], filters: ApFilter[]): PatternInference | null {
   if (!fileNames.length) return null
@@ -245,17 +242,15 @@ export function inferPattern(fileNames: string[], objects: ApObject[], filters: 
     for (let i = f.from; i <= f.to; i++) used.add(i)
   }
 
-  // 1. Date/time — the most distinctive thing in a sub's name, so it goes
-  //    first and stops the frame number rule from eating an 8-digit date.
-  //    The last plain run of digits in a name is where a frame number lives, so
-  //    a short one there is left alone rather than read as a time: "…_0001" is
-  //    frame 1, not one minute past midnight.
+  // 1. Date/time — first, so the frame-number rule can't eat an 8-digit date.
+  //    A short run of digits in the last plain-digit segment is left alone:
+  //    "…_0001" is frame 1, not one minute past midnight.
   const lastDigitSeg = parts.reduce((last, p, i) => /^\d+$/.test(p) ? i : last, -1)
   for (let i = 0; i < parts.length; i++) {
     if (used.has(i) || !isDateish(parts[i])) continue
     const own = digitsOf(parts[i])
-    // A date segment followed by a separate time segment ("20260822_131045").
-    // Tried before the date alone, or the time would be dropped on the floor.
+    // A date segment followed by a separate time segment ("20260822_131045"),
+    // tried before the date alone or the time would be dropped.
     if (own.length === 8 && i + 1 < parts.length && /^\d{4,6}$/.test(parts[i + 1])) {
       const next = parts[i + 1]
       const timeLike = next.length === 6 || (validTime(next) && i + 1 !== lastDigitSeg)
@@ -269,8 +264,8 @@ export function inferPattern(fileNames: string[], objects: ApObject[], filters: 
     if (whole) { claim({ kind: 'short_datetime', text: parts[i], display: whole.toLocaleString(), from: i, to: i, suffix: '' }); break }
   }
 
-  // 2. Duration — only the unit-suffixed form. A bare number is indis-
-  //    tinguishable from a frame count, and guessing wrong here silently
+  // 2. Duration — only the unit-suffixed form. A bare number is
+  //    indistinguishable from a frame count, and guessing wrong here silently
   //    misreports every night's integration.
   for (let i = 0; i < parts.length; i++) {
     if (used.has(i)) continue
@@ -322,11 +317,10 @@ export function inferPattern(fileNames: string[], objects: ApObject[], filters: 
     break
   }
 
-  // Segments that differ between the selected files are the ones that vary
-  // from frame to frame — a rotation tag, a session code — so they become
-  // wildcards rather than literals nailing the pattern to one night. With a
-  // single file there is nothing to compare, and everything unknown stays
-  // literal, which the panel says out loud.
+  // Segments that differ between the selected files vary from frame to frame — a
+  // rotation tag, a session code — so they become wildcards rather than literals
+  // nailing the pattern to one night. With a single file, everything unknown
+  // stays literal and the panel says so.
   const wildcards: number[] = []
   const others = fileNames.slice(1).map(splitName).filter(o => o.parts.length === parts.length)
   if (others.length) {

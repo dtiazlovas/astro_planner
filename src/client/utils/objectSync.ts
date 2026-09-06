@@ -10,15 +10,11 @@ import type { ApObject, ApObjectSession, ApFilter, ApExposure, ApSession } from 
 // Makes an object's DB stats reflect the files actually present in its folder.
 // Every attributable disk file is assigned to an (observing date, filter,
 // exposure) slot via the filename patterns — the same rules import uses — and
-// each of the object's session entries is recounted to the number of unique
-// subs on disk for its slot. That includes:
-//   • entries whose files were deleted → frames reduced or entry removed,
-//     even when the files predate per-file import tracking;
-//   • files never registered → entries/sessions created, records added;
-//   • stale import records (file gone) → removed.
-// Matching ignores the extension and `_`-separated suffix segments appended by
-// processing tools ("..._0001_a.xisf"), and original + derived copies of the
-// same sub count once. Only entries of the active rig's sessions are touched.
+// each session entry is recounted to the unique subs on disk for its slot:
+// deleted files reduce or remove an entry, unregistered files create one, stale
+// records are removed. Matching ignores the extension and the `_`-separated
+// suffixes processing tools append ("..._0001_a.xisf"), and original + derived
+// copies of a sub count once. Only the active rig's sessions are touched.
 
 const stem = (name: string) => name.replace(/\.[^.]+$/, '').toLowerCase()
 
@@ -35,9 +31,8 @@ const baseStem = (s: string): string => {
 }
 
 // A filename can parse under several patterns with different targets — e.g. a
-// rotation token ("_90deg_") swallowed into the target by a pattern without
-// the wildcard. Collect every candidate parse instead of the first match, so
-// the caller can pick the one that actually resolves to the object.
+// rotation token ("_90deg_") swallowed into the target by a pattern without the
+// wildcard — so the caller picks the parse that resolves to the object.
 const parseCandidates = (filename: string, regexes: RegExp[]): ParsedFile[] => {
   const out: ParsedFile[] = []
   for (const rx of regexes) {
@@ -73,19 +68,17 @@ export interface SyncScanResult {
   missingCount: number    // recorded but no longer present
   addCount: number        // present but not recorded
   changes: SyncChange[]
-  // Records of already-correct slots that aren't linked to their session entry
-  // — imported before the link existed, or by a build that only knew the
-  // session. Applying the sync attributes them, so deleting that entry can
-  // take them with it. Only emitted where the slot has exactly one entry.
+  // Records of already-correct slots not linked to their session entry, so
+  // applying the sync attributes them and deleting that entry can take them with
+  // it. Only emitted where the slot has exactly one entry.
   relinks: { objectSessionId: number; names: string[] }[]
   relinkCount: number
   unadjustable: string[]  // stale records that fit no slot — removed, stats untouched
   unattributable: number  // present files matching no pattern/this object (e.g. masters) — ignored
-  // Unique attributable subs on disk (one file per sub), with the capture time
-  // and filter parsed from the filename — the input for quality analysis,
-  // which runs per filter since quality scales differ between filters.
-  // `recordName` links back to the import record (for persisting analysis);
-  // stored values are the previously persisted analysis, if any.
+  // Unique attributable subs on disk, with capture time and filter parsed from
+  // the filename — the input for quality analysis, which runs per filter since
+  // quality scales differ between filters. `recordName` links back to the import
+  // record; stored values are its previously persisted analysis, if any.
   analyzableFiles: {
     name: string
     time: number
@@ -109,14 +102,13 @@ export async function scanObjectFiles(
   dayStartHour: number,
   equipment: number | null,
 ): Promise<SyncScanResult> {
-  // A culled sub's record is not a claim that a file exists — the file was
-  // deleted on purpose. Counting it would make every scan report the same
-  // "missing" subs forever and re-offer a change that has already been applied.
+  // A culled sub's record is not a claim that a file exists — it was deleted on
+  // purpose. Counting it would make every scan report the same "missing" subs
+  // forever and re-offer a change already applied.
   const imported = allImported.filter(r => !r.culled)
   const presentStems = presentFileNames.map(stem)
   const presentSet = new Set(presentStems)
-  // Processing tools keep the original name and append suffix segments
-  // (e.g. "..._0001_a.xisf" from calibration) — count those as present too.
+  // Processing tools keep the original name and append suffixes — count those.
   const isPresent = (recordStem: string) =>
     presentSet.has(recordStem) || presentStems.some(s => s.startsWith(recordStem + '_'))
 
@@ -298,16 +290,11 @@ export interface SyncApplyResult {
 }
 
 /**
- * The slice of a fresh scan that a disk cull accounts for: the slots holding
- * records that went stale because those subs were just deleted, plus the
- * culled records that fit no slot. Applying this alone brings the DB in step
- * with the deletion in the same step, and leaves every other pending change
- * (unregistered files elsewhere, unrelated stale records, relinks) for the
- * user to approve in the dialog.
- *
- * A culled sub is matched to its record by base stem — the same rule the
- * deletion itself uses — because processing changes the extension and appends
- * suffixes, so the record rarely carries the disk name.
+ * The slice of a fresh scan a disk cull accounts for: slots whose records went
+ * stale because those subs were just deleted, plus culled records that fit no
+ * slot. Applying it brings the DB in step with the deletion and leaves every
+ * other pending change for the user to approve in the dialog. Matching is by
+ * base stem, as the deletion itself is — the record rarely carries the disk name.
  */
 export function cullSubset(scan: SyncScanResult, deletedNames: string[]): SyncScanResult {
   const deleted = new Set(deletedNames.map(n => baseStem(stem(n))))
@@ -317,9 +304,7 @@ export function cullSubset(scan: SyncScanResult, deletedNames: string[]): SyncSc
   return {
     ...scan,
     changes,
-    // Relinking is bookkeeping the cull didn't cause; it stays with the
-    // pending sync. Records inside an applied slot are still linked, since
-    // that is what lets a removed entry take them with it.
+    // Relinking is bookkeeping the cull didn't cause; it stays pending.
     relinks: [],
     relinkCount: 0,
     unadjustable,
@@ -328,14 +313,12 @@ export function cullSubset(scan: SyncScanResult, deletedNames: string[]): SyncSc
   }
 }
 
-// Each change is applied independently, and import records are only removed
-// for changes that succeeded — a failure never strands the others.
+// Each change is applied independently, and records are only removed for changes
+// that succeeded — a failure never strands the others.
 //
-// `cull` is for the deletion the user just made in the quality pane: the subs
-// behind these stale records weren't lost, they were rejected, so their records
-// are flagged culled instead of deleted and the night keeps the count. Records
-// are flagged before the entries are touched, because deleting an entry takes
-// its un-culled records with it.
+// `cull` is for the deletion the user just made in the quality pane: those subs
+// weren't lost, they were rejected, so their records are flagged culled rather
+// than deleted and the night keeps the count.
 export async function applyObjectSync(
   obj: ApObject, scan: SyncScanResult, equipment: number | null, cull = false,
 ): Promise<SyncApplyResult> {
@@ -360,9 +343,7 @@ export async function applyObjectSync(
   for (const c of scan.changes) {
     try {
       // Flag first: the entry updates below may delete an entry, and that takes
-      // every un-culled record pointing at it. If the change then fails the
-      // count is left too high, but the files are off disk either way, so the
-      // next scan still sees the slot short and offers the same recount.
+      // every un-culled record pointing at it.
       if (cull && c.missingFiles.length) culledRecords += (await cullImported(c.missingFiles)).culled
       let sessionId = c.sessionId ?? createdSessionByDate.get(c.dateKey) ?? null
       if (sessionId == null && (c.newFrames > 0 || c.addFiles.length > 0)) {
@@ -376,11 +357,9 @@ export async function applyObjectSync(
         createdSessions++
       }
 
-      // The entry this slot's files end up under: the first existing one, or a
-      // new one. Deleting an entry now deletes its import records, so the
-      // records are moved onto the survivor *before* any entry is removed —
-      // otherwise merging duplicate entries would destroy the records (and the
-      // saved quality analysis) of every entry but the first.
+      // The entry this slot's files end up under. Records move onto the survivor
+      // *before* any entry is removed — otherwise merging duplicate entries
+      // destroys the records (and saved analysis) of every entry but the first.
       let entryId: number | null = null
       if (c.newFrames > 0) {
         if (c.entryIds.length > 0) {
@@ -419,16 +398,14 @@ export async function applyObjectSync(
     }
   }
 
-  // Slots that needed no recount can still hold records that predate the entry
-  // link; attributing them is what lets a later entry deletion clean up after
-  // itself. Failures here don't fail the sync — the next one retries.
+  // Slots that needed no recount can still hold records predating the entry
+  // link; attributing them lets a later entry deletion clean up after itself.
   for (const r of scan.relinks) {
     try { relinkedRecords += (await relinkImported(r.names, r.objectSessionId)).relinked } catch {}
   }
 
-  // In cull mode the slot records were flagged above; what is left here is the
-  // unadjustable set — records that fit no slot, so no entry ever deletes them
-  // and flagging them is safe at any point.
+  // In cull mode the slot records were flagged above; what is left is the
+  // unadjustable set — records that fit no slot, so no entry ever deletes them.
   let removedRecords = culledRecords
   if (staleNames.length)
     removedRecords += cull ? (await cullImported(staleNames)).culled : (await removeImported(staleNames)).removed

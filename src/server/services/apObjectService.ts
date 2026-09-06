@@ -124,11 +124,9 @@ export const updateApObject = async (id: number, data: UpdateApObjectDto): Promi
   return getApObjectById(id)
 }
 
-// Deleting an object means taking down everything hanging off it, innermost
-// first — with foreign keys on, anything left pointing at a row makes its
-// delete fail. Two chains reference the object: its session entries (which
-// carry import records and plan links) and its plans (which carry details and
-// plan links of their own).
+// Innermost first: with foreign keys on, anything left pointing at a row makes
+// its delete fail. Two chains reference the object — its session entries (which
+// carry import records and plan links) and its plans (details, plan links).
 export const deleteApObject = async (id: number): Promise<boolean> => {
   const db = connectToDatabase()
   return db.transaction((): boolean => {

@@ -1,13 +1,11 @@
 import { connectToDatabase } from '../db.js'
 import type { ApSession, CreateApSessionDto, UpdateApSessionDto } from '../models/ApSession.js'
 
-// Exposure thrown away with the culled subs, taken from the entry each record
-// is linked to. A record with no entry — its whole entry was culled, or the
-// entry has since been deleted — falls back to the exposure stored on the
-// record itself, and failing that to the night's average seconds per frame,
-// which is exact unless that night mixed exposure lengths. The average is the
-// last resort for a reason: a night that kept nothing has no entries to average
-// and would otherwise report its whole loss as zero.
+// Exposure thrown away with the culled subs, from the entry each record links
+// to. A record with no entry falls back to the exposure on the record itself,
+// then to the night's average seconds per frame — exact unless that night mixed
+// exposure lengths, and the last resort because a night that kept nothing has no
+// entries to average and would otherwise report its whole loss as zero.
 const CULLED_SECONDS = `
   CAST(COALESCE(SUM(COALESCE(ce.duration, ie.duration, (
     SELECT CAST(SUM(os2.frames * e2.duration) AS REAL) / NULLIF(SUM(os2.frames), 0)

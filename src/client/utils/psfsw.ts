@@ -7,11 +7,9 @@
 //
 // The anchor is established once per target+filter, from the median of that
 // pair's subs at the time, and then frozen in the database. Recomputing it from
-// a growing population — which is what both charts used to do, each with its
-// own population — moves every number that was ever shown, so the same sub read
-// differently between screens and between sessions. Frozen, `raw / anchor` is
-// a number you can compare across months: 1.0 is a typical sub as of the day
-// the scale was set, and nothing later redefines it.
+// a growing population moves every number ever shown, so the same sub reads
+// differently between screens and between sessions. Frozen, `raw / anchor`
+// compares across months: 1.0 is a typical sub as of the day the scale was set.
 
 import { savePsfswAnchor, type ImportedRecord, type PsfswAnchorRow } from '../api'
 import { parseFile, patternToRegex, matchObject, matchFilter } from './filePattern'
@@ -32,13 +30,12 @@ export const scaleBy = (raw: number, anchor: number): number =>
 export interface GroupedRecord { psfsw: number | null; fwhm: number | null; time: number; filename: string }
 
 /**
- * Import records grouped by the object+filter their filename parses to, keyed
- * by `anchorKeyOf`, time-ordered. Values stay raw.
+ * Import records grouped by the object+filter their filename parses to, keyed by
+ * `anchorKeyOf`, time-ordered. Values stay raw.
  *
- * Every configured pattern is tried per record rather than the first that
- * matches: a greedy pattern can swallow a token like a rotation angle
- * ("nessy_270deg") into the target and miss the real object, while a more
- * specific one parses it correctly. A record counts if any pattern resolves it.
+ * Every pattern is tried per record, not just the first that matches: a greedy
+ * pattern can swallow a token like a rotation angle ("nessy_270deg") into the
+ * target and miss the real object where a more specific one parses it.
  */
 export function groupRecords(
   records: ImportedRecord[],

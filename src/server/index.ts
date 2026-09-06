@@ -8,15 +8,12 @@ import { closeDatabaseConnection, flushDatabaseToBlob, initDatabase } from './db
 
 const app = createApiApp()
 const PORT = process.env.PORT ?? 5000
-// All interfaces by default, which is what makes the app reachable from another
-// device on the network (a phone, say) and from outside a container. Node does
-// this anyway when no host is given; saying so leaves somewhere to put a
-// loopback-only HOST when that is what you want.
+// All interfaces, so the app is reachable from a phone on the network or from
+// outside a container. HOST is where a loopback-only bind would go.
 const HOST = process.env.HOST ?? '0.0.0.0'
-// Dev is the mode you opt into (`npm run dev` sets it); anything else is
-// production. The other way round bites on any host that sets
-// NODE_ENV=production for the build, because npm then skips devDependencies and
-// vite/esbuild are missing when the build needs them.
+// Dev is opted into (`npm run dev` sets it); anything else is production. The
+// other way round bites on a host that sets NODE_ENV=production for the build,
+// since npm then skips devDependencies and vite/esbuild go missing.
 const isProduction = process.env.NODE_ENV !== 'development'
 
 // Production: dist/server.js, with the built client beside it in dist/public.
@@ -26,9 +23,9 @@ const clientDir = path.join(here, 'public')
 const repoRoot = path.join(here, '..', '..')
 
 // The client comes off this same process: built assets in production, Vite as
-// middleware in dev so there is still one port and one command, HMR intact.
-// Vite is imported dynamically (and left external when bundling) so production
-// never loads the dev toolchain.
+// middleware in dev, so there is one port and one command either way. Vite is
+// imported dynamically (and left external when bundling) so production never
+// loads the dev toolchain.
 const mountClient = async (server: http.Server): Promise<void> => {
   if (isProduction) {
     // Asset filenames are content-hashed and can be cached hard; index.html
@@ -41,9 +38,9 @@ const mountClient = async (server: http.Server): Promise<void> => {
   const { createServer } = await import('vite')
   const vite = await createServer({
     root: repoRoot,
-    // Handing Vite our own HTTP server makes HMR share the app's port. Without
-    // it, middleware mode opens a standalone WebSocket server on 24678, which
-    // collides with any other Vite project — or with a stale copy of this one.
+    // Handing Vite our own HTTP server makes HMR share the app's port; without
+    // it, middleware mode opens a WebSocket server on 24678 that collides with
+    // any other Vite project, or a stale copy of this one.
     server: { middlewareMode: true, hmr: { server } },
     appType: 'spa',
   })
@@ -55,8 +52,8 @@ const startServer = async (): Promise<void> => {
     await initDatabase()
     console.log('Connected to SQLite')
 
-    // Created up front rather than via app.listen() so Vite has something to
-    // attach its HMR socket to before we start accepting connections.
+    // Created up front rather than via app.listen(), so Vite has something to
+    // attach its HMR socket to before connections are accepted.
     const server = http.createServer(app)
     await mountClient(server)
 

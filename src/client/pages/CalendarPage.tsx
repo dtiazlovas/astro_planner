@@ -113,10 +113,9 @@ export default function CalendarPage() {
       .filter(n => n.date >= from && n.date < toExclusive)
       .sort((a, b) => a.date.getTime() - b.date.getTime())
 
-  // Per-month totals across every month present in the data: imaging time, the
-  // exposure culled out of it, and the astronomical darkness on those imaged
-  // nights that went unused. The three are disjoint slices of the same
-  // darkness, so culled time comes out of the unused share, not the kept one.
+  // Imaging time, the exposure culled out of it, and the unused darkness on
+  // those nights — three disjoint slices of the same darkness, so culled time
+  // comes out of the unused share rather than the kept one.
   const months = useMemo(() => {
     const map = new Map<string, MonthAgg>()
     for (const n of nights.values()) {
@@ -241,10 +240,9 @@ function Summary({ nights }: { nights: Night[] }) {
 }
 
 // ── Hover card: one night, spelled out ──────────────────────────────
-// Rendered inside every cell and revealed by CSS on hover, so the grid stays
-// free of positioning state and nothing re-renders when the pointer moves. The
-// rows mirror the bar underneath, swatch for swatch, so the card reads as an
-// expansion of the column rather than a separate set of numbers.
+// Rendered inside every cell and revealed by CSS on hover, so the grid holds no
+// positioning state and nothing re-renders when the pointer moves. Its rows
+// mirror the bar underneath, swatch for swatch.
 function NightCard({ date, night, darkSeconds, lat, usedPct }: {
   date: Date; night: Night | undefined; darkSeconds: number; lat: number; usedPct: number
 }) {
@@ -315,9 +313,8 @@ function MonthView({ cursor, nights, nightsIn, lat }: {
           const culledPct = n && darkH > 0
             ? Math.min(100 - fillPct, Math.round((n.culledSeconds / 3600) / darkH * 100))
             : 0
-          // The card is placed by the cell it belongs to: it opens downwards on
-          // the top row and hugs the grid's edge columns, so it can't be cut off
-          // by the top of the page or run off the side.
+          // Placed by its cell: opens downwards on the top row and hugs the edge
+          // columns, so it is never cut off by the page top or side.
           const col = i % 7
           const place = [
             i < 7 ? 'cal-cell--pop-below' : '',
