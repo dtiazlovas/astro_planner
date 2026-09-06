@@ -43,8 +43,7 @@ export default function ObjectsPage() {
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
   const [expandedStats, setExpandedStats] = useState<Map<number, ObjectFilterStat[]>>(new Map())
-  // Object id → the filter name its breakdown panel is narrowed to, set by
-  // clicking that filter's row. Absent means the panel shows every filter.
+  // Object id → the filter its breakdown panel is narrowed to; absent shows all.
   const [focusedFilter, setFocusedFilter] = useState<Map<number, string>>(new Map())
   const [planProgress, setPlanProgress] = useState<Map<number, PlanProgressItem[]>>(new Map())
   const [loadingIds, setLoadingIds] = useState<Set<number>>(new Set())
@@ -62,20 +61,18 @@ export default function ObjectsPage() {
   const [syncApplying, setSyncApplying] = useState(false)
 
   // ── sub-quality analysis inside the sync dialog ──────────────
-  // Runs per filter: quality scales differ between filters, so each gets its own
+  // Per filter: quality scales differ between filters, so each gets its own
   // normalization and limit.
   const [qualityFilterId, setQualityFilterId] = useState<number | null>(null)
-  // Both metrics are measured in one pass; this picks which one is culled
-  // against. PSFSW: higher is better; FWHM: lower is better.
+  // Both are measured in one pass. PSFSW: higher is better; FWHM: lower.
   const [qualityMetric, setQualityMetric] = useState<'psfsw' | 'fwhm'>('psfsw')
-  // Held per filter, not per pane, so switching the selector and switching back
-  // restores that filter's own measurements and limit unchanged.
+  // Per filter, not per pane, so switching away and back restores that filter's
+  // own measurements and limit unchanged.
   const [qualityResultsByFilter, setQualityResultsByFilter] = useState<Map<number, Map<string, FitsAnalysis>>>(new Map())
   const [qualityThresholdByFilter, setQualityThresholdByFilter] = useState<Map<number, number>>(new Map())
-  // Filters actually measured in this dialog — a filter seeded from saved
-  // analysis alone hasn't been, so its button still offers the cheap pass.
+  // Measured in this dialog — one seeded from saved analysis alone hasn't been,
+  // so its button still offers the cheap pass.
   const [qualityMeasuredFilters, setQualityMeasuredFilters] = useState<Set<number>>(new Set())
-  // Once the first analysis opens the chart it stays open across filter changes.
   const [qualityPaneOpen, setQualityPaneOpen] = useState(false)
   const [qualityAnalyzing, setQualityAnalyzing] = useState(false)
   const [qualityProgress, setQualityProgress] = useState<{ current: number; total: number } | null>(null)
@@ -85,14 +82,13 @@ export default function ObjectsPage() {
   const [rebaselining, setRebaselining] = useState(false)
   const [confirmRebaseline, setConfirmRebaseline] = useState(false)
   const qualityAbortRef = useRef<AbortController | null>(null)
-  // The frozen per-object+filter PSFSW scales, shared with the import panel so a
-  // sub reads the same number in both. A ref because the analysis loop's commit()
-  // must not close over a stale copy; the counter redraws the chart.
+  // The frozen PSFSW scales, shared with the import panel so a sub reads the same
+  // number in both. A ref because commit() must not close over a stale copy; the
+  // counter redraws the chart.
   const anchorsRef = useRef<AnchorMap>(new Map())
   const [anchorVersion, setAnchorVersion] = useState(0)
-  // Import records grouped by the object+filter their filename parses to — the
-  // population a pair's anchor is set from. Subs deleted from disk still count:
-  // the scale must not move because a bad night was culled.
+  // The population a pair's anchor is set from. Subs deleted from disk still
+  // count: the scale must not move because a bad night was culled.
   const groupedRecordsRef = useRef<Map<string, GroupedRecord[]>>(new Map())
 
   useEffect(() => () => qualityAbortRef.current?.abort(), [])
@@ -128,16 +124,14 @@ export default function ObjectsPage() {
     setExpandedIds(new Set()); setExpandedStats(new Map()); setFocusedFilter(new Map()); setPlansForId(null)
   }, [activeId])
 
-  // A pair with no anchor yet falls back to a local median, so a failure here is
-  // not worth surfacing.
+  // A failure here just leaves pairs on a local median until one is established.
   useEffect(() => {
     getPsfswAnchors()
       .then(rows => { anchorsRef.current = toAnchorMap(rows); setAnchorVersion(v => v + 1) })
       .catch(() => {})
   }, [])
 
-  // Reads the object's folder and diffs it against the DB. Separate from the
-  // dialog state so the cull can scan, apply and re-scan in one go.
+  // Separate from the dialog state, so a cull can scan, apply and re-scan.
   const scanObject = async (obj: ApObject): Promise<SyncScanResult> => {
     const scanDir = await ensureImagesFolderAccess()
     if (!scanDir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
@@ -145,9 +139,9 @@ export default function ObjectsPage() {
     const [filters, exposures, patterns, sessions, imported, dayStartHour] = await Promise.all([
       getFilters(), getExposures(), fetchPatterns(), getSessions(), getImportedRecords(), fetchDayStartHour(),
     ])
-    // Kept for the quality pane: an anchor is set from the pair's whole record
-    // history, which is wider than the files on disk. Culled subs are left out —
-    // a scale set from rejected frames is drawn towards the rejects.
+    // For the quality pane: an anchor is set from the pair's whole record
+    // history, wider than the files on disk. Culled subs are left out — a scale
+    // set from rejected frames is drawn towards the rejects.
     groupedRecordsRef.current = groupRecords(imported.filter(r => !r.culled), objects, filters, patterns)
     return scanObjectFiles(obj, objects, present, imported, filters, exposures, patterns, sessions, dayStartHour, activeId)
   }
@@ -236,9 +230,8 @@ export default function ObjectsPage() {
   /**
    * Moves this pair's frozen scale onto the median of everything it has now.
    * Only ever from a click: every number ever shown for the pair shifts by the
-   * ratio between old scale and new, which is precisely what the frozen anchor
-   * exists to prevent. What's on screen is rescaled by that same ratio rather
-   * than refetched, so the chart moves only for the reason asked for.
+   * ratio between old scale and new, which is what the frozen anchor exists to
+   * prevent. The screen is rescaled by that ratio rather than refetched.
    */
   const handleRebaseline = async () => {
     if (!syncPreview || activeQualityFilterId == null || !activeAnchor) return
@@ -272,10 +265,9 @@ export default function ObjectsPage() {
     }
   }
 
-  // Saved analysis for one filter's subs, scaled by that pair's anchor exactly as
-  // a fresh run is, so switching filters keeps the chart populated without
-  // measuring. An unanchored pair falls back to the population's own median —
-  // the one case where these numbers aren't comparable with other screens.
+  // Saved analysis on the same scale as a fresh run, so switching filters keeps
+  // the chart populated without measuring. An unanchored pair falls back to its
+  // own median — the one case where these aren't comparable with other screens.
   const storedResultsFor = (filterId: number): Map<string, FitsAnalysis> => {
     const files = (syncPreview?.scan.analyzableFiles ?? []).filter(f => f.filterId === filterId && f.storedPsfsw != null)
     const divisor = anchorFor(filterId) ?? medianOf(files.map(f => f.storedPsfsw!)) ?? 0
@@ -291,9 +283,8 @@ export default function ObjectsPage() {
   const measuredPoints: SnrPoint[] = [...qualityResults.values()]
     .filter(r => metricValue(r) != null)
     .map(r => ({ fileName: r.fileName, snr: metricValue(r) as number, time: qualityTimeByName.get(r.fileName) ?? 0 }))
-  // Unmeasured subs are plotted as faint markers so the chart keeps its full
-  // width; otherwise every new frame re-spreads every x position and it jitters
-  // for the whole pass.
+  // Faint markers keep the chart's full width; otherwise every new frame
+  // re-spreads every x position and it jitters for the whole pass.
   const pendingPoints: SnrPoint[] = qualityFilterFiles
     .filter(f => !qualityResults.has(f.name))
     .map(f => ({ fileName: f.name, snr: 0, time: f.time, pending: true }))
@@ -307,8 +298,7 @@ export default function ObjectsPage() {
     if (v == null) return false
     return qualityMetric === 'psfsw' ? v < qualityThreshold : v > qualityThreshold
   }
-  // The limit and a hand drop in blink are both vetoes. Scoped to the filter on
-  // screen, because that is the set the delete button acts on.
+  // Both are vetoes. Scoped to the filter on screen: that is what delete acts on.
   const cullFiles = [...new Set(
     qualityFilterFiles.map(f => f.name).filter(n => belowLimit(n) || droppedSubs.has(n)),
   )]
@@ -317,8 +307,8 @@ export default function ObjectsPage() {
   const handleQualityFilterChange = (id: number) => {
     setQualityFilterId(id)
     setConfirmDeleteSubs(false)
-    // The arriving filter shows whatever this dialog already measured for it,
-    // else its saved analysis — the pane follows rather than collapsing.
+    // The pane follows rather than collapsing: the arriving filter shows what
+    // this dialog measured for it, else its saved analysis.
     if (qualityPaneOpen && !qualityResultsByFilter.has(id)) {
       const seeded = storedResultsFor(id)
       if (seeded.size) {
@@ -331,8 +321,8 @@ export default function ObjectsPage() {
 
   const handleQualityMetricChange = (metric: 'psfsw' | 'fwhm') => {
     setQualityMetric(metric)
-    // Every filter's limit is metric-specific — a PSFSW limit is meaningless on
-    // an FWHM axis — so reset them all, not just the one on screen.
+    // Every filter's limit resets, not just the one on screen: a PSFSW limit is
+    // meaningless on an FWHM axis.
     const next = new Map<number, number>()
     for (const [id, results] of qualityResultsByFilter) {
       const t = defaultThreshold(results.values(), metric)
@@ -361,10 +351,9 @@ export default function ObjectsPage() {
 
       const raw: FitsAnalysis[] = []
 
-      // Establish the scale before anything is drawn, from every record this pair
-      // has — not just the subs still on disk — so the sync dialog and the import
-      // chart divide by the same number. This only ever fills a gap; an anchored
-      // pair keeps what it has.
+      // Established before anything is drawn, from every record this pair has —
+      // not just the subs still on disk — so this dialog and the import chart
+      // divide by the same number. Only ever fills a gap.
       const anchoredValues = (groupedRecordsRef.current.get(anchorKeyOf(syncPreview.obj.id, filterId)) ?? [])
         .map(r => r.psfsw).filter((v): v is number => v != null)
       const seedValues = anchoredValues.length
@@ -375,13 +364,12 @@ export default function ObjectsPage() {
         setAnchorVersion(v => v + 1)
       }
 
-      // Called after every frame, so the chart fills in live instead of staying
-      // blank for a pass over a few hundred subs.
+      // Called per frame, so the chart fills in live instead of staying blank
+      // for a pass over a few hundred subs.
       const commit = () => {
         const all = [...stored, ...raw]
         if (!all.length) return
-        // The pair's frozen anchor, or this set's own median as a stand-in for a
-        // pair with nothing to anchor to yet.
+        // The frozen anchor, or this set's own median for a pair without one.
         const divisor = anchorsRef.current.get(anchorKeyOf(syncPreview.obj.id, filterId))?.anchor
           ?? medianOf(all.map(r => r.snr).filter((v): v is number => v != null))
           ?? 0
@@ -390,7 +378,7 @@ export default function ObjectsPage() {
           : all
         setQualityResultsByFilter(prev => new Map(prev).set(filterId, new Map(normed.map(r => [r.fileName, r]))))
         // Held at "keep everything" until the run finishes; the handle is
-        // disabled meanwhile, so this can't fight a drag.
+        // disabled meanwhile, so this can't fight a drag in progress.
         const t = defaultThreshold(normed, qualityMetric)
         setQualityThresholdByFilter(prev => {
           const next = new Map(prev)
@@ -421,8 +409,7 @@ export default function ObjectsPage() {
         if (items.length) { try { await saveImportedAnalysis(items) } catch {} }
       }
 
-      // Marking the filter measured is what makes its button offer a re-measure
-      // rather than the cheap saved-analysis pass.
+      // Marking it measured makes the button offer a re-measure next time.
       commit()
       if (stored.length || raw.length) setQualityMeasuredFilters(prev => new Set(prev).add(filterId))
     } catch (err) {
@@ -441,8 +428,7 @@ export default function ObjectsPage() {
       if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
       const stats = await deleteObjectFolderFiles(dir, syncPreview.obj.folder, cullFiles)
       if (stats.failed > 0) setError(`${stats.failed} file${stats.failed !== 1 ? 's' : ''} could not be deleted`)
-      // These files are gone; keeping them flagged would re-count them against
-      // the next scan's cull total.
+      // Gone now; still flagged, they would re-count against the next cull total.
       setDroppedSubs(prev => {
         const next = new Set(prev)
         for (const n of cullFiles) next.delete(n)
@@ -458,18 +444,17 @@ export default function ObjectsPage() {
       })
       setConfirmDeleteSubs(false)
 
-      // The subs are off disk but the DB still counts them, so scan, apply just
-      // the slots those subs belonged to, and re-scan. Everything else the scan
-      // found stays pending for the Apply button — the user's call, not a side
-      // effect of deleting.
+      // The subs are off disk but the DB still counts them, so apply just the
+      // slots they belonged to. Everything else the scan found stays pending for
+      // the Apply button — the user's call, not a side effect of deleting.
       const obj = syncPreview.obj
       setSyncingId(obj.id)
       try {
         const scan = await scanObject(obj)
         const cull = cullSubset(scan, cullFiles)
         if (cull.changes.length > 0 || cull.unadjustable.length > 0) {
-          // Cull mode: these records are flagged culled rather than deleted, so
-          // the night they were shot on keeps the count in the calendar.
+          // Cull mode flags the records rather than deleting them, so the night
+          // keeps the count in the calendar.
           const applied = await applyObjectSync(obj, cull, activeId, true)
           if (applied.failedGroups > 0) {
             setError(`${applied.failedGroups} session entr${applied.failedGroups !== 1 ? 'ies' : 'y'} could not be updated for the deleted subs — run sync again`)
@@ -491,10 +476,9 @@ export default function ObjectsPage() {
   }
 
   /**
-   * Opens the blink viewer on the sync dialog's selected filter, so what you see
-   * is the set the approve line and delete button act on. Folder permission is
-   * requested here rather than inside the viewer: a re-prompt needs the click's
-   * transient activation, gone by the time a mount effect runs.
+   * Blinks the selected filter's subs — the same set the limit and delete button
+   * act on. Permission is requested here, not in the viewer: a re-prompt needs
+   * the click's transient activation, gone by the time a mount effect runs.
    */
   const handleBlink = async () => {
     const obj = syncPreview?.obj
@@ -507,7 +491,7 @@ export default function ObjectsPage() {
       const files = await getObjectFolderFiles(dir, obj.folder, names)
       if (!files.length) throw new Error('None of these subs could be read from the images folder')
       // The folder walk returns tree order; capture order is what makes drift
-      // and cloud visible, so sort by the time the scan already resolved.
+      // and cloud visible.
       const timeOf = new Map(qualityFilterFiles.map(f => [f.name, f.time]))
       files.sort((a, b) => (timeOf.get(a.name) ?? 0) - (timeOf.get(b.name) ?? 0))
       const label = analyzableFilters.find(f => f.id === activeQualityFilterId)?.name ?? 'subs'
@@ -534,9 +518,9 @@ export default function ObjectsPage() {
 
   const typeMap = new Map(types.map(t => [t.id, t.name]))
 
-  // Active first, paused after; the stable sort keeps each group in its
-  // drag-reorder order. The combined list stays the basis for drag-and-drop,
-  // which reorders across the whole set — the slices are only how it renders.
+  // Active first; the stable sort keeps each group in its drag-reorder order.
+  // The combined list stays the basis for drag-and-drop, which reorders across
+  // the whole set — the slices are only how it renders.
   const displayObjects = [...objects].sort((a, b) => Number(b.active) - Number(a.active))
   const activeObjects = displayObjects.filter(o => o.active)
   const pausedObjects = displayObjects.filter(o => !o.active)

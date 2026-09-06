@@ -7,10 +7,9 @@ import { downloadDbToFile, isBlobEnabled, remoteEtag, remoteVersion, uploadDbFro
 
 let db: Database.Database | null = null
 
-// A relative SQLITE_PATH resolves against the app root, not the working
-// directory: SQLite creates the file when it is absent, so a launch from the
-// wrong directory would silently open a brand-new empty database instead of
-// failing. dist/server.js is one level below the root, src/server/db.ts two.
+// Relative paths resolve against the app root, not the working directory:
+// SQLite creates a missing file, so a launch from the wrong directory would
+// silently open an empty database instead of failing.
 export const appRoot = (): string => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   return process.env.NODE_ENV === 'development' ? path.join(here, '..', '..') : path.join(here, '..')
@@ -100,10 +99,9 @@ function initSchema(database: Database.Database): void {
       filename TEXT NOT NULL
     );
 
-    -- The fixed divisor a target+filter's PSFSW values are shown against. Set
-    -- once from the median of that pair's subs and then left alone: a scale
-    -- recomputed from a growing population would move every previously seen
-    -- number, which is what makes subs incomparable across nights.
+    -- The frozen divisor a target+filter's PSFSW is shown against. Recomputing
+    -- it from a growing population would move every number ever shown, which is
+    -- what makes subs incomparable across nights.
     CREATE TABLE IF NOT EXISTS ap_psfsw_anchor (
       object INTEGER NOT NULL REFERENCES ap_object(id),
       filter INTEGER NOT NULL REFERENCES ap_filter(id),
@@ -132,22 +130,18 @@ function initSchema(database: Database.Database): void {
   try { database.exec('ALTER TABLE ap_plan ADD COLUMN equipment INTEGER REFERENCES ap_equipment(id)') } catch {}
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN psfsw REAL') } catch {}
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN fwhm REAL') } catch {}
-  // A culled sub's file is gone, so its record no longer stands for a sub in the
-  // library; it is kept only so the night can report what was thrown away.
-  // Everything that reasons about files on disk skips these.
+  // A culled sub's file is gone, so the record is kept only so its night can
+  // report what was thrown away; anything reasoning about disk skips these.
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN culled INTEGER NOT NULL DEFAULT 0') } catch {}
   // session_id alone can't say which entry of a multi-filter session a file
-  // belongs to. No ON DELETE CASCADE: entry deletion is handled explicitly, and
-  // a cascade would silently drop records (and their saved analysis) when a file
-  // sync merges duplicate entries.
+  // belongs to. No cascade: it would drop records, and their saved analysis,
+  // when a file sync merges duplicate entries.
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN object_session_id INTEGER REFERENCES ap_object_session(id)') } catch {}
-  // Records that belong to an entry take their exposure from it; this answers for
-  // the ones that don't. A night whose every sub was culled has no entry to ask,
-  // and its cull time would otherwise be zero however long it spent shooting.
+  // For records with no entry to take an exposure from: a night whose every sub
+  // was culled would otherwise report zero however long it spent shooting.
   try { database.exec('ALTER TABLE ap_imported ADD COLUMN exposure INTEGER REFERENCES ap_exposure(id)') } catch {}
-  // One row per file — the entry link is only authoritative if a second,
-  // unlinked row for the same file can't exist. Fold duplicates into the newest
-  // row first, keeping whatever the older ones knew.
+  // The entry link is only authoritative if a second, unlinked row for the same
+  // file can't exist. Fold existing duplicates into the newest row first.
   try {
     const dupes = (database.prepare(
       'SELECT COUNT(*) AS c FROM (SELECT filename FROM ap_imported GROUP BY filename HAVING COUNT(*) > 1)'
@@ -251,14 +245,10 @@ export const connectToDatabase = (): Database.Database => {
     const dbPath = dbFilePath()
     console.log(`SQLite: ${dbPath}`)
     db = new Database(dbPath)
-    // Rollback journal rather than WAL: one writer, so WAL's concurrent readers
-    // buy nothing, while its -shm sidecar is what keeps the database off a
-    // Windows bind mount. At rest the database is then exactly one file.
-    //
-    // Set explicitly even though it is SQLite's default — the mode is persistent
-    // in the file header, so an existing WAL database converts only because this
-    // line runs. The trade is that the backup container's VACUUM INTO and a write
-    // here can block each other; better-sqlite3's 5s busy timeout covers it.
+    // One writer, so WAL's concurrent readers buy nothing while its -shm sidecar
+    // keeps the database off a Windows bind mount. Set explicitly though it is
+    // the default: the mode lives in the file header, so an existing WAL database
+    // converts only because this line runs.
     db.pragma('journal_mode = DELETE')
     db.pragma('foreign_keys = ON')
     initSchema(db)
@@ -268,8 +258,8 @@ export const connectToDatabase = (): Database.Database => {
 
 /**
  * Open the database, pulling it from Vercel Blob first when one is configured.
- * For the two entrypoints, which must await the restore before serving; services
- * use the synchronous connectToDatabase().
+ * For the entrypoints, which must await the restore before serving; services use
+ * the synchronous connectToDatabase().
  */
 export const initDatabase = async (): Promise<Database.Database> => {
   if (db) return db
@@ -283,8 +273,8 @@ export const initDatabase = async (): Promise<Database.Database> => {
   if (restored) {
     console.log('Restored database from Vercel Blob')
   } else {
-    // Nothing stored yet, so whatever we just opened becomes the stored one. To
-    // seed a new store from an existing database, `npm run db:push` first.
+    // Whatever we just opened becomes the stored one; to seed a new store from
+    // an existing database, `npm run db:push` first.
     console.log('No database in Vercel Blob yet — uploading the local one')
     markDatabaseDirty()
     await flushDatabaseToBlob()
@@ -293,8 +283,7 @@ export const initDatabase = async (): Promise<Database.Database> => {
   return database
 }
 
-// The flush coalesces a burst of writes into one upload, since each upload ships
-// the entire file.
+// Coalesces a burst of writes into one upload, since each ships the whole file.
 let dirty = false
 let pending: Promise<void> = Promise.resolve()
 
@@ -304,8 +293,7 @@ const uploadSnapshot = async (): Promise<void> => {
   const database = connectToDatabase()
   const snapshot = path.join(os.tmpdir(), `astro-planner-snapshot-${process.pid}-${Date.now()}.db`)
   fs.rmSync(snapshot, { force: true })
-  // VACUUM INTO, not a file copy: it takes a read transaction and writes one
-  // self-contained file, where a copy would race an in-flight write.
+  // VACUUM INTO takes a read transaction; a copy would race an in-flight write.
   database.exec(`VACUUM INTO '${snapshot.replace(/'/g, "''")}'`)
   try {
     await uploadDbFromFile(snapshot)
@@ -315,13 +303,10 @@ const uploadSnapshot = async (): Promise<void> => {
 }
 
 /**
- * Return once the database on disk is safely in the blob — nothing queued and
- * nothing in flight.
- *
- * Waiting for an upload this caller did not start is the point: two callers
- * overlap on every write, and returning early on a flag another one had claimed
- * would report a landed snapshot that was still uploading — a lost write on a
- * host that suspends the instance when the handler resolves.
+ * Return once the database is in the blob — nothing queued, nothing in flight.
+ * Waiting for an upload this caller did not start is the point: returning early
+ * on a flag another caller had claimed would report a landed snapshot that was
+ * still uploading, which is a lost write on a host that suspends the instance.
  */
 export const flushDatabaseToBlob = async (): Promise<void> => {
   if (!isBlobEnabled()) return
@@ -329,9 +314,8 @@ export const flushDatabaseToBlob = async (): Promise<void> => {
     if (dirty) {
       dirty = false
       const run = uploadSnapshot()
-      // pending must never reject: it is awaited by callers that did not start
-      // it and have no business handling its failure. The initiator below still
-      // sees the error, and the re-armed flag makes the next write retry.
+      // pending must never reject: callers await it without having started it.
+      // The initiator below still sees the error.
       pending = run.catch(() => { dirty = true })
       await run
       // A write may have arrived while that was uploading; go round again.
@@ -345,19 +329,15 @@ export const flushDatabaseToBlob = async (): Promise<void> => {
 }
 
 // How long a read may serve without re-checking the store; writes always check.
-// Zero would be correct and slow — one page load fires a dozen API calls, and a
-// couple of seconds collapses that burst into one check.
+// Zero would be correct and slow — one page load fires a dozen API calls.
 const READ_REVALIDATE_MS = Number(process.env.BLOB_REVALIDATE_MS ?? 2000)
 
 let lastCheckedAt = 0
 let refreshing: Promise<void> | null = null
 
 /**
- * Make sure this instance is working from the store's current database.
- *
  * Instances are not told when another one writes, so a copy pulled at boot goes
- * stale silently and a write off it uploads a version missing the other
- * instance's work. `force` is for writes, which must branch off the current
+ * stale silently. `force` is for writes, which must branch off the current
  * version; reads may be up to READ_REVALIDATE_MS behind.
  */
 export const refreshDatabaseFromBlob = async (force: boolean): Promise<void> => {
@@ -374,8 +354,7 @@ export const refreshDatabaseFromBlob = async (force: boolean): Promise<void> => 
     lastCheckedAt = Date.now()
     if (current === null || current === remoteEtag()) return
 
-    // Another instance wrote. Take its version — ours is already in it, because
-    // the flush above went first.
+    // Take its version — ours is already in it, since the flush above went first.
     console.log(`Blob DB: store changed elsewhere (${remoteEtag()} → ${current}) — reloading`)
     closeDatabaseConnection()
     await downloadDbToFile(dbFilePath())

@@ -1,11 +1,8 @@
-// Vercel Blob as the durable home for the SQLite file.
-//
-// Object storage has no partial read or write, so the unit of transfer is the
-// whole file: pulled at boot, pushed after each write. Workable only because the
-// database is under a megabyte and there is one writer — see uploadDbFromFile
-// for what happens when there isn't.
-//
-// Inert unless BLOB_READ_WRITE_TOKEN is set.
+// Vercel Blob as the durable home for the SQLite file. Object storage has no
+// partial read or write, so the whole file is pulled at boot and pushed after
+// each write — workable only at under a megabyte with one writer (see
+// uploadDbFromFile for what happens when there isn't). Inert without
+// BLOB_READ_WRITE_TOKEN.
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -16,28 +13,23 @@ export const isBlobEnabled = (): boolean => Boolean(process.env.BLOB_READ_WRITE_
 
 export const blobKey = (): string => process.env.BLOB_DB_KEY?.trim() || 'astro_planner.db'
 
-// Must match how the store was created — a private store rejects reads issued as
-// 'public' and vice versa. Private by default: the blob is the whole database.
+// Must match how the store was created: a private store rejects reads issued as
+// 'public' and vice versa.
 const blobAccess = (): 'public' | 'private' =>
   process.env.BLOB_DB_ACCESS?.trim() === 'public' ? 'public' : 'private'
 
-// The version our local file was built from. Sent as `ifMatch` on upload so a
-// snapshot can never silently land on top of a copy we have not seen.
+// Sent as `ifMatch` on upload, so a snapshot can't land on a copy we haven't seen.
 let knownEtag: string | null = null
 
 export const remoteEtag = (): string | null => knownEtag
 
-// SQLite's sidecars belong to the file they were created from; left beside a
-// freshly downloaded one they replay an unrelated log over it — corruption, not
-// a stale read.
+// Sidecars belong to the file they were created from; left beside a freshly
+// downloaded one they replay an unrelated log over it.
 const dropSidecars = (dbFile: string): void => {
   for (const suffix of ['-wal', '-shm', '-journal']) fs.rmSync(`${dbFile}${suffix}`, { force: true })
 }
 
-/**
- * The version the store currently holds, or null if it holds nothing. Headers
- * only, so it is cheap enough to use as a per-request freshness check.
- */
+/** Headers only, so it is cheap enough for a per-request freshness check. */
 export const remoteVersion = async (): Promise<string | null> => {
   const { head, BlobNotFoundError } = await sdk()
   try {
@@ -48,10 +40,7 @@ export const remoteVersion = async (): Promise<string | null> => {
   }
 }
 
-/**
- * Pull the stored database into `target`, replacing whatever is there.
- * Returns false when the store holds no database yet — a first boot, not an error.
- */
+/** False when the store holds no database yet — a first boot, not an error. */
 export const downloadDbToFile = async (target: string): Promise<boolean> => {
   const { get, BlobNotFoundError } = await sdk()
 
@@ -65,10 +54,9 @@ export const downloadDbToFile = async (target: string): Promise<boolean> => {
   }
   if (!result || result.statusCode !== 200) return false
 
-  // Read the web stream directly rather than via Readable.fromWeb: that helper's
-  // signature only matches Node's ReadableStream, and a build with the DOM lib in
-  // scope (which a Vercel function can have) resolves the SDK's stream to the DOM
-  // one and refuses to compile.
+  // Not Readable.fromWeb: its signature only matches Node's ReadableStream, and
+  // a build with the DOM lib in scope resolves the SDK's stream to the DOM one
+  // and refuses to compile.
   const chunks: Uint8Array[] = []
   const reader = result.stream.getReader()
   for (;;) {
@@ -77,8 +65,8 @@ export const downloadDbToFile = async (target: string): Promise<boolean> => {
     if (value) chunks.push(value)
   }
 
-  // Written beside the target and renamed into place, so an interrupted transfer
-  // leaves the previous database intact rather than a truncated one.
+  // Renamed into place, so an interrupted transfer leaves the previous database
+  // intact rather than a truncated one.
   const partial = `${target}.download`
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(partial, Buffer.concat(chunks))
@@ -90,12 +78,9 @@ export const downloadDbToFile = async (target: string): Promise<boolean> => {
 }
 
 /**
- * Push `file` to the store as the current database.
- *
- * Conditional on the version we last saw. A mismatch means another instance
- * wrote in the meantime and one of the two copies has to lose, so the remote one
- * is kept under a `.conflict-<timestamp>` key before this one overwrites it —
- * nothing is destroyed and either side can be recovered by hand.
+ * Push `file` to the store, conditional on the version we last saw. A mismatch
+ * means another instance wrote and one copy has to lose, so the remote one is
+ * kept under a `.conflict-<timestamp>` key before this overwrites it.
  */
 export const uploadDbFromFile = async (file: string): Promise<void> => {
   const { put, copy, BlobPreconditionFailedError } = await sdk()
