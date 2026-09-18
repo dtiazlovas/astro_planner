@@ -23,8 +23,8 @@ export default function FileListDialog({ title, files, onClose }: Props) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-dialog" onClick={e => e.stopPropagation()} style={{ maxWidth: '48rem' }}>
+    <div className="modal-backdrop">
+      <div className="modal-dialog" style={{ maxWidth: '48rem' }}>
         <div className="modal-dialog__header">
           <span className="modal-dialog__title">{title}</span>
           <button className="btn btn-ghost" onClick={onClose}>✕</button>

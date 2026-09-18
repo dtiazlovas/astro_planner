@@ -26,7 +26,13 @@ const toDatetimeLocal = (iso: string | null): string => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-export default function SessionsPage() {
+interface Props {
+  /** Bumped by the nav's Import entry: opens the panel with its file picker up.
+      Zero when the page was reached any other way. */
+  importRequest?: number
+}
+
+export default function SessionsPage({ importRequest = 0 }: Props) {
   const { activeId, equipment } = useEquipment()
   const [sessions, setSessions] = useState<ApSession[]>([])
   const [loading, setLoading] = useState(true)
@@ -38,9 +44,22 @@ export default function SessionsPage() {
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
-  const [showImport, setShowImport] = useState(false)
+  // The import panel has no pick buttons of its own: the header's two buttons
+  // open it and ask it for a picker through these counters. Initial state covers
+  // arriving from the nav entry; the effect below covers pressing it again while
+  // already here.
+  const [showImport, setShowImport] = useState(importRequest > 0)
+  const [selectRequest, setSelectRequest] = useState(0)
+  const [selectFolderRequest, setSelectFolderRequest] = useState(0)
   const [sortField, setSortField] = useState<keyof ApSession>('start')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const openImport = (what: 'files' | 'folder') => {
+    setShowImport(true)
+    if (what === 'files') setSelectRequest(n => n + 1)
+    else setSelectFolderRequest(n => n + 1)
+    if (showForm) handleCancel()
+  }
 
   const handleSort = (field: keyof ApSession) => {
     if (field === sortField) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -57,6 +76,15 @@ export default function SessionsPage() {
 
   const sortInd = (field: keyof ApSession) =>
     sortField === field ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+
+  // The nav's Import entry asks for the same thing the header's "Import files"
+  // does, so it goes through the same counter rather than being mirrored into it
+  // — two sources setting one number would collide on equal values.
+  useEffect(() => {
+    if (!importRequest) return
+    setShowImport(true)
+    setSelectRequest(n => n + 1)
+  }, [importRequest])
 
   useEffect(() => {
     setLoading(true)
@@ -154,10 +182,9 @@ export default function SessionsPage() {
           {selectedIds.size > 0 && (
             <button className="btn btn-ghost" onClick={() => setSelectedIds(new Set())}>Collapse all</button>
           )}
-          <button className={`btn ${showImport ? 'btn-ghost' : 'btn-contents'}`} onClick={() => { setShowImport(v => !v); if (showForm) handleCancel() }}>
-            {showImport ? 'Hide Import' : '📁 Import'}
-          </button>
           <button className="btn btn-primary" onClick={openAdd}>+ Add Session</button>
+          <button className="btn btn-contents" onClick={() => openImport('files')}>Import files</button>
+          <button className="btn btn-contents" onClick={() => openImport('folder')}>Import folder</button>
         </div>
       </div>
 
@@ -165,6 +192,8 @@ export default function SessionsPage() {
 
       {showImport && (
         <ImportPanel
+          selectRequest={selectRequest}
+          selectFolderRequest={selectFolderRequest}
           onClose={() => setShowImport(false)}
           onImported={() => {
             getSessions(activeId).then(setSessions).catch(() => {})
@@ -241,8 +270,8 @@ export default function SessionsPage() {
 
       {/* Add and edit share one dialog — same fields, same submit handler. */}
       {showForm && (
-        <div className="modal-backdrop" onClick={handleCancel}>
-          <div className="modal-dialog modal-dialog--form" onClick={e => e.stopPropagation()}>
+        <div className="modal-backdrop">
+          <div className="modal-dialog modal-dialog--form">
             <div className="modal-dialog__header">
               <span className="modal-dialog__title">{editingId !== null ? 'Edit session' : 'New session'}</span>
               <button className="btn btn-ghost" onClick={handleCancel}>✕</button>
@@ -302,8 +331,8 @@ export default function SessionsPage() {
       {confirmingId !== null && (() => {
         const ses = sessions.find(s => s.id === confirmingId)
         return (
-          <div className="modal-backdrop" onClick={() => setConfirmingId(null)}>
-            <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+          <div className="modal-backdrop">
+            <div className="modal-dialog">
               <div className="modal-dialog__header">
                 <span className="modal-dialog__title">Delete session?</span>
               </div>

@@ -260,8 +260,8 @@ export default function EquipmentPage() {
       {confirmingId !== null && (() => {
         const eq = equipment.find(e => e.id === confirmingId)
         return (
-          <div className="modal-backdrop" onClick={() => setConfirmingId(null)}>
-            <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+          <div className="modal-backdrop">
+            <div className="modal-dialog">
               <div className="modal-dialog__header">
                 <span className="modal-dialog__title">Delete equipment?</span>
               </div>

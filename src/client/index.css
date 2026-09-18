@@ -225,6 +225,16 @@ body {
   font-weight: 700;
 }
 
+/* Sized and spaced exactly like the page links beside it — it belongs to the
+   same row. Only the colour separates it: a step toward the accent, because
+   pressing it opens the file picker instead of switching pages. */
+.nav-link--import { color: #c4b5fd; }
+
+.nav-link--import:hover {
+  color: #f5f3ff;
+  background: #241f45;
+}
+
 /* Holds the totals summary and the rig selector together so a wrapping header
    row can't strand one without the other. */
 .app-side__rig {
@@ -2928,6 +2938,10 @@ body {
        nothing else to lend them contrast. */
     color: #cbd5e1;
   }
+
+  /* Six labels don't fit a phone row, so the import entry drops to its verb —
+     "Import" is no wider than the page names it sits with. */
+  .nav-link__word { display: none; }
 
   /* Carries the accent bar too, along the bottom edge here rather than the
      leading one the rail uses. With every label brightened, the fill alone was

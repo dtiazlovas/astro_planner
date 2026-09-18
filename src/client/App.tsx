@@ -10,6 +10,8 @@ import './index.css'
 
 type Page = 'objects' | 'sessions' | 'calendar' | 'equipment' | 'settings'
 
+const PAGES: Page[] = ['objects', 'sessions', 'calendar', 'equipment', 'settings']
+
 function RigSelector() {
   const { equipment, activeId, setActiveId } = useEquipment()
   if (equipment.length === 0) return null
@@ -29,6 +31,14 @@ function RigSelector() {
 
 export default function App() {
   const [page, setPage] = useState<Page>('objects')
+  // Import has no page of its own: the nav entry lands on Sessions with the
+  // import panel open and its file picker already up. Counted rather than
+  // flagged so pressing it again re-opens the picker, and cleared by any other
+  // nav click so coming back to Sessions later doesn't re-trigger it.
+  const [importRequest, setImportRequest] = useState(0)
+
+  const goTo = (p: Page) => { setPage(p); setImportRequest(0) }
+  const requestImport = () => { setPage('sessions'); setImportRequest(n => n + 1) }
 
   return (
     <div className="app">
@@ -45,9 +55,15 @@ export default function App() {
             <RigSelector />
           </div>
         </div>
+        {/* Import leads the nav because nearly every visit starts there. It is
+            the one entry that runs an action instead of switching pages, so it
+            never takes the active state — only a tint that sets it apart. */}
         <nav className="app-nav">
-          {(['objects', 'sessions', 'calendar', 'equipment', 'settings'] as Page[]).map(p => (
-            <button key={p} className={`nav-link ${page === p ? 'nav-link--active' : ''}`} onClick={() => setPage(p)}>
+          <button className="nav-link nav-link--import" onClick={requestImport}>
+            Import<span className="nav-link__word"> files</span>
+          </button>
+          {PAGES.map(p => (
+            <button key={p} className={`nav-link ${page === p ? 'nav-link--active' : ''}`} onClick={() => goTo(p)}>
               {p.charAt(0).toUpperCase() + p.slice(1)}
             </button>
           ))}
@@ -57,7 +73,7 @@ export default function App() {
       <div className="app-body">
         <main className="app-main">
           {page === 'objects' && <ObjectsPage />}
-          {page === 'sessions' && <SessionsPage />}
+          {page === 'sessions' && <SessionsPage importRequest={importRequest} />}
           {page === 'calendar' && <CalendarPage />}
           {page === 'equipment' && <EquipmentPage />}
           {page === 'settings' && <SettingsPage />}

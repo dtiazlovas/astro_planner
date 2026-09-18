@@ -50,6 +50,7 @@
       "Bash(rmdir backend *)",
       "Bash(node -e \"const D=require\\('better-sqlite3'\\); const d=new D\\('./data/astro_planner.db',{readonly:true}\\); console.log\\('DB opens OK, imported rows:', d.prepare\\('SELECT COUNT\\(*\\) c FROM ap_imported'\\).get\\(\\).c\\); d.close\\(\\)\")",
       "Bash(npm run *)",
+      "PowerShell(npm run *)",
       "PowerShell($p = \\(Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($p\\) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } ; \"stopped $\\($p -join ','\\)\" } else { \"nothing listening\" })",
       "PowerShell($p = \\(Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($p\\) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; \"stopped\" } else { \"free\" })",
       "PowerShell($p = \\(Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess; if \\($p\\) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }; Start-Sleep -Milliseconds 500; \"port free\")",

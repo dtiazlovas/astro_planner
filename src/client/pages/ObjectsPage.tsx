@@ -881,8 +881,8 @@ export default function ObjectsPage() {
 
       {/* Add and edit share one dialog — same fields, same submit handler. */}
       {showForm && (
-        <div className="modal-backdrop" onClick={handleCancel}>
-          <div className="modal-dialog modal-dialog--form" onClick={e => e.stopPropagation()}>
+        <div className="modal-backdrop">
+          <div className="modal-dialog modal-dialog--form">
             <div className="modal-dialog__header">
               <span className="modal-dialog__title">{editingId !== null ? 'Edit object' : 'New object'}</span>
               <button className="btn btn-ghost" onClick={handleCancel}>✕</button>
@@ -939,8 +939,8 @@ export default function ObjectsPage() {
         const obj = objects.find(o => o.id === plansForId)
         if (!obj) return null
         return (
-          <div className="modal-backdrop" onClick={() => setPlansForId(null)}>
-            <div className="modal-dialog modal-dialog--wide" onClick={e => e.stopPropagation()}>
+          <div className="modal-backdrop">
+            <div className="modal-dialog modal-dialog--wide">
               <PlansPanel
                 objectId={obj.id}
                 objectName={obj.name}
@@ -957,8 +957,8 @@ export default function ObjectsPage() {
       })()}
 
       {syncPreview !== null && (
-        <div className="modal-backdrop" onClick={closeSyncPreview}>
-          <div className="modal-dialog modal-dialog--wide" onClick={e => e.stopPropagation()}>
+        <div className="modal-backdrop">
+          <div className="modal-dialog modal-dialog--wide">
             <div className="modal-dialog__header">
               <span className="modal-dialog__title">Sync files — {syncPreview.obj.name}</span>
               <button className="btn btn-ghost" onClick={closeSyncPreview}>✕</button>
@@ -1200,8 +1200,8 @@ export default function ObjectsPage() {
       {confirmingId !== null && (() => {
         const obj = objects.find(o => o.id === confirmingId)
         return (
-          <div className="modal-backdrop" onClick={() => setConfirmingId(null)}>
-            <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+          <div className="modal-backdrop">
+            <div className="modal-dialog">
               <div className="modal-dialog__header">
                 <span className="modal-dialog__title">Delete object?</span>
               </div>

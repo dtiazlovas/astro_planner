@@ -74,6 +74,12 @@ interface HistoricalRecord { psfsw: number | null; fwhm: number | null; time: nu
 interface Props {
   onImported: () => void
   onClose: () => void
+  /** The pick buttons live in the page header, not in here: these open the file
+      and folder pickers when they change to a non-zero value. Counters rather
+      than flags so pressing a button again — after a cancelled picker, say —
+      opens it again. */
+  selectRequest?: number
+  selectFolderRequest?: number
 }
 
 function buildPreview(
@@ -159,7 +165,7 @@ function buildPreview(
   return { sessions, warnings: [...new Set(allWarnings)], parsed: parsed.length, skipped }
 }
 
-export default function ImportPanel({ onImported, onClose }: Props) {
+export default function ImportPanel({ onImported, onClose, selectRequest = 0, selectFolderRequest = 0 }: Props) {
   const { activeId } = useEquipment()
   const [objects, setObjects] = useState<ApObject[]>([])
   const [objectTypes, setObjectTypes] = useState<ApObjectType[]>([])
@@ -171,6 +177,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   const [lookupReady, setLookupReady] = useState(false)
 
   const [rawFiles, setRawFiles] = useState<File[]>([])
+  // Picked while the lookups were still in flight; processed once they land.
+  const [queuedFiles, setQueuedFiles] = useState<File[] | null>(null)
   const [blinkOpen, setBlinkOpen] = useState(false)
   const [duplicateCount, setDuplicateCount] = useState(0)
   const [preview, setPreview] = useState<ImportSession[] | null>(null)
@@ -226,6 +234,10 @@ export default function ImportPanel({ onImported, onClose }: Props) {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
+  // The last request acted on — one picker per request, whatever the effects do
+  // (StrictMode runs them twice).
+  const selectRequestRef = useRef(0)
+  const selectFolderRequestRef = useRef(0)
   const analyzeAbortRef = useRef<AbortController | null>(null)
   // Mirrors qualityMetric so the streaming commit() isn't reading a stale copy.
   const qualityMetricRef = useRef<'psfsw' | 'fwhm'>('psfsw')
@@ -244,6 +256,34 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   useEffect(() => {
     if (folderInputRef.current) folderInputRef.current.setAttribute('webkitdirectory', '')
   }, [])
+
+  // Fired without waiting for the lookup fetches below: they land while the
+  // picker is open, and awaiting them first would spend the click's user
+  // activation, after which the browser drops the picker without saying so.
+  // Files chosen before they arrive wait in queuedFiles.
+  useEffect(() => {
+    if (!selectRequest || selectRequestRef.current === selectRequest) return
+    selectRequestRef.current = selectRequest
+    fileInputRef.current?.click()
+  }, [selectRequest])
+
+  useEffect(() => {
+    if (!selectFolderRequest || selectFolderRequestRef.current === selectFolderRequest) return
+    selectFolderRequestRef.current = selectFolderRequest
+    folderInputRef.current?.click()
+  }, [selectFolderRequest])
+
+  // Nothing in here picks files any more, so a dismissed picker would leave an
+  // empty panel sitting on the page; closing puts the page back as it was.
+  // Dismissing a re-pick with a batch already loaded leaves that batch alone.
+  const nothingPicked = preview === null && rawFiles.length === 0 && queuedFiles === null
+  useEffect(() => {
+    if (!nothingPicked) return
+    const inputs = [fileInputRef.current, folderInputRef.current]
+    const handleCancel = () => onClose()
+    inputs.forEach(i => i?.addEventListener('cancel', handleCancel))
+    return () => inputs.forEach(i => i?.removeEventListener('cancel', handleCancel))
+  }, [nothingPicked, onClose])
 
   useEffect(() => {
     Promise.all([getObjects(activeId), getFilters(), getExposures(), fetchPatterns(), getObjectTypes(), getSessions(activeId), getPlans(undefined, activeId), fetchDayStartHour()])
@@ -291,9 +331,20 @@ export default function ImportPanel({ onImported, onClose }: Props) {
     applyPreview(fresh, objects, filters, {}, {})
   }
 
+  useEffect(() => {
+    if (!lookupReady || !queuedFiles) return
+    const files = queuedFiles
+    setQueuedFiles(null)
+    processFiles(files)
+  }, [lookupReady, queuedFiles])
+
   const handleFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const all = Array.from(e.target.files ?? [])
     if (fileInputRef.current) fileInputRef.current.value = ''
+    // Objects, filters and patterns are what a name is matched against, so a
+    // batch picked before they arrive is held rather than parsed against
+    // nothing — otherwise every target would come out unresolved.
+    if (!lookupReady) { setQueuedFiles(all); return }
     await processFiles(all)
   }
 
@@ -979,32 +1030,30 @@ export default function ImportPanel({ onImported, onClose }: Props) {
   return (
     <div className="contents-panel">
       <div className="contents-panel__header">
-        <span className="contents-panel__title">Import Sessions from Folder</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap', minWidth: 0 }}>
+          <span className="contents-panel__title">Import Sessions</span>
+          <span className="cell-muted" style={{ fontSize: '0.85rem' }}>
+            {queuedFiles
+              ? <>{queuedFiles.length} file{queuedFiles.length !== 1 ? 's' : ''} selected — loading objects and filters…</>
+              : patterns.length === 1
+                ? <>Pattern: <code className="inline-code">{patterns[0]}</code></>
+                : <>{patterns.length} patterns</>}
+          </span>
+        </div>
         <button className="btn btn-ghost" onClick={onClose}>Close</button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
 
       <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-            <input ref={fileInputRef} type="file" style={{ display: 'none' }}
-              accept={getPatternAcceptMulti(patterns)} multiple onChange={handleFiles} />
-            <input ref={folderInputRef} type="file" style={{ display: 'none' }}
-              accept={getPatternAcceptMulti(patterns)} onChange={handleFolderFiles} />
-            <button className="btn btn-primary" disabled={!lookupReady}
-              onClick={() => fileInputRef.current?.click()}>
-              📁 Select Files
-            </button>
-            <button className="btn btn-secondary" disabled={!lookupReady}
-              onClick={() => folderInputRef.current?.click()}>
-              🗂 Select Folder
-            </button>
-            <span className="cell-muted" style={{ fontSize: '0.85rem' }}>
-              {patterns.length === 1
-                ? <>Pattern: <code className="inline-code">{patterns[0]}</code></>
-                : <>{patterns.length} patterns</>}
-            </span>
-          </div>
+          {/* The pickers are driven from the page header's Import buttons — see
+              selectRequest. The file one stays unfiltered until the patterns are
+              known: it can open before they load, and a default extension would
+              hide the very files the user came to select. */}
+          <input ref={fileInputRef} type="file" style={{ display: 'none' }}
+            accept={lookupReady ? getPatternAcceptMulti(patterns) : '*'} multiple onChange={handleFiles} />
+          <input ref={folderInputRef} type="file" style={{ display: 'none' }}
+            accept={getPatternAcceptMulti(patterns)} onChange={handleFolderFiles} />
 
           {preview !== null && (
             <>
@@ -1452,8 +1501,8 @@ export default function ImportPanel({ onImported, onClose }: Props) {
       )}
 
       {createDialog !== null && (
-        <div className="modal-backdrop" onClick={() => setCreateDialog(null)}>
-          <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+        <div className="modal-backdrop">
+          <div className="modal-dialog">
             <div className="modal-dialog__header">
               <span className="modal-dialog__title">New Object</span>
               <button className="btn btn-ghost" onClick={() => setCreateDialog(null)}>✕</button>
