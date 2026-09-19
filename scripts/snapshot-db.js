@@ -21,7 +21,7 @@ const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 /** The database being copied: SQLITE_PATH, or the default beside the app. */
 export const sourcePath = () => {
-  const configured = process.env.SQLITE_PATH?.trim() || './data/astro_planner.db'
+  const configured = process.env.SQLITE_PATH?.trim() || './data/astro_logger.db'
   return path.isAbsolute(configured) ? configured : path.resolve(repoRoot, configured)
 }
 
@@ -31,7 +31,7 @@ export const defaultBackupDir = () =>
 
 /** A filename that sorts chronologically and is legal on Windows (no colons). */
 export const snapshotName = (at = new Date()) =>
-  `astro_planner-${at.toISOString().replace(/[:.]/g, '-').replace('Z', '')}.db`
+  `astro_logger-${at.toISOString().replace(/[:.]/g, '-').replace('Z', '')}.db`
 
 /**
  * The name every snapshot taken on one UTC day shares, so writing it again
@@ -43,7 +43,7 @@ export const snapshotName = (at = new Date()) =>
  * slot. It is also the file src/server/localBackup.ts rewrites after a write, so
  * the two paths converge on one file per day rather than interleaving.
  */
-export const dayName = (at = new Date()) => `astro_planner-${at.toISOString().slice(0, 10)}.db`
+export const dayName = (at = new Date()) => `astro_logger-${at.toISOString().slice(0, 10)}.db`
 
 export const snapshotTo = (source, target) => {
   if (!fs.existsSync(source)) throw new Error(`No database at ${source}`)

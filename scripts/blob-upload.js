@@ -30,7 +30,7 @@ import { defaultBackupDir, snapshotTo } from './snapshot-db.js'
 
 export const isBlobEnabled = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim())
 
-export const blobKey = () => process.env.BLOB_DB_KEY?.trim() || 'astro_planner.db'
+export const blobKey = () => process.env.BLOB_DB_KEY?.trim() || 'astro_logger.db'
 
 const blobAccess = () => (process.env.BLOB_DB_ACCESS?.trim() === 'public' ? 'public' : 'private')
 
@@ -44,18 +44,18 @@ export const previousKey = () => `${blobKey()}.previous`
 /** The most recent snapshot the backup task wrote, or null if there are none. */
 export const latestSnapshot = (dir = defaultBackupDir()) => {
   if (!fs.existsSync(dir)) return null
-  // Same name shape backup-daily.js prunes on. Its `astro_planner.db` copy of
+  // Same name shape backup-daily.js prunes on. Its `astro_logger.db` copy of
   // the newest one is skipped by the same pattern — identical content, but a
   // name that says less in a log.
   //
   // Ordered by mtime, not by name. Name order was right while every snapshot
   // carried a full ISO timestamp, and is wrong now that they are named for the
-  // day and rewritten within it: a leftover astro_planner-<date>T<time>.db from
+  // day and rewritten within it: a leftover astro_logger-<date>T<time>.db from
   // the old scheme sorts *after* the same date's day file, so for as long as one
   // survives pruning this would upload a snapshot hours stale. Name breaks ties,
   // which is what a folder copied wholesale gives you.
   const names = fs.readdirSync(dir)
-    .filter(name => /^astro_planner-.*\.db$/.test(name))
+    .filter(name => /^astro_logger-.*\.db$/.test(name))
     .map(name => ({ name, at: fs.statSync(path.join(dir, name)).mtimeMs }))
     .sort((a, b) => a.at - b.at || a.name.localeCompare(b.name))
   const newest = names.at(-1)
@@ -89,7 +89,7 @@ export const uploadToBlob = async (file) => {
   if (!isBlobEnabled()) throw new Error('BLOB_READ_WRITE_TOKEN is not set')
 
   const source = path.resolve(file)
-  const staged = path.join(os.tmpdir(), `astro-planner-upload-${process.pid}-${Date.now()}.db`)
+  const staged = path.join(os.tmpdir(), `astro-logger-upload-${process.pid}-${Date.now()}.db`)
   const { size } = snapshotTo(source, staged)
 
   try {

@@ -122,7 +122,7 @@ what keeps the database off a Windows bind mount.
 `backup` compose service) is the scheduled floor; `src/server/localBackup.ts` rewrites the
 same day's snapshot a few seconds after any successful non-GET, so the newest copy is as
 fresh as the last import or cull rather than as fresh as 03:00. They agree on
-`astro_planner-<date>.db`, replaced atomically via `.partial` + rename — a backup path
+`astro_logger-<date>.db`, replaced atomically via `.partial` + rename — a backup path
 must never have a window where the old copy is gone and the new one is not there yet.
 Keep both: the scheduled run is what still fires on a day the middleware has silently
 stopped working. Off entirely when `isBlobEnabled()`.

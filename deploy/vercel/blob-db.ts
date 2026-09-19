@@ -36,7 +36,7 @@ const push = async (): Promise<void> => {
   // Snapshot rather than upload the file as it sits on disk: the live database
   // may have committed pages still in its WAL, which is a separate file we are
   // not shipping. VACUUM INTO folds them in and writes one consistent copy.
-  const snapshot = path.join(os.tmpdir(), `astro-planner-push-${process.pid}.db`)
+  const snapshot = path.join(os.tmpdir(), `astro-logger-push-${process.pid}.db`)
   fs.rmSync(snapshot, { force: true })
   const database = new Database(source, { readonly: true })
   try {

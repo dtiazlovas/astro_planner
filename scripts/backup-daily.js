@@ -23,7 +23,7 @@
 //   BACKUP_KEEP   how many days of snapshots to retain. Default 7. One file per
 //                 day, so this is a number of days rather than of runs.
 //   BACKUP_DIR    where to write them. Default /backups in a container.
-//   SQLITE_PATH   which database to copy. Default ./data/astro_planner.db.
+//   SQLITE_PATH   which database to copy. Default ./data/astro_logger.db.
 import fs from 'node:fs'
 import path from 'node:path'
 import { dayName, defaultBackupDir, snapshotOver, sourcePath } from './snapshot-db.js'
@@ -43,7 +43,7 @@ const log = (...args) => console.log(`[backup ${new Date().toISOString()}]`, ...
 const existing = () => {
   if (!fs.existsSync(dir)) return []
   return fs.readdirSync(dir)
-    .filter(n => /^astro_planner-.*\.db$/.test(n))
+    .filter(n => /^astro_logger-.*\.db$/.test(n))
     .sort() // ISO dates sort chronologically
 }
 
@@ -64,11 +64,11 @@ const prune = () => {
 const takenToday = () => fs.existsSync(path.join(dir, dayName()))
 
 // The newest snapshot is also kept under the database's own file name —
-// astro_planner.db, or whatever SQLITE_PATH is pointed at. The timestamped
+// astro_logger.db, or whatever SQLITE_PATH is pointed at. The timestamped
 // files are the history; this is the one to reach for when you just want the
 // current data out of the volume, because it sits at a path you can type.
 // Restoring, opening it in a SQLite browser, or `npm run db:upload --
-// backups/astro_planner.db` then never involves reading a timestamp out of a
+// backups/astro_logger.db` then never involves reading a timestamp out of a
 // directory listing.
 //
 // prune() cannot touch it: the name carries no `-<timestamp>`, so it does not

@@ -11,7 +11,7 @@ const sdk = async () => import('@vercel/blob')
 
 export const isBlobEnabled = (): boolean => Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim())
 
-export const blobKey = (): string => process.env.BLOB_DB_KEY?.trim() || 'astro_planner.db'
+export const blobKey = (): string => process.env.BLOB_DB_KEY?.trim() || 'astro_logger.db'
 
 // Must match how the store was created: a private store rejects reads issued as
 // 'public' and vice versa.

@@ -46,8 +46,8 @@ inotify events into the container.
 The same Dockerfile builds a production image:
 
 ```
-docker build --target prod -t astro-planner:prod .
-docker run -p 5000:5000 -v astro-planner-data:/app/data astro-planner:prod
+docker build --target prod -t astro-logger:prod .
+docker run -p 5000:5000 -v astro-logger-data:/app/data astro-logger:prod
 ```
 
 `npm run db:snapshot` also works outside Docker, writing to `./backups`.
@@ -90,7 +90,7 @@ seven really is a week of history, where before a few container restarts could
 quietly cut it to three days. Replacement is atomic: the new snapshot is written
 beside the old one and renamed in, so an interrupted run leaves the previous
 copy whole rather than nothing at all. Only files this wrote are pruned
-(`astro_planner-<date>.db`) — a copy you make by hand keeps its own name and is
+(`astro_logger-<date>.db`) — a copy you make by hand keeps its own name and is
 never touched.
 
 The trade is within a day: the evening's snapshot replaces the morning's, so if
@@ -101,8 +101,8 @@ Two files are left:
 
 | | |
 |---|---|
-| `backups/astro_planner-<date>.db` | the history, pruned to `BACKUP_KEEP` days |
-| `backups/astro_planner.db` | the newest one under the database's own name, replaced every run |
+| `backups/astro_logger-<date>.db` | the history, pruned to `BACKUP_KEEP` days |
+| `backups/astro_logger.db` | the newest one under the database's own name, replaced every run |
 
 The second is the point of the folder for everyday use: the database lives on a
 named volume, out of Explorer's reach, and this is it at a path you can type —
@@ -116,14 +116,14 @@ day from the history:
 
 ```
 docker compose down
-docker compose run --rm -e SQLITE_PATH=/backups/astro_planner.db \
-  app npm run db:snapshot -- /app/data/astro_planner.db
+docker compose run --rm -e SQLITE_PATH=/backups/astro_logger.db \
+  app npm run db:snapshot -- /app/data/astro_logger.db
 docker compose up -d
 ```
 
 #### Initialising the database volume
 
-`astro-planner-data` starts empty and the app creates its schema on first boot,
+`astro-logger-data` starts empty and the app creates its schema on first boot,
 so an empty database needs nothing. To start from an existing one instead, run
 the restore above with `-v "/path/to/data:/import"` and `SQLITE_PATH` pointing
 into `/import`. The mount must be writable, not `:ro` — SQLite needs to be able
@@ -238,7 +238,7 @@ Set `BLOB_READ_WRITE_TOKEN` and the SQLite file stops being the database and
 becomes a working copy of it. The server pulls the file from the blob store at
 boot (`initDatabase()`) and pushes a fresh snapshot after any request that
 changed something. `SQLITE_PATH` still says where the working copy lives —
-`/tmp/astro_planner.db` on Vercel — but losing it no longer loses data.
+`/tmp/astro_logger.db` on Vercel — but losing it no longer loses data.
 
 Leave the token unset and none of this happens: the file on disk is the
 database, the SDK is never even imported, and local dev and any host with a real
@@ -250,7 +250,9 @@ Setting it up:
    **connect it to the project** — that is what puts `BLOB_READ_WRITE_TOKEN` in
    the function's environment. Creating a store is not enough on its own.
 2. Deploy. The server reads the database at `BLOB_DB_KEY`, which defaults to
-   `astro_planner.db` — where it already sits in the `astro-planner-db` store.
+   `astro_logger.db`. Anything pushed to the `astro-planner-db` store before the
+   rename is still under `astro_planner.db`, so either set `BLOB_DB_KEY` to that
+   or re-push with `npm run db:push`.
    If that key holds nothing, the first boot uploads whatever it opened — on
    Vercel that is an empty schema, so push a real database with `npm run db:push`
    to populate a new store.
@@ -272,7 +274,7 @@ asked, unauthenticated, on a public deployment — not worth the convenience.
 - `No database in Vercel Blob yet — uploading the local one` — the token works,
   but that key held nothing. If you expected existing data, the key is wrong
   (`npm run db:list` prints the pathnames the store actually holds).
-- Neither line, only `SQLite: /tmp/astro_planner.db` — the token is not in this
+- Neither line, only `SQLite: /tmp/astro_logger.db` — the token is not in this
   environment. The store exists but was never *connected to the project*. Every
   write is going to `/tmp` and dies with the instance. This is the usual cause
   of "my changes disappeared".
@@ -325,11 +327,11 @@ Moving the file by hand — needs `BLOB_READ_WRITE_TOKEN` in `.env`, or
 npm run db:list              # every blob in the store, with its pathname
 npm run db:info              # what the store holds at BLOB_DB_KEY
 npm run db:push              # local SQLITE_PATH → blob (populate it, or overwrite)
-npm run db:push -- backups/astro_planner-2026-08-27T03-00-00-004.db
+npm run db:push -- backups/astro_logger-2026-08-27T03-00-00-004.db
 npm run db:pull              # blob → local SQLITE_PATH (inspect production)
 npm run db:pull -- /tmp/prod.db
 npm run db:upload            # newest ./backups snapshot → blob (see below)
-npm run db:upload -- backups/astro_planner-2026-08-27T03-00-00-004.db
+npm run db:upload -- backups/astro_logger-2026-08-27T03-00-00-004.db
 ```
 
 `db:push` overwrites unconditionally — it is the deliberate-override escape

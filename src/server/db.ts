@@ -18,7 +18,7 @@ export const appRoot = (): string => {
 // Creates the directory but never the file, so the blob restore can drop a
 // database in before anything decides the file is missing.
 export const dbFilePath = (): string => {
-  const configured = process.env.SQLITE_PATH?.trim() || './data/astro_planner.db'
+  const configured = process.env.SQLITE_PATH?.trim() || './data/astro_logger.db'
   const full = path.isAbsolute(configured) ? configured : path.resolve(appRoot(), configured)
   fs.mkdirSync(path.dirname(full), { recursive: true })
   return full
@@ -291,7 +291,7 @@ export const markDatabaseDirty = (): void => { dirty = true }
 
 const uploadSnapshot = async (): Promise<void> => {
   const database = connectToDatabase()
-  const snapshot = path.join(os.tmpdir(), `astro-planner-snapshot-${process.pid}-${Date.now()}.db`)
+  const snapshot = path.join(os.tmpdir(), `astro-logger-snapshot-${process.pid}-${Date.now()}.db`)
   fs.rmSync(snapshot, { force: true })
   // VACUUM INTO takes a read transaction; a copy would race an in-flight write.
   database.exec(`VACUUM INTO '${snapshot.replace(/'/g, "''")}'`)

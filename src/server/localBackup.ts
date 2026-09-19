@@ -24,7 +24,7 @@ const backupDir = (): string =>
   process.env.BACKUP_DIR?.trim() || (fs.existsSync('/backups') ? '/backups' : path.join(appRoot(), 'backups'))
 
 /** Matches dayName() in scripts/snapshot-db.js. */
-const dayFileName = (at = new Date()): string => `astro_planner-${at.toISOString().slice(0, 10)}.db`
+const dayFileName = (at = new Date()): string => `astro_logger-${at.toISOString().slice(0, 10)}.db`
 
 /**
  * Write the database over `target`, atomically. VACUUM INTO takes a read
