@@ -1027,8 +1027,15 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
     }
   }
 
+  // Between the button press and the batch landing there is nothing in here but
+  // an empty frame, and the picker is covering the page anyway — so the panel
+  // takes no space until it has something to say. Out of the flow rather than
+  // unmounted: the hidden inputs are what the picker is opened from. Not `hidden`
+  // — .contents-panel's own `display: flex` would win over the UA rule for it.
+  const waitingForPick = nothingPicked && importResult === null && !error
+
   return (
-    <div className="contents-panel">
+    <div className="contents-panel" style={waitingForPick ? { display: 'none' } : undefined}>
       <div className="contents-panel__header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap', minWidth: 0 }}>
           <span className="contents-panel__title">Import Sessions</span>

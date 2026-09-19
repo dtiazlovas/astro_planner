@@ -37,7 +37,7 @@ const requireAuth: express.RequestHandler = (req, res, next) => {
   // timingSafeEqual throws on a length mismatch, so length is checked first.
   if (given.length === want.length && crypto.timingSafeEqual(given, want)) return next()
 
-  res.set('WWW-Authenticate', 'Basic realm="astro-planner", charset="UTF-8"')
+  res.set('WWW-Authenticate', 'Basic realm="astro-logger", charset="UTF-8"')
   res.status(401).json({ error: 'Unauthorized' })
 }
 

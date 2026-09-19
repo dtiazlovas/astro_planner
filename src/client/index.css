@@ -1,3 +1,15 @@
+/* Self-hosted rather than linked from a CDN: the app runs from a container, a
+   serverless function and localhost, and reads its files off a local disk — its
+   type shouldn't depend on being online. One 48KB variable file carrying the
+   whole 100–900 weight axis, latin only. */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2') format('woff2-variations');
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -30,7 +42,11 @@
 }
 
 body {
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: 'Inter Variable', system-ui, -apple-system, sans-serif;
+  /* Inter's figures are proportional by default, and nearly every column in this
+     app is numbers that change as subs accumulate — hours, frame counts, PSFSW
+     ratios. Set here so every table gets it, not just the ones that asked. */
+  font-variant-numeric: tabular-nums;
   background: #0f0f1a;
   color: #e8e8f0;
   min-height: 100vh;
@@ -203,6 +219,9 @@ body {
    muted-label greys used for supporting text — legible at a glance against the
    rail's near-black rather than receding into it. */
 .nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   background: none;
   border: none;
   cursor: pointer;
@@ -212,6 +231,14 @@ body {
   font-weight: 600;
   color: #94a3b8;
   transition: color 0.15s, background 0.15s;
+}
+
+/* Drawn in currentColor, so each icon takes the state of the row it sits in —
+   resting grey, hover, active violet, or the import entry's inverted ink. */
+.nav-link__icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
 }
 
 .nav-link:hover {
@@ -226,13 +253,20 @@ body {
 }
 
 /* Sized and spaced exactly like the page links beside it — it belongs to the
-   same row. Only the colour separates it: a step toward the accent, because
-   pressing it opens the file picker instead of switching pages. */
-.nav-link--import { color: #c4b5fd; }
+   same row. Only the colour separates it, and inverted: the accent the other
+   links wear as text is this one's ground, because pressing it opens the file
+   picker instead of switching pages. */
+.nav-link--import {
+  color: #0b0b16;
+  background: #c4b5fd;
+  /* A little more air than the row's own gap, so it reads as separate from the
+     page links rather than as the first of them. */
+  margin-right: 0.45rem;
+}
 
 .nav-link--import:hover {
-  color: #f5f3ff;
-  background: #241f45;
+  color: #0b0b16;
+  background: #ddd6fe;
 }
 
 /* Holds the totals summary and the rig selector together so a wrapping header
@@ -255,14 +289,6 @@ body {
      otherwise stretch the rail, and with it the whole page, past the
      viewport. */
   min-width: 0;
-}
-
-.rig-selector__label {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #64748b;
-  font-weight: 600;
 }
 
 .rig-selector__select {
@@ -375,12 +401,20 @@ body {
      padding a tab strip can't. The active row also gets an accent bar — drawn
      as an inset shadow rather than a border, which would shift the label. */
   .nav-link {
+    justify-content: flex-start;
+    gap: 0.55rem;
     text-align: left;
     padding: 0.5rem 0.8rem;
     font-size: 1rem;
   }
 
   .nav-link--active { box-shadow: inset 2px 0 0 #a78bfa; }
+
+  /* A column here, so the gap that sets it apart moves to the bottom edge. */
+  .nav-link--import {
+    margin-right: 0;
+    margin-bottom: 0.4rem;
+  }
 
   /* Totals become a labelled column at the foot of the rail: there's vertical
      room here, so each filter gets its own row with the name spelled out, and
@@ -458,8 +492,19 @@ body {
 }
 
 .page-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
   font-size: 1.5rem;
   color: #c4b5fd;
+}
+
+/* The nav glyph again, at the nav's size and in the heading's own colour, so the
+   row you pressed and the page you land on are marked the same way. */
+.page-header__icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
 }
 
 /* ── Object cards ───────────────────────────────────────────
@@ -2890,6 +2935,36 @@ body {
   .app-nav    { padding: 0.45rem 1.25rem 0.6rem; }
   .totals-bar { padding: 0.4rem 1.25rem; }
   .app-main   { padding: 1.5rem 1.25rem; }
+
+  /* Six entries in one row leave the longest label no width to be two words in:
+     "Import files" wrapped, so it drops to the verb. The rail above 900px keeps
+     the full name, and the aria-label carries it at every width. */
+  .nav-link__word { display: none; }
+
+  /* Nothing in the row wraps — an entry gives up padding first, and below 768px
+     the labels come off entirely. Six entries with names and glyphs need ~810px
+     at the base sizes, so from here down they shed padding and the glyphs shrink
+     with the viewport: the row has to fit inside the window, not push the whole
+     page sideways. */
+  .nav-link {
+    white-space: nowrap;
+    gap: 0.35rem;
+    padding: 0.4rem clamp(0.4rem, 1.1vw, 0.9rem);
+  }
+
+  .nav-link__icon {
+    width: clamp(21px, 2.9vw, 28px);
+    height: clamp(21px, 2.9vw, 28px);
+  }
+
+  /* Last resort, for a font wider than the arithmetic above assumed: the row
+     scrolls inside itself rather than giving the page a scrollbar. */
+  .app-nav {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .app-nav::-webkit-scrollbar { display: none; }
 }
 
 /* Phones and portrait tablets. */
@@ -2939,9 +3014,23 @@ body {
     color: #cbd5e1;
   }
 
-  /* Six labels don't fit a phone row, so the import entry drops to its verb —
-     "Import" is no wider than the page names it sits with. */
-  .nav-link__word { display: none; }
+  /* Six names don't fit a phone row, so here the glyphs carry the nav on their
+     own — six of them and their padding come to ~270px, which a 360px row has.
+     The names live on in each button's aria-label and title. */
+  .nav-link__label { display: none; }
+
+  .nav-link {
+    justify-content: center;
+    gap: 0;
+    padding: 0.4rem clamp(0.25rem, 1.6vw, 0.7rem);
+  }
+
+  /* Restated because the resting colour above it in this block would otherwise
+     win on equal specificity and leave light text on the bright fill. */
+  .nav-link--import {
+    color: #0b0b16;
+    margin-right: 0.25rem;
+  }
 
   /* Carries the accent bar too, along the bottom edge here rather than the
      leading one the rail uses. With every label brightened, the fill alone was
@@ -2953,19 +3042,6 @@ body {
     /* One step up from its neighbours rather than the rail's two: the fill and
        the accent bar are already saying this louder than weight could. */
     font-weight: 600;
-  }
-
-  /* Clipped rather than `display: none` — the wrapping <label> is what names
-     the select, and hidden text is dropped from the accessible name. */
-  .rig-selector { position: relative; }
-
-  .rig-selector__label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
   }
 
   /* Positioned so the clipped label below has something to anchor to and can't

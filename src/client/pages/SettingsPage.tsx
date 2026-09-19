@@ -6,6 +6,7 @@ import { getStoredImagesFolder, pickImagesFolder, isFolderAccessSupported } from
 import { fetchLatitude, saveLatitude, DEFAULT_LATITUDE } from '../utils/astro'
 import { cacheStats, clearCache, formatBytes, CACHE_CAP_BYTES } from '../utils/previewCache'
 import LatitudePicker from '../components/LatitudePicker'
+import NavIcon from '../components/NavIcons'
 
 const emptyFilterForm = { name: '', aliases: '', folder: '' }
 
@@ -191,7 +192,9 @@ export default function SettingsPage() {
 
   return (
     <div className="objects-page">
-      <div className="page-header"><h2>Settings</h2></div>
+      <div className="page-header">
+        <h2><NavIcon name="settings" className="page-header__icon" />Settings</h2>
+      </div>
 
       {/* ── Images Folder ── */}
       <div className="settings-card">

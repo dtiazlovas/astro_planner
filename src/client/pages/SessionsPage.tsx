@@ -2,6 +2,7 @@ import { useState, useEffect, Fragment } from 'react'
 import { getSessions, createSession, updateSession, deleteSession } from '../api'
 import type { ApSession } from '../types'
 import { useEquipment } from '../context/EquipmentContext'
+import NavIcon from '../components/NavIcons'
 import SessionContentsPanel from './SessionContentsPanel'
 import ImportPanel from './ImportPanel'
 
@@ -177,7 +178,7 @@ export default function SessionsPage({ importRequest = 0 }: Props) {
   return (
     <div className="objects-page">
       <div className="page-header">
-        <h2>Sessions</h2>
+        <h2><NavIcon name="sessions" className="page-header__icon" />Sessions</h2>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {selectedIds.size > 0 && (
             <button className="btn btn-ghost" onClick={() => setSelectedIds(new Set())}>Collapse all</button>

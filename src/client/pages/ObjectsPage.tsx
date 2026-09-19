@@ -9,6 +9,7 @@ import { analyzeFitsFiles } from '../utils/fitsAnalysis'
 import type { FitsAnalysis } from '../utils/fits'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
 import FileListDialog from '../components/FileListDialog'
+import NavIcon from '../components/NavIcons'
 import { useEquipment } from '../context/EquipmentContext'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
@@ -832,7 +833,7 @@ export default function ObjectsPage() {
   return (
     <div className="objects-page">
       <div className="page-header">
-        <h2>Objects</h2>
+        <h2><NavIcon name="objects" className="page-header__icon" />Objects</h2>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {expandedIds.size > 0 && (
             <button className="btn btn-ghost" onClick={() => { setExpandedIds(new Set()); setExpandedStats(new Map()); setFocusedFilter(new Map()) }}>Collapse all</button>

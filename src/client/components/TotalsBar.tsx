@@ -35,12 +35,8 @@ function useFilterStats(refreshKey?: string | number) {
     return () => { cancelled = true }
   }, [activeId, refreshKey])
 
+  // Order is the API's: filters by captured time, longest first.
   const shown = stats.filter(s => s.total_seconds > 0)
-  // Display preference: Luminance and Sulphur trade places in the
-  // total-time ordering coming from the API.
-  const iL = shown.findIndex(s => s.filter_name === 'Luminance')
-  const iS = shown.findIndex(s => s.filter_name === 'Sulphur')
-  if (iL !== -1 && iS !== -1) [shown[iL], shown[iS]] = [shown[iS], shown[iL]]
 
   return { shown, grand: shown.reduce((n, s) => n + s.total_seconds, 0) }
 }

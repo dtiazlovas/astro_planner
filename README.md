@@ -1,5 +1,6 @@
-# astro_planner
-small app to plan astrophotography targets and track their completition
+# Astro Logger
+small app to file astrophotography subs — what to shoot, what has been shot,
+and whether the subs are worth keeping
 
 ## Running
 

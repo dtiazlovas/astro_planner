@@ -2,6 +2,7 @@ import { useState, useEffect, FormEvent } from 'react'
 import { getEquipment, createEquipment, updateEquipment, deleteEquipment } from '../api'
 import type { ApEquipment, CreateApEquipmentDto } from '../types'
 import { useEquipment } from '../context/EquipmentContext'
+import NavIcon from '../components/NavIcons'
 
 interface SensorPreset {
   label: string
@@ -143,7 +144,7 @@ export default function EquipmentPage() {
   return (
     <div className="objects-page">
       <div className="page-header">
-        <h2>Equipment</h2>
+        <h2><NavIcon name="equipment" className="page-header__icon" />Equipment</h2>
         <button className={`btn ${showForm && editingId === null ? 'btn-ghost' : 'btn-primary'}`}
           onClick={showForm && editingId === null ? handleCancel : openAdd}>
           {showForm && editingId === null ? 'Cancel' : '+ Add Equipment'}

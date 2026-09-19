@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Domain
 
-Personal astrophotography planner: what to shoot, what has been shot, and whether the
+Personal astrophotography logger: what to shoot, what has been shot, and whether the
 subs are worth keeping. One user, one database, on the order of 1200 imaging hours a year.
 
 **The normal loop is plan-first** — create an object, set per-filter integration targets

@@ -58,7 +58,7 @@ const startServer = async (): Promise<void> => {
     await mountClient(server)
 
     server.listen(Number(PORT), HOST, () => {
-      console.log(`Astro Planner on http://localhost:${PORT}${isProduction ? '' : '  (dev — HMR on)'}`)
+      console.log(`Astro Logger on http://localhost:${PORT}${isProduction ? '' : '  (dev — HMR on)'}`)
     })
   } catch (error) {
     console.error('Failed to start', error)

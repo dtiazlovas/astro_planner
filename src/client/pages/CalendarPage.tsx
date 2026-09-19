@@ -4,6 +4,7 @@ import type { ApSession } from '../types'
 import { useEquipment } from '../context/EquipmentContext'
 import { fetchDayStartHour } from '../utils/filePattern'
 import { astronomicalDarknessHours, fetchLatitude, formatLatitude, DEFAULT_LATITUDE } from '../utils/astro'
+import NavIcon from '../components/NavIcons'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -145,7 +146,7 @@ export default function CalendarPage() {
   return (
     <div className="objects-page calendar-page">
       <div className="page-header">
-        <h2>Calendar</h2>
+        <h2><NavIcon name="calendar" className="page-header__icon" />Calendar</h2>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
