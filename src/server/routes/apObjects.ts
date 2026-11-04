@@ -97,15 +97,15 @@ router.get('/:id', async (req: Request, res: Response) => {
 
 router.post('/', async (req: Request, res: Response) => {
   const body = req.body as Partial<CreateApObjectDto>
-  if (!body.name || body.type === undefined || !body.position_json) {
-    res.status(400).json({ error: 'name, type, and position_json are required' })
+  if (!body.name || body.type === undefined) {
+    res.status(400).json({ error: 'name and type are required' })
     return
   }
   try {
     res.status(201).json(await createApObject({
       name: body.name,
       type: body.type,
-      position_json: body.position_json,
+      position_json: body.position_json ?? '',
       comment: body.comment ?? null,
       active: body.active ?? true,
       aliases: body.aliases ?? null,

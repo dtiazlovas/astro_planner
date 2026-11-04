@@ -508,8 +508,7 @@ export default function ObjectsPage() {
     setAssigningIds(prev => new Set(prev).add(objectId))
     try {
       await assignToActivePlan(objectId, activeId)
-      const progress = await getObjectPlanProgress(objectId, activeId)
-      setPlanProgress(prev => new Map(prev).set(objectId, progress))
+      await refreshObjectStats(objectId)
     } catch {
       setError('Failed to assign sessions to plan')
     } finally {
@@ -575,7 +574,7 @@ export default function ObjectsPage() {
 
   const openEdit = (obj: ApObject) => {
     setEditingId(obj.id)
-    setForm({ name: obj.name, typeId: String(obj.type), position_json: obj.position_json, comment: obj.comment ?? '', aliases: obj.aliases ?? '', active: obj.active, folder: obj.folder ?? '' })
+    setForm({ name: obj.name, typeId: String(obj.type), position_json: obj.position_json === '{}' ? '' : obj.position_json, comment: obj.comment ?? '', aliases: obj.aliases ?? '', active: obj.active, folder: obj.folder ?? '' })
     setShowForm(true); setConfirmingId(null); setError(null)
   }
 
@@ -779,8 +778,16 @@ export default function ObjectsPage() {
                   <div className="obj-card__actions">
                     <button className="btn-icon btn-contents" onClick={() => setPlansForId(obj.id)} title="Plans">☰</button>
                     {activePlanObjectIds.has(obj.id) && (
-                      <button className="btn-icon btn-assign" onClick={() => handleAssignAll(obj.id)} disabled={assigningIds.has(obj.id)} title="Assign all unassigned sessions to active plan">
+                      <button
+                        className={`btn-icon btn-assign${obj.unassigned_seconds > 0 ? ' btn-assign--pending' : ''}`}
+                        onClick={() => handleAssignAll(obj.id)}
+                        disabled={assigningIds.has(obj.id)}
+                        title={obj.unassigned_seconds > 0
+                          ? `${fmtDuration(obj.unassigned_seconds)} captured but not on any plan — counted in Integrated, missing from the filter bars. Click to assign to the active plan.`
+                          : 'Assign all unassigned sessions to active plan'}
+                      >
                         {assigningIds.has(obj.id) ? '…' : '⬆'}
+                        {obj.unassigned_seconds > 0 && !assigningIds.has(obj.id) && <span className="btn-assign__badge" aria-label="unassigned time" />}
                       </button>
                     )}
                     {obj.folder && (
@@ -903,8 +910,8 @@ export default function ObjectsPage() {
                   </select>
                 </div>
                 <div className="form-field form-field--full">
-                  <label htmlFor="obj-position">Position (JSON)</label>
-                  <input id="obj-position" value={form.position_json} onChange={set('position_json')} required placeholder='{"ra": "00h42m44s", "dec": "+41°16′09″"}' />
+                  <label htmlFor="obj-position">Position (JSON, optional)</label>
+                  <input id="obj-position" value={form.position_json} onChange={set('position_json')} placeholder='{"ra": "00h42m44s", "dec": "+41°16′09″"}' />
                 </div>
                 <div className="form-field">
                   <label htmlFor="obj-aliases">Aliases</label>

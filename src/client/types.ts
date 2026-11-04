@@ -14,6 +14,8 @@ export interface ApObject {
   priority: number
   folder: string | null
   total_seconds: number
+  /** Captured time on entries not linked to any plan. */
+  unassigned_seconds: number
 }
 
 export interface FilterExposureStat {
@@ -37,7 +39,7 @@ export interface PlanProgressItem {
 }
 
 // `priority` is server-assigned on create (new objects go to the end of the ordering)
-export type CreateApObjectDto = Omit<ApObject, 'id' | 'total_seconds' | 'priority'>
+export type CreateApObjectDto = Omit<ApObject, 'id' | 'total_seconds' | 'unassigned_seconds' | 'priority'>
 
 export interface ApSession {
   id: number

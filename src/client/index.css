@@ -1144,6 +1144,20 @@ body {
   background: #163d24;
 }
 
+/* Entries exist that count in Integrated but not in the plan bars. */
+.btn-assign--pending { position: relative; }
+.btn-assign__badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fbbf24;
+  box-shadow: 0 0 0 2px #1a1a24;
+  pointer-events: none;
+}
+
 .btn-sync {
   background: #0f2a2e;
   color: #2dd4bf;

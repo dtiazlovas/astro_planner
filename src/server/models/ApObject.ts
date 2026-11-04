@@ -9,6 +9,8 @@ export interface ApObject {
   priority: number
   folder: string | null
   total_seconds: number
+  /** Captured time on entries not linked to any plan. */
+  unassigned_seconds: number
 }
 
 export interface FilterExposureStat {
@@ -30,5 +32,5 @@ export interface PlanProgressItem {
   captured_seconds: number
 }
 
-export type CreateApObjectDto = Omit<ApObject, 'id' | 'total_seconds'>
-export type UpdateApObjectDto = Partial<Omit<ApObject, 'id' | 'total_seconds'>>
+export type CreateApObjectDto = Omit<ApObject, 'id' | 'total_seconds' | 'unassigned_seconds'>
+export type UpdateApObjectDto = Partial<Omit<ApObject, 'id' | 'total_seconds' | 'unassigned_seconds'>>

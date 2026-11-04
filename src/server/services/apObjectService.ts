@@ -5,13 +5,24 @@ import type { ApObject, ObjectFilterStat, PlanProgressItem, CreateApObjectDto, U
 const SELECT_WITH_CALC = `
   SELECT
     o.id, o.name, o.type, o.position_json, o.comment, o.active, o.aliases, o.priority, o.folder,
-    CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS total_seconds
+    CAST(COALESCE(SUM(os.frames * e.duration), 0) AS INTEGER) AS total_seconds,
+    -- Counted in total_seconds but invisible to plan progress until linked.
+    CAST(COALESCE(SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM ap_plan_session ps WHERE ps.session = os.id)
+      THEN os.frames * e.duration ELSE 0 END), 0) AS INTEGER) AS unassigned_seconds
   FROM ap_object o
   LEFT JOIN ap_object_session os ON os.object = o.id
     AND (@equipment IS NULL OR os.session IN (SELECT id FROM ap_session WHERE equipment = @equipment))
   LEFT JOIN ap_exposure e ON e.id = os.exposure
 `
 const GROUP_BY = `GROUP BY o.id, o.name, o.type, o.position_json, o.comment, o.active, o.aliases, o.priority, o.folder`
+
+// Position is optional; the column is NOT NULL, so "no position" is stored as
+// '{}' — the same value the import dialog writes for a blank field.
+const EMPTY_POSITION = '{}'
+function positionOrEmpty(value: string | null | undefined): string {
+  const v = (value ?? '').trim()
+  return v === '' ? EMPTY_POSITION : v
+}
 
 function mapObject(row: any): ApObject {
   return { ...row, active: !!row.active }
@@ -100,7 +111,7 @@ export const createApObject = async (data: CreateApObjectDto): Promise<ApObject>
     INSERT INTO ap_object (name, type, position_json, comment, active, aliases, priority, folder)
     VALUES (@name, @type, @position_json, @comment, @active, @aliases, @priority, @folder)
   `).run({
-    name: data.name, type: data.type, position_json: data.position_json,
+    name: data.name, type: data.type, position_json: positionOrEmpty(data.position_json),
     comment: data.comment ?? null, active: data.active ? 1 : 0, aliases: data.aliases ?? null,
     priority: max + 1, folder: data.folder ?? null,
   })
@@ -113,7 +124,7 @@ export const updateApObject = async (id: number, data: UpdateApObjectDto): Promi
 
   if (data.name !== undefined)          { setClauses.push('name = @name');                   params.name = data.name }
   if (data.type !== undefined)          { setClauses.push('type = @type');                   params.type = data.type }
-  if (data.position_json !== undefined) { setClauses.push('position_json = @position_json'); params.position_json = data.position_json }
+  if ('position_json' in data)          { setClauses.push('position_json = @position_json'); params.position_json = positionOrEmpty(data.position_json) }
   if ('comment' in data)                { setClauses.push('comment = @comment');             params.comment = data.comment ?? null }
   if (data.active !== undefined)        { setClauses.push('active = @active');               params.active = data.active ? 1 : 0 }
   if ('aliases' in data)                { setClauses.push('aliases = @aliases');             params.aliases = data.aliases ?? null }
