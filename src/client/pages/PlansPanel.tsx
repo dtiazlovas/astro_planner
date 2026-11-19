@@ -18,11 +18,13 @@ const fmtDuration = (minutes: number) => {
 interface Props {
   objectId: number
   objectName: string
+  /** Panel count of a mosaic — targets then apply to each panel. */
+  mosaicPanels?: number
   onClose: () => void
   onActivePlanChange?: (hasActivePlan: boolean) => void
 }
 
-export default function PlansPanel({ objectId, objectName, onClose, onActivePlanChange }: Props) {
+export default function PlansPanel({ objectId, objectName, mosaicPanels, onClose, onActivePlanChange }: Props) {
   const { activeId, equipment } = useEquipment()
   const [plans, setPlans] = useState<ApPlan[]>([])
   const [filters, setFilters] = useState<ApFilter[]>([])
@@ -322,12 +324,16 @@ export default function PlansPanel({ objectId, objectName, onClose, onActivePlan
                         <div className="plan-details">
                           <div className="plan-details__header">
                             <span className="plan-details__title">
-                              {plan.name} — per-filter targets
-                              {(planDetails.get(plan.id)?.length ?? 0) > 0 && (
-                                <span className="plan-details__total">
-                                  {' '}· {fmtDuration(planDetails.get(plan.id)!.reduce((s, d) => s + d.duration, 0))} planned
-                                </span>
-                              )}
+                              {plan.name} — per-filter targets{mosaicPanels && mosaicPanels > 1 ? ', per mosaic panel' : ''}
+                              {(planDetails.get(plan.id)?.length ?? 0) > 0 && (() => {
+                                const perPanel = planDetails.get(plan.id)!.reduce((s, d) => s + d.duration, 0)
+                                return (
+                                  <span className="plan-details__total">
+                                    {' '}· {fmtDuration(perPanel)} planned
+                                    {mosaicPanels && mosaicPanels > 1 ? ` per panel (${fmtDuration(perPanel * mosaicPanels)} across ${mosaicPanels} panels)` : ''}
+                                  </span>
+                                )
+                              })()}
                             </span>
                             <button
                               className={`btn btn-sm ${addingDetailFor === plan.id && editingDetailId === null ? 'btn-ghost' : 'btn-primary'}`}

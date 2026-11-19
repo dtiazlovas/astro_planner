@@ -6,13 +6,13 @@ import {
   updateFilter, createFilter,
   checkImported, recordImported,
   getPlans, setPlanSession, createPlan, createPlanDetail,
-  saveImportedAnalysis, getImportedRecords, getPsfswAnchors,
+  saveImportedAnalysis, getImportedRecords, getPsfswAnchors, releaseImported,
   type ImportedRecord,
 } from '../api'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
-import { groupRecords, ensureAnchor, toAnchorMap, medianOf, scaleBy, type AnchorMap } from '../utils/psfsw'
+import { groupRecords, ensureAnchor, toAnchorMap, medianOf, scaleBy, anchorKeyOf, type AnchorMap } from '../utils/psfsw'
 import type { FitsAnalysis } from '../utils/fits'
-import { ensureImagesFolderAccess, copyFilesToObjectFolders, pickSourceFolder, isInsideImagesFolder, deleteFilesFromDirectory, type CopyItem } from '../utils/imagesFolder'
+import { ensureImagesFolderAccess, copyFilesToObjectFolders, removeSupersededCopies, pickSourceFolder, isInsideImagesFolder, deleteFilesFromDirectory, type CopyItem } from '../utils/imagesFolder'
 import type { ApObject, ApObjectType, ApFilter, ApExposure, ApSession, ApPlan } from '../types'
 import { useEquipment } from '../context/EquipmentContext'
 import SnrChart, { type SnrPoint } from '../components/SnrChart'
@@ -26,6 +26,9 @@ interface ImportResult {
   entriesFailed: Array<{ target: string; filter: string }>
   entriesSkipped: Array<{ target: string; filter: string; reason: string }>
   filesCopied: number
+  reimported: number          // already-imported files imported again
+  supersededRemoved: number   // their earlier copies removed from the images folder
+  supersededFailed: number    // earlier copies that could not be removed
   filesSkipped: number
   filesNotFound: number
   filesFailed: number
@@ -37,13 +40,20 @@ interface ImportResult {
 }
 import {
   DEFAULT_PATTERN, fetchPatterns, parseFileMulti, dateKey, toDatetimeLocal,
-  matchObject, matchFilter, matchExposure, getPatternAcceptMulti,
+  matchObjectPanel, panelOf, matchFilter, matchExposure, getPatternAcceptMulti,
   fetchDayStartHour,
 } from '../utils/filePattern'
+import MosaicEditor, { PLAIN_MOSAIC, mosaicProblem, type MosaicValue } from '../components/MosaicEditor'
+import PositionField from '../components/PositionField'
 
 interface ImportEntry {
   target: string
   objectId: number | null; objectName: string | null
+  /** Mosaic panel the target's suffix names; null for a plain object. */
+  panel: string | null
+  /** Set when a mosaic's target carried no suffix we know — importable, but
+      the subs land outside any panel folder. */
+  panelNote: string | null
   filter: string
   filterId: number | null; filterName: string | null
   duration: number
@@ -64,7 +74,10 @@ interface ImportSession {
 // Quality analysis is scoped to these, each with its own scale and approve line,
 // so importing two targets at once can't cull one against the other's signal.
 interface QualityGroup {
-  key: string
+  key: string          // anchorKeyOf(objectId, filterId, panel)
+  objectId: number
+  filterId: number
+  panel: string | null // each mosaic panel is its own star field, so its own scale
   label: string
   fileNames: string[]
 }
@@ -128,9 +141,17 @@ function buildPreview(
     for (const [key, groupFiles] of byGroup.entries()) {
       const [target, filterStr, durationStr] = key.split('||')
       const duration = parseFloat(durationStr)
-      const obj = target in overrides
-        ? (objects.find(o => o.id === overrides[target]) ?? null)
-        : matchObject(target, objects)
+      // An override names the object; the panel still comes from the target's
+      // suffix, read against that object's names.
+      const overridden = target in overrides ? (objects.find(o => o.id === overrides[target]) ?? null) : undefined
+      const match = overridden !== undefined
+        ? (overridden ? { obj: overridden, panel: panelOf(target, overridden) } : null)
+        : matchObjectPanel(target, objects)
+      const obj = match?.obj ?? null
+      const panel = match?.panel ?? null
+      const panelNote = obj?.mosaic_panels && !panel
+        ? `No panel suffix recognised in "${target}" (expected one of ${obj.mosaic_panels.join(', ')}) — imported without a panel`
+        : null
       const filt = filterStr in filterOverrides
         ? (filters.find(f => f.id === filterOverrides[filterStr]) ?? null)
         : matchFilter(filterStr, filters)
@@ -144,6 +165,7 @@ function buildPreview(
 
       entries.push({
         target, objectId: obj?.id ?? null, objectName: obj?.name ?? null,
+        panel, panelNote,
         filter: filterStr, filterId: filt?.id ?? null, filterName: filt?.name ?? null,
         duration, exposureId: exp?.id ?? null,
         frames: groupFiles.length,
@@ -181,6 +203,13 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
   const [queuedFiles, setQueuedFiles] = useState<File[] | null>(null)
   const [blinkOpen, setBlinkOpen] = useState(false)
   const [duplicateCount, setDuplicateCount] = useState(0)
+  // The already-imported files the duplicate check held back, kept so they can
+  // be put back for a reimport.
+  const [duplicateFiles, setDuplicateFiles] = useState<File[]>([])
+  // Files in the batch that replace an earlier import of the same name. Nothing
+  // happens to their old records or copies until Import is pressed.
+  const [reimportNames, setReimportNames] = useState<Set<string>>(new Set())
+  const [confirmReimport, setConfirmReimport] = useState(false)
   const [preview, setPreview] = useState<ImportSession[] | null>(null)
   const [warnings, setWarnings] = useState<string[]>([])
   const [parsedCount, setParsedCount] = useState(0)
@@ -193,6 +222,7 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
 
   const [createDialog, setCreateDialog] = useState<string | null>(null)
   const [createDialogForm, setCreateDialogForm] = useState({ name: '', typeId: '', aliases: '', position_json: '', active: true, folder: '', comment: '' })
+  const [createDialogMosaic, setCreateDialogMosaic] = useState<MosaicValue>(PLAIN_MOSAIC)
   const [createDialogSubmitting, setCreateDialogSubmitting] = useState(false)
 
   const [filterOverrides, setFilterOverrides] = useState<Record<string, number>>({})
@@ -327,8 +357,30 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
     const alreadySet = new Set(alreadyImported)
     const fresh = all.filter(f => !alreadySet.has(f.name))
     setDuplicateCount(all.length - fresh.length)
+    setDuplicateFiles(all.filter(f => alreadySet.has(f.name)))
+    setReimportNames(new Set()); setConfirmReimport(false)
     setRawFiles(fresh)
     applyPreview(fresh, objects, filters, {}, {})
+  }
+
+  // Puts the held-back duplicates into the batch as reimports.
+  const handleReimportDuplicates = () => {
+    const names = new Set(duplicateFiles.map(f => f.name))
+    const files = [...rawFiles.filter(f => !names.has(f.name)), ...duplicateFiles]
+    setReimportNames(names)
+    setConfirmReimport(false)
+    setRawFiles(files)
+    // Measurements and limits were made without these files.
+    setSnrResults(new Map()); setThresholds({}); setHistoricalByGroup(new Map())
+    applyPreview(files, objects, filters, targetOverrides, filterOverrides)
+  }
+
+  const handleUndoReimport = () => {
+    const files = rawFiles.filter(f => !reimportNames.has(f.name))
+    setReimportNames(new Set())
+    setRawFiles(files)
+    setSnrResults(new Map()); setThresholds({}); setHistoricalByGroup(new Map())
+    applyPreview(files, objects, filters, targetOverrides, filterOverrides)
   }
 
   useEffect(() => {
@@ -404,11 +456,12 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
       folder: '',
       comment: '',
     })
+    setCreateDialogMosaic(PLAIN_MOSAIC)
     setCreateDialog(target)
   }
 
   const handleCreateDialogSubmit = async () => {
-    if (!createDialogForm.name.trim()) return
+    if (!createDialogForm.name.trim() || mosaicProblem(createDialogMosaic)) return
     setCreateDialogSubmitting(true)
     try {
       const created = await createObject({
@@ -419,13 +472,16 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
         active: createDialogForm.active,
         aliases: createDialogForm.aliases.trim() || null,
         folder: createDialogForm.folder.trim() || null,
+        mosaic_rows: createDialogMosaic.rows,
+        mosaic_cols: createDialogMosaic.cols,
+        mosaic_panels: createDialogMosaic.panels,
       })
       const newObjects = [...objects, created]
       setObjects(newObjects)
       applyPreview(rawFiles, newObjects, filters, targetOverrides, filterOverrides)
       setCreateDialog(null)
-    } catch {
-      setError(`Failed to create object "${createDialogForm.name}"`)
+    } catch (err) {
+      setError(`Failed to create object "${createDialogForm.name}"${err instanceof Error ? ` — ${err.message}` : ''}`)
     } finally {
       setCreateDialogSubmitting(false)
     }
@@ -518,8 +574,9 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
     for (const session of preview ?? []) {
       for (const e of session.entries) {
         if (!e.canImport || e.objectId == null || e.filterId == null) continue
-        const key = `${e.objectId}|${e.filterId}`
-        const group = byKey.get(key) ?? { key, label: `${e.objectName ?? e.target} · ${e.filterName ?? e.filter}`, fileNames: [] }
+        const key = anchorKeyOf(e.objectId, e.filterId, e.panel)
+        const label = `${e.objectName ?? e.target}${e.panel ? ` [${e.panel}]` : ''} · ${e.filterName ?? e.filter}`
+        const group = byKey.get(key) ?? { key, objectId: e.objectId, filterId: e.filterId, panel: e.panel, label, fileNames: [] }
         group.fileNames.push(...e.fileNames)
         byKey.set(key, group)
       }
@@ -563,11 +620,10 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
   const ensureGroupAnchors = async (history: Map<string, HistoricalRecord[]>) => {
     let changed = false
     for (const g of qualityGroups) {
-      const [objectId, filterId] = g.key.split('|').map(Number)
       if (anchorsRef.current.has(g.key)) continue
       const fromHistory = (history.get(g.key) ?? []).map(h => h.psfsw).filter((v): v is number => v != null)
       const fromBatch = g.fileNames.map(n => rawAnalysisRef.current.get(n)?.psfsw).filter((v): v is number => v != null)
-      const row = await ensureAnchor(anchorsRef.current, objectId, filterId, fromHistory.length ? fromHistory : fromBatch)
+      const row = await ensureAnchor(anchorsRef.current, g.objectId, g.filterId, g.panel, fromHistory.length ? fromHistory : fromBatch)
       if (row) changed = true
     }
     if (changed) setAnchorVersion(v => v + 1)
@@ -795,6 +851,27 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
       if (!imagesDir) copyWarning = 'Images folder not accessible — no files were copied. Choose it in Settings and grant access.'
     }
 
+    // Reimports that this import will actually record. Their old records go
+    // first, taking their frames off the old entries, so nothing counts twice.
+    // Not if the new copies can't be written: releasing would leave the DB
+    // pointing at old copies it no longer knows about.
+    const reimporting = importableFileNames.filter(n => reimportNames.has(n))
+    if (reimporting.length && wantsCopy && !imagesDir) {
+      setError('Reimport needs the images folder, to replace the old copies — choose it in Settings and grant access, then import again.')
+      setImporting(false)
+      return
+    }
+    if (reimporting.length) {
+      try {
+        setImportProgress({ step: 'Releasing earlier imports…', current: 0, total: 0 })
+        await releaseImported(reimporting)
+      } catch {
+        setError('Could not release the earlier imports of these files — nothing was imported.')
+        setImporting(false); setImportProgress(null)
+        return
+      }
+    }
+
     const totalEntries = sessionsToImport.reduce((n, s) => n + entriesToImport(s).length, 0)
     const entriesSkipped = (preview ?? []).flatMap(s =>
       s.entries
@@ -867,6 +944,7 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
             const created = await createObjectSession({
               session: sessionId, object: entry.objectId!,
               filter: entry.filterId!, exposure: entry.exposureId!, frames: approved.length,
+              panel: entry.panel,
             })
             const planId = getEntryPlanId(s.dateKey, entry)
             if (planId) { try { await setPlanSession({ session: created.id, planid: planId }) } catch {} }
@@ -920,10 +998,19 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
         try {
           const entries = entriesByObject.get(objectId)!
           const newPlan = await createPlan({ object: objectId, name: entries[0].objectName ?? String(objectId), active: true, equipment: activeId })
-          const byFilter = new Map<number, number>()
+          // A mosaic's targets are per panel, so a filter's target is sized from
+          // its best-covered panel rather than the sum across panels.
+          const byFilterPanel = new Map<string, { filterId: number; seconds: number }>()
           for (const e of entries) {
-            if (e.filterId) byFilter.set(e.filterId, (byFilter.get(e.filterId) ?? 0) + approvedOf(e).length * e.duration)
+            if (!e.filterId) continue
+            const k = `${e.filterId}|${e.panel ?? ''}`
+            const cur = byFilterPanel.get(k) ?? { filterId: e.filterId, seconds: 0 }
+            cur.seconds += approvedOf(e).length * e.duration
+            byFilterPanel.set(k, cur)
           }
+          const byFilter = new Map<number, number>()
+          for (const { filterId, seconds } of byFilterPanel.values())
+            byFilter.set(filterId, Math.max(byFilter.get(filterId) ?? 0, seconds))
           for (const [filterId, totalSeconds] of byFilter.entries()) {
             const durationMinutes = Math.ceil(totalSeconds / 36000) * 600
             await createPlanDetail({ planid: newPlan.id, filter: filterId, duration: durationMinutes })
@@ -935,7 +1022,8 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
       }
 
       // Approved files per entry that map to an object folder + filter folder.
-      const copyGroups: { fileNames: string[]; objectFolder: string; filterName: string }[] = []
+      // A mosaic panel adds one level: <object>/<filter>/<panel suffix>/.
+      const copyGroups: { fileNames: string[]; objectFolder: string; filterName: string; panelFolder: string | null }[] = []
       for (const s of sessionsToImport) {
         for (const entry of entriesToImport(s)) {
           const obj = objects.find(o => o.id === entry.objectId)
@@ -944,15 +1032,17 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
             const filt = filters.find(f => f.id === entry.filterId)
             const filterFolder = filt?.folder ?? filt?.name ?? entry.filterName ?? ''
             if (filterFolder)
-              copyGroups.push({ fileNames: approvedNames, objectFolder: obj.folder, filterName: filterFolder })
+              copyGroups.push({ fileNames: approvedNames, objectFolder: obj.folder, filterName: filterFolder, panelFolder: entry.panel })
           }
         }
       }
       let filesCopied = 0, filesSkipped = 0, filesNotFound = 0, filesFailed = 0
+      let supersededRemoved = 0, supersededFailed = 0
       if (copyGroups.length && imagesDir) {
         const copyItems: CopyItem[] = copyGroups.map(g => ({
           files: g.fileNames.map(n => fileByName.get(n)).filter((f): f is File => f !== undefined),
-          objectFolder: g.objectFolder, filterName: g.filterName,
+          objectFolder: g.objectFolder, filterName: g.filterName, panelFolder: g.panelFolder,
+          replace: reimportNames,
         }))
         const totalFiles = copyItems.reduce((n, i) => n + i.files.length, 0)
         setImportProgress({ step: 'Copying files…', current: 0, total: totalFiles })
@@ -960,12 +1050,21 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
           setImportProgress({ step: 'Copying files…', current: done, total: totalFiles })).catch(() => null)
         if (stats) { filesCopied = stats.copied; filesSkipped = stats.skipped; filesFailed = stats.failed }
         else copyWarning = 'File copying failed.'
+        // Each reimported file now has a verified copy where it belongs; any
+        // earlier copy of the same name elsewhere in its object folder goes.
+        if (stats?.replaced.length) {
+          setImportProgress({ step: 'Removing earlier copies…', current: 0, total: 0 })
+          const removed = await removeSupersededCopies(imagesDir, stats.replaced).catch(() => null)
+          supersededRemoved = removed?.deleted ?? 0
+          if (!removed || removed.failed) supersededFailed = removed?.failed ?? stats.replaced.length
+        }
       }
 
       setImportProgress(null)
       setImportResult({
         sessionsCreated, entriesOk: entryCount, culledRecorded, entriesFailed, entriesSkipped,
         filesCopied, filesSkipped, filesNotFound, filesFailed, copyWarning,
+        reimported: reimporting.length, supersededRemoved, supersededFailed,
         // Only subs with a copy destination: one belonging to an object with no
         // folder was never copied, so its source file is still the only copy.
         copiedNames: [...new Set(copyGroups.flatMap(g => g.fileNames))],
@@ -1069,9 +1168,33 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
                   {parsedCount} files matched · {skippedCount} skipped · {preview.length} session{preview.length !== 1 ? 's' : ''} · {importableCount} importable entr{importableCount !== 1 ? 'ies' : 'y'}
                   {rejectedCountAll > 0 && ` · ${rejectedCountAll} culled`}
                 </span>
-                {duplicateCount > 0 && (
+                {duplicateCount > 0 && reimportNames.size === 0 && (
                   <span className="import-duplicate-warn">
                     {duplicateCount} duplicate{duplicateCount !== 1 ? 's' : ''} already imported, skipped
+                    {confirmReimport ? (
+                      <span className="import-duplicate-confirm">
+                        <span>
+                          Import them again? On import, their old records are removed (their session entries
+                          lose those frames), their copies in the object folders are replaced, and any other
+                          copy of the same file name in that object folder is deleted. Derived copies (e.g. _c) stay.
+                        </span>
+                        <button className="btn btn-sm btn-danger" onClick={handleReimportDuplicates}>Reimport {duplicateCount}</button>
+                        <button className="btn btn-sm btn-ghost" onClick={() => setConfirmReimport(false)}>Cancel</button>
+                      </span>
+                    ) : (
+                      <button className="btn btn-sm" style={{ marginLeft: '0.5rem' }} onClick={() => setConfirmReimport(true)}
+                        disabled={importing || analyzing}
+                        title="Import these files again, replacing their earlier import">
+                        Ignore
+                      </button>
+                    )}
+                  </span>
+                )}
+                {reimportNames.size > 0 && (
+                  <span className="import-duplicate-warn">
+                    ↻ {reimportNames.size} file{reimportNames.size !== 1 ? 's' : ''} will replace {reimportNames.size !== 1 ? 'their' : 'its'} earlier import
+                    <button className="btn btn-sm btn-ghost" style={{ marginLeft: '0.5rem' }} onClick={handleUndoReimport}
+                      disabled={importing || analyzing}>Undo</button>
                   </span>
                 )}
                 {hasImportableFiles && (
@@ -1214,7 +1337,10 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
                         const planId = getEntryPlanId(session.dateKey, entry)
                         return (
                           <tr key={i}>
-                            <td className={entry.objectId ? 'cell-name' : 'cell-muted'}>{entry.objectName ?? entry.target}</td>
+                            <td className={entry.objectId ? 'cell-name' : 'cell-muted'}>
+                              {entry.objectName ?? entry.target}
+                              {entry.panel && <span className="panel-tag" title="Mosaic panel">{entry.panel}</span>}
+                            </td>
                             <td>
                               <span className={`type-badge${entry.filterId ? '' : ' type-badge--warn'}`}>
                                 {entry.filterName ?? entry.filter}
@@ -1241,7 +1367,9 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
                             </td>
                             <td>
                               {entry.canImport
-                                ? <span className="status-ok">✓</span>
+                                ? entry.panelNote
+                                  ? <span className="status-warn" title={entry.panelNote}>✓ no panel</span>
+                                  : <span className="status-ok">✓</span>
                                 : <span className="status-warn" title={entry.warning ?? ''}>✗ {entry.warning}</span>}
                             </td>
                           </tr>
@@ -1264,6 +1392,7 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
                         <code className="inline-code unresolved-row__name">{target}</code>
                         <div className="unresolved-row__actions">
                           <span className="target-matched-badge">matched</span>
+                          {entry.panel && <span className="panel-tag" title="Mosaic panel">panel {entry.panel}</span>}
                           <select value={String(entry.objectId)}
                             onChange={e => handleOverride(target, e.target.value)}>
                             {objects.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -1413,6 +1542,15 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
                 {importResult.filesCopied > 0 && (
                   <div className="import-result-row import-result-row--ok">✓ {importResult.filesCopied} {importResult.filesCopied === 1 ? 'file' : 'files'} copied</div>
                 )}
+                {importResult.reimported > 0 && (
+                  <div className="import-result-row import-result-row--ok">
+                    ↻ {importResult.reimported} {importResult.reimported === 1 ? 'file' : 'files'} reimported
+                    {importResult.supersededRemoved > 0 && ` · ${importResult.supersededRemoved} earlier ${importResult.supersededRemoved === 1 ? 'copy' : 'copies'} removed`}
+                  </div>
+                )}
+                {importResult.supersededFailed > 0 && (
+                  <div className="import-result-row import-result-row--warn">⚠ {importResult.supersededFailed} earlier {importResult.supersededFailed === 1 ? 'copy' : 'copies'} could not be removed — still in the object folder</div>
+                )}
                 {importResult.filesSkipped > 0 && (
                   <div className="import-result-row import-result-row--muted">— {importResult.filesSkipped} {importResult.filesSkipped === 1 ? 'file' : 'files'} already existed</div>
                 )}
@@ -1540,10 +1678,20 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
                   placeholder="e.g. M31" spellCheck={false} />
               </div>
               <div className="form-field">
-                <label>Position JSON</label>
-                <input value={createDialogForm.position_json}
-                  onChange={e => setCreateDialogForm(f => ({ ...f, position_json: e.target.value }))}
-                  placeholder='{"ra": "00h42m44s", "dec": "+41d16m09s"}' spellCheck={false} />
+                <label>Position</label>
+                <PositionField value={createDialogForm.position_json}
+                  onChange={v => setCreateDialogForm(f => ({ ...f, position_json: v }))}
+                  objectName={createDialogForm.name} aliases={createDialogForm.aliases} />
+              </div>
+              <div className="form-field">
+                <label>Mosaic</label>
+                <MosaicEditor value={createDialogMosaic} onChange={setCreateDialogMosaic}
+                  objectName={createDialogForm.name} idPrefix="create-dialog-mosaic" />
+                {createDialogMosaic.panels && createDialog && createDialogForm.name.trim().toLowerCase() === createDialog.toLowerCase() && (
+                  <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                    Name the object without the panel suffix — "{createDialog}" is one panel's target.
+                  </span>
+                )}
               </div>
               <div className="form-field">
                 <label>Comment</label>
@@ -1557,7 +1705,7 @@ export default function ImportPanel({ onImported, onClose, selectRequest = 0, se
               </div>
               <div className="form-actions">
                 <button type="submit" className="btn btn-primary"
-                  disabled={createDialogSubmitting || !createDialogForm.name.trim()}>
+                  disabled={createDialogSubmitting || !createDialogForm.name.trim() || !!mosaicProblem(createDialogMosaic)}>
                   {createDialogSubmitting ? 'Creating…' : 'Create'}
                 </button>
                 <button type="button" className="btn btn-ghost" onClick={() => setCreateDialog(null)}>Cancel</button>

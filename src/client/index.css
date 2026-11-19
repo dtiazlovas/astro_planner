@@ -603,6 +603,142 @@ body {
 
 .obj-card__id { min-width: 0; }
 
+.obj-card__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* ── Sky card: the object's coming night ── */
+.obj-sky {
+  position: relative;
+  display: inline-flex;
+  /* Above the neighbouring cards, which paint later. */
+  z-index: 30;
+}
+
+.obj-sky__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #2a2a45;
+  border-radius: 999px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.obj-sky__btn:hover,
+.obj-sky__btn[aria-expanded="true"] {
+  color: #c4b5fd;
+  border-color: #5b4b9a;
+  background: #1e1e35;
+}
+
+.obj-sky__card {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 252px;
+  max-width: calc(100vw - 32px);
+  padding: 0.55rem 0.7rem 0.5rem;
+  background: #14142a;
+  border: 1px solid #32325a;
+  border-radius: 9px;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.55);
+  text-align: left;
+}
+
+.obj-sky__card .cal-card__row { grid-template-columns: 1fr auto; }
+.obj-sky__card .cal-card__label { grid-column: 1; }
+.obj-sky__card .cal-card__value { grid-column: 2; white-space: nowrap; }
+.obj-sky__card .cal-card__note { grid-column: 1 / -1; }
+
+.obj-sky__peak { color: #c4b5fd; }
+.obj-sky__moon { color: #fde68a; }
+
+.obj-sky__spark {
+  display: block;
+  margin: 0 0 0.5rem;
+  background: #10101f;
+  border-radius: 4px;
+}
+
+.obj-sky__obj-line  { fill: none; stroke: #a78bfa; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.obj-sky__moon-line { fill: none; stroke: #fde68a; stroke-width: 1.2; stroke-dasharray: 3 3; opacity: 0.75; vector-effect: non-scaling-stroke; }
+.obj-sky__usable    { stroke: #33334f; stroke-width: 1; stroke-dasharray: 2 3; vector-effect: non-scaling-stroke; }
+
+/* ── Position field + lookup ── */
+.position-field {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.position-field input { flex: 1; min-width: 0; font-family: monospace; font-size: 0.85rem; }
+
+.position-field__lookup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.position-field__hint {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.position-field__hint--bad { color: #f0a0a0; }
+
+/* The lookup opens over the object dialog, which is itself a modal. */
+.modal-backdrop--stacked { z-index: 1100; }
+
+.lookup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.lookup-message {
+  font-size: 0.85rem;
+  color: #cbd5e1;
+  line-height: 1.45;
+}
+
+.lookup-result {
+  padding: 0.75rem;
+  border: 1px solid #32325a;
+  border-radius: 8px;
+  background: #14142a;
+}
+
+.lookup-result__name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.lookup-result__coords {
+  margin-top: 0.3rem;
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: #c4b5fd;
+}
+
+.lookup-result__source { font-size: 0.75rem; margin: 0.2rem 0 0.6rem; }
+.lookup-footnote { font-size: 0.72rem; }
+
 .obj-card__name {
   font-size: 1rem;
   font-weight: 600;
@@ -1142,6 +1278,119 @@ body {
 
 .btn-assign:hover:not(:disabled) {
   background: #163d24;
+}
+
+/* ── Mosaic layout editor (object forms) ───────────────────── */
+.mosaic-editor { display: flex; flex-direction: column; gap: 0.5rem; }
+.mosaic-editor__size { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.mosaic-editor__size-text { display: flex; flex-direction: column; gap: 0.15rem; }
+.mosaic-editor__dims { color: #e8e8f0; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* Drag-to-size picker: press on a cell, drag right for columns, down for rows. */
+.mosaic-picker {
+  display: grid;
+  gap: 3px;
+  width: max-content;
+  touch-action: none;   /* a touch drag sizes the grid instead of scrolling */
+  user-select: none;
+  cursor: crosshair;
+}
+.mosaic-picker__cell {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 3px;
+  border: 1px solid #2a2a48;
+  background: #12121f;
+  cursor: inherit;
+}
+.mosaic-picker__cell:hover { border-color: #7c3aed; }
+.mosaic-picker__cell--on { background: #3b2f6b; border-color: #7c3aed; }
+.mosaic-picker__cell--drag { background: #5b21b6; }
+.mosaic-editor__hint { font-size: 0.8rem; }
+.mosaic-editor__grid { display: grid; gap: 4px; max-width: 420px; }
+.mosaic-editor__cell {
+  min-width: 0;
+  height: 2.2rem;
+  border-radius: 5px;
+  border: 1px solid #2a2a48;
+  background: #16162a;
+  color: #e8e8f0;
+  font-size: 0.85rem;
+  font-family: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 0.3rem;
+  text-align: center;
+}
+.mosaic-editor__cell:hover { border-color: #7c3aed; background: #1e1a36; }
+.mosaic-editor__cell--empty { color: #64748b; font-style: italic; }
+.form-field input.mosaic-editor__cell--editing,
+.mosaic-editor__cell--editing { padding: 0 0.3rem; border-color: #7c3aed; cursor: text; }
+.mosaic-editor__problem { color: #f87171; font-size: 0.8rem; }
+
+/* ── Mosaic panel grid (object card footer) ────────────────── */
+/* The bottom row: the panel grid on the left, the toolbar on the right. A
+   plain object has only the toolbar, which keeps hugging the right edge. */
+.obj-card__footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: auto;
+}
+.obj-card__footer .obj-card__actions { margin-top: 0; margin-left: auto; }
+.obj-card__mosaic { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.obj-card__mosaic-grid { display: grid; gap: 3px; width: max-content; max-width: 100%; }
+.mosaic-cell {
+  position: relative;
+  overflow: hidden;
+  min-width: 1.9rem;
+  height: 1.45rem;
+  padding: 0 0.3rem;
+  border-radius: 4px;
+  border: 1px solid #2e2e3a;
+  background: #191920;
+  color: #cbd5e1;
+  font-size: 0.7rem;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mosaic-cell:hover { border-color: #6366f1; color: #e8e8f0; }
+.mosaic-cell__fill {
+  position: absolute; left: 0; bottom: 0; height: 3px;
+  background: #0369a1;
+}
+.mosaic-cell--done .mosaic-cell__fill { background: #22c55e; }
+.mosaic-cell__name { position: relative; font-weight: 600; white-space: nowrap; }
+.mosaic-cell--behind { border-color: #92400e; }
+.mosaic-cell--selected { border-color: #7c3aed; background: #2e2650; color: #f5f3ff; box-shadow: 0 0 0 1px #7c3aed; }
+.obj-card__mosaic-stray { font-size: 0.7rem; white-space: nowrap; }
+.obj-card__panel-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: #c4b5fd;
+}
+.obj-card__panel-caption strong { color: #f5f3ff; }
+.obj-card__panel-caption .btn-sm { padding: 0.1rem 0.45rem; font-size: 0.72rem; }
+.panel-tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  background: #1e1a36;
+  border: 1px solid #3b2f6b;
+  color: #c4b5fd;
+  margin-left: 0.3rem;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Entries exist that count in Integrated but not in the plan bars. */
@@ -1787,6 +2036,15 @@ body {
 .btn-sm:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.import-duplicate-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+  color: #fde68a;
 }
 
 .import-duplicate-warn {

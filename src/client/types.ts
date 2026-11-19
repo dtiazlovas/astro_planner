@@ -13,9 +13,25 @@ export interface ApObject {
   aliases: string | null
   priority: number
   folder: string | null
+  /** Mosaic grid; 1×1 for a plain object. */
+  mosaic_rows: number
+  mosaic_cols: number
+  /** Panel suffixes, row-major, rows × cols long; null for a plain object. */
+  mosaic_panels: string[] | null
   total_seconds: number
   /** Captured time on entries not linked to any plan. */
   unassigned_seconds: number
+}
+
+export interface PanelStat {
+  panel: string | null
+  total_seconds: number
+}
+
+export interface PanelProgress {
+  panel: string | null
+  captured_seconds: number
+  total_frames: number
 }
 
 export interface FilterExposureStat {
@@ -28,18 +44,25 @@ export interface ObjectFilterStat {
   total_seconds: number
   // Per-exposure frame counts; populated by the per-object stats only.
   exposures?: FilterExposureStat[]
+  // Per-panel split for mosaics; per-object stats only.
+  panels?: PanelStat[]
 }
 
 export interface PlanProgressItem {
   filter_id: number
   filter_name: string | null
+  /** Per panel for a mosaic. */
   target_minutes: number
   captured_seconds: number
   total_frames: number
+  panels?: PanelProgress[]
 }
 
-// `priority` is server-assigned on create (new objects go to the end of the ordering)
-export type CreateApObjectDto = Omit<ApObject, 'id' | 'total_seconds' | 'unassigned_seconds' | 'priority'>
+// `priority` is server-assigned on create (new objects go to the end of the ordering);
+// the mosaic layout defaults to 1×1 when left out.
+export type CreateApObjectDto =
+  Omit<ApObject, 'id' | 'total_seconds' | 'unassigned_seconds' | 'priority' | 'mosaic_rows' | 'mosaic_cols' | 'mosaic_panels'>
+  & Partial<Pick<ApObject, 'mosaic_rows' | 'mosaic_cols' | 'mosaic_panels'>>
 
 export interface ApSession {
   id: number
@@ -78,6 +101,8 @@ export interface ApObjectSession {
   frames: number
   exposure: number
   filter: number
+  /** Mosaic panel suffix; null for a plain object or an unrecognised panel. */
+  panel: string | null
   object_name: string
   exposure_duration: number
   filter_name: string | null
@@ -86,7 +111,9 @@ export interface ApObjectSession {
   plan_name: string | null
 }
 
-export type CreateApObjectSessionDto = Omit<ApObjectSession, 'id' | 'object_name' | 'exposure_duration' | 'filter_name' | 'plan_session_id' | 'plan_id' | 'plan_name'>
+export type CreateApObjectSessionDto =
+  Omit<ApObjectSession, 'id' | 'panel' | 'object_name' | 'exposure_duration' | 'filter_name' | 'plan_session_id' | 'plan_id' | 'plan_name'>
+  & { panel?: string | null }
 
 export interface ApPlan {
   id: number

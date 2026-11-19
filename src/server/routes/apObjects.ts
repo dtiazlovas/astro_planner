@@ -8,7 +8,8 @@ import {
   createApObject,
   updateApObject,
   deleteApObject,
-  reorderAllApObjects
+  reorderAllApObjects,
+  MosaicValidationError,
 } from '../services/apObjectService.js'
 import { assignUnassignedToActivePlan } from '../services/apPlanSessionService.js'
 import type { CreateApObjectDto, UpdateApObjectDto } from '../models/ApObject.js'
@@ -111,8 +112,12 @@ router.post('/', async (req: Request, res: Response) => {
       aliases: body.aliases ?? null,
       priority: 0,
       folder: body.folder ?? null,
+      mosaic_rows: body.mosaic_rows ?? 1,
+      mosaic_cols: body.mosaic_cols ?? 1,
+      mosaic_panels: body.mosaic_panels ?? null,
     }))
-  } catch {
+  } catch (err) {
+    if (err instanceof MosaicValidationError) { res.status(400).json({ error: err.message }); return }
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -124,7 +129,8 @@ router.put('/:id', async (req: Request, res: Response) => {
     const item = await updateApObject(id, req.body as UpdateApObjectDto)
     if (!item) { res.status(404).json({ error: 'Not found' }); return }
     res.json(item)
-  } catch {
+  } catch (err) {
+    if (err instanceof MosaicValidationError) { res.status(400).json({ error: err.message }); return }
     res.status(500).json({ error: 'Internal server error' })
   }
 })

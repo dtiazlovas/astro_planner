@@ -7,6 +7,17 @@ const json = <T>(res: Response): Promise<T> => {
   return res.json() as Promise<T>
 }
 
+// Like json(), but surfaces the server's `{ error }` message — for validation
+// failures the user can act on (a bad mosaic layout, say).
+const jsonWithError = async <T>(res: Response): Promise<T> => {
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`
+    try { const body = await res.json() as { error?: string }; if (body.error) msg = body.error } catch {}
+    throw new Error(msg)
+  }
+  return res.json() as Promise<T>
+}
+
 // Builds a `?equipment=ID` query suffix, omitted when no rig is active.
 const eqQuery = (equipment?: number | null, lead = '?'): string =>
   equipment != null ? `${lead}equipment=${equipment}` : ''
@@ -22,14 +33,14 @@ export const createObject = (data: CreateApObjectDto): Promise<ApObject> =>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }).then(json<ApObject>)
+  }).then(jsonWithError<ApObject>)
 
 export const updateObject = (id: number, data: Partial<Omit<ApObject, 'id'>>): Promise<ApObject> =>
   fetch(`${BASE}/objects/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  }).then(json<ApObject>)
+  }).then(jsonWithError<ApObject>)
 
 export const getObjectFilterStats = (id: number, equipment?: number | null): Promise<ObjectFilterStat[]> =>
   fetch(`${BASE}/objects/${id}/filter-stats${eqQuery(equipment)}`).then(json<ObjectFilterStat[]>)
@@ -176,6 +187,16 @@ export const saveImportedAnalysis = (items: { filename: string; psfsw: number | 
     body: JSON.stringify({ items }),
   }).then(json<{ updated: number }>)
 
+// Reimport: removes the records and takes their frames off the entries they
+// were counted in, so importing the same files again doesn't count them twice.
+export interface ReleaseImportedResult { released: number; entriesReduced: number; entriesDeleted: number; unlinked: number }
+export const releaseImported = (names: string[]): Promise<ReleaseImportedResult> =>
+  fetch(`${BASE}/imported/release`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names }),
+  }).then(json<ReleaseImportedResult>)
+
 export const removeImported = (names: string[]): Promise<{ removed: number }> =>
   fetch(`${BASE}/imported/remove`, {
     method: 'POST',
@@ -187,18 +208,19 @@ export const removeImported = (names: string[]): Promise<{ removed: number }> =>
 // The frozen divisor each target+filter's PSFSW is shown against, so the same
 // sub reads the same number on every screen and in every session.
 
-export interface PsfswAnchorRow { object: number; filter: number; anchor: number; subs: number; set_at: string }
+// `panel` is '' for a plain object; each mosaic panel has its own scale.
+export interface PsfswAnchorRow { object: number; filter: number; panel: string; anchor: number; subs: number; set_at: string }
 
 export const getPsfswAnchors = (): Promise<PsfswAnchorRow[]> =>
   fetch(`${BASE}/psfsw-anchors`).then(json<PsfswAnchorRow[]>)
 
 // `replace` re-baselines an existing anchor; without it the stored one wins and
 // comes back unchanged, so two screens racing to establish a scale agree.
-export const savePsfswAnchor = (object: number, filter: number, anchor: number, subs: number, replace = false): Promise<PsfswAnchorRow> =>
+export const savePsfswAnchor = (object: number, filter: number, panel: string | null, anchor: number, subs: number, replace = false): Promise<PsfswAnchorRow> =>
   fetch(`${BASE}/psfsw-anchors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ object, filter, anchor, subs, replace }),
+    body: JSON.stringify({ object, filter, panel: panel ?? '', anchor, subs, replace }),
   }).then(json<PsfswAnchorRow>)
 
 export const getPlans = (objectId?: number, equipment?: number | null): Promise<ApPlan[]> => {

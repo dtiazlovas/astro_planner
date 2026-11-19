@@ -376,17 +376,60 @@ export function getPatternAccept(pattern: string): string {
 
 const norm = (s: string) => s.toLowerCase().replace(/[_\s-]+/g, '').replace(/[^a-z0-9]/g, '')
 
-export function matchObject(target: string, objects: ApObject[]): ApObject | null {
+const namesOf = (obj: ApObject): string[] =>
+  [obj.name, ...(obj.aliases ? obj.aliases.split(';').map(a => a.trim()).filter(Boolean) : [])]
+
+function matchObjectExact(target: string, objects: ApObject[]): ApObject | null {
   const nt = norm(target)
-  for (const obj of objects) {
-    if (norm(obj.name) === nt) return obj
-    if (obj.aliases) {
-      for (const a of obj.aliases.split(';')) {
-        if (norm(a.trim()) === nt) return obj
-      }
-    }
+  return objects.find(obj => namesOf(obj).some(n => norm(n) === nt)) ?? null
+}
+
+/**
+ * The mosaic panel a target names: the object's name (or an alias) with one of
+ * its panel suffixes glued on — "fossil2" is panel "2" of "fossil". Compared the
+ * way every name is, ignoring case and separators, so "fossil_2" and "Fossil-2"
+ * land on the same panel. Null for a plain object or an unrecognised tail.
+ */
+export function panelOf(target: string, obj: ApObject): string | null {
+  if (!obj.mosaic_panels) return null
+  const nt = norm(target)
+  for (const name of namesOf(obj)) {
+    const nn = norm(name)
+    if (!nn || !nt.startsWith(nn)) continue
+    const tail = nt.slice(nn.length)
+    const panel = obj.mosaic_panels.find(p => norm(p) === tail)
+    if (panel) return panel
   }
   return null
+}
+
+export interface ObjectMatch { obj: ApObject; panel: string | null }
+
+/**
+ * Object and mosaic panel for a filename's target. An exact name or alias wins
+ * outright (panel null — a mosaic shot without a suffix); otherwise a mosaic's
+ * name plus one of its suffixes. Where two mosaics could both claim a target
+ * (names that prefix one another), the longer name wins.
+ */
+export function matchObjectPanel(target: string, objects: ApObject[]): ObjectMatch | null {
+  const exact = matchObjectExact(target, objects)
+  if (exact) return { obj: exact, panel: null }
+  let best: { obj: ApObject; panel: string; len: number } | null = null
+  const nt = norm(target)
+  for (const obj of objects) {
+    if (!obj.mosaic_panels) continue
+    for (const name of namesOf(obj)) {
+      const nn = norm(name)
+      if (!nn || !nt.startsWith(nn) || (best && nn.length <= best.len)) continue
+      const panel = obj.mosaic_panels.find(p => norm(p) === nt.slice(nn.length))
+      if (panel) best = { obj, panel, len: nn.length }
+    }
+  }
+  return best ? { obj: best.obj, panel: best.panel } : null
+}
+
+export function matchObject(target: string, objects: ApObject[]): ApObject | null {
+  return matchObjectPanel(target, objects)?.obj ?? null
 }
 
 export function matchFilter(name: string, filters: ApFilter[]): ApFilter | null {

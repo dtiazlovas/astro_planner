@@ -95,6 +95,56 @@ export const saveImportedAnalysis = async (items: { filename: string; psfsw: num
   return updated
 }
 
+export interface ReleaseResult {
+  released: number        // records removed
+  entriesReduced: number  // entries whose frame count went down
+  entriesDeleted: number  // entries left with no frames, removed
+  unlinked: number        // live records with no entry link — their entry's count can't be adjusted
+}
+
+/**
+ * Lets already-imported files be imported again. Each record goes, and a live
+ * (non-culled) record's entry loses the frame it was counting, so the reimport
+ * doesn't count the same sub twice; an entry left with nothing is removed, as
+ * deleteApObjectSession would. A culled record never counted towards an entry,
+ * so it just goes. One transaction: a half-released batch would leave entries
+ * short of records that still exist.
+ */
+export const releaseImported = async (names: string[]): Promise<ReleaseResult> => {
+  const result: ReleaseResult = { released: 0, entriesReduced: 0, entriesDeleted: 0, unlinked: 0 }
+  if (!names.length) return result
+  const db = connectToDatabase()
+  const find = db.prepare('SELECT object_session_id, culled FROM ap_imported WHERE filename = @filename')
+  const remove = db.prepare('DELETE FROM ap_imported WHERE filename = @filename')
+  db.transaction((ns: string[]) => {
+    const perEntry = new Map<number, number>()
+    for (const filename of new Set(ns)) {
+      const row = find.get({ filename }) as { object_session_id: number | null; culled: number } | undefined
+      if (!row) continue
+      if (!row.culled) {
+        if (row.object_session_id != null) perEntry.set(row.object_session_id, (perEntry.get(row.object_session_id) ?? 0) + 1)
+        else result.unlinked++
+      }
+      result.released += remove.run({ filename }).changes
+    }
+    const reduce = db.prepare('UPDATE ap_object_session SET frames = frames - @n WHERE id = @id')
+    const framesOf = db.prepare('SELECT frames FROM ap_object_session WHERE id = @id')
+    for (const [id, n] of perEntry) {
+      if (reduce.run({ id, n }).changes === 0) continue
+      result.entriesReduced++
+      const left = framesOf.get({ id }) as { frames: number } | undefined
+      if (left && left.frames <= 0) {
+        db.prepare('DELETE FROM ap_plan_session WHERE session = @id').run({ id })
+        db.prepare('UPDATE ap_imported SET object_session_id = NULL WHERE object_session_id = @id AND culled = 1').run({ id })
+        db.prepare('DELETE FROM ap_imported WHERE object_session_id = @id').run({ id })
+        db.prepare('DELETE FROM ap_object_session WHERE id = @id').run({ id })
+        result.entriesDeleted++
+      }
+    }
+  })(names)
+  return result
+}
+
 export const removeImported = async (names: string[]): Promise<number> => {
   if (!names.length) return 0
   const db = connectToDatabase()

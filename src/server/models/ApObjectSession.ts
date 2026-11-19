@@ -5,6 +5,8 @@ export interface ApObjectSession {
   frames: number
   exposure: number
   filter: number
+  /** Mosaic panel suffix; null for a plain object or an unrecognised panel. */
+  panel: string | null
 }
 
 export interface ApObjectSessionRow extends ApObjectSession {

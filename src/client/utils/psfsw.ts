@@ -10,12 +10,18 @@
 // a growing population moves every number ever shown, so the same sub reads
 // differently between screens and between sessions. Frozen, `raw / anchor`
 // compares across months: 1.0 is a typical sub as of the day the scale was set.
+//
+// A mosaic's panels are different star fields, so each panel is its own pair —
+// one panel's dense Milky Way field must not set the scale for its sparse
+// neighbour.
 
 import { savePsfswAnchor, type ImportedRecord, type PsfswAnchorRow } from '../api'
-import { parseFile, patternToRegex, matchObject, matchFilter } from './filePattern'
+import { parseFile, patternToRegex, matchObjectPanel, matchFilter } from './filePattern'
 import type { ApObject, ApFilter } from '../types'
 
-export const anchorKeyOf = (objectId: number, filterId: number): string => `${objectId}|${filterId}`
+/** Pair key; a plain object's pairs keep the two-part form they always had. */
+export const anchorKeyOf = (objectId: number, filterId: number, panel?: string | null): string =>
+  panel ? `${objectId}|${filterId}|${panel}` : `${objectId}|${filterId}`
 
 /** Upper-middle element — the convention both charts have always used. */
 export const medianOf = (values: number[]): number | null => {
@@ -30,8 +36,8 @@ export const scaleBy = (raw: number, anchor: number): number =>
 export interface GroupedRecord { psfsw: number | null; fwhm: number | null; time: number; filename: string }
 
 /**
- * Import records grouped by the object+filter their filename parses to, keyed by
- * `anchorKeyOf`, time-ordered. Values stay raw.
+ * Import records grouped by the object+filter(+panel) their filename parses to,
+ * keyed by `anchorKeyOf`, time-ordered. Values stay raw.
  *
  * Every pattern is tried per record, not just the first that matches: a greedy
  * pattern can swallow a token like a rotation angle ("nessy_270deg") into the
@@ -54,10 +60,10 @@ export function groupRecords(
       let parsed: ReturnType<typeof parseFile>
       try { parsed = parseFile(rec.filename, rx) } catch { continue }
       if (!parsed) continue
-      const obj = matchObject(parsed.target, objects)
+      const match = matchObjectPanel(parsed.target, objects)
       const filt = matchFilter(parsed.filter, filters)
-      if (!obj || !filt) continue
-      const key = anchorKeyOf(obj.id, filt.id)
+      if (!match || !filt) continue
+      const key = anchorKeyOf(match.obj.id, filt.id, match.panel)
       const entry = { psfsw: rec.psfsw, fwhm: rec.fwhm, time: parsed.datetime.getTime(), filename: rec.filename }
       const list = out.get(key)
       if (list) list.push(entry); else out.set(key, [entry])
@@ -71,7 +77,7 @@ export function groupRecords(
 export type AnchorMap = Map<string, PsfswAnchorRow>
 
 export const toAnchorMap = (rows: PsfswAnchorRow[]): AnchorMap =>
-  new Map(rows.map(r => [anchorKeyOf(r.object, r.filter), r]))
+  new Map(rows.map(r => [anchorKeyOf(r.object, r.filter, r.panel), r]))
 
 /**
  * The anchor in force for a pair, establishing one from `candidates` (raw
@@ -85,15 +91,16 @@ export async function ensureAnchor(
   anchors: AnchorMap,
   objectId: number,
   filterId: number,
+  panel: string | null,
   candidates: number[],
 ): Promise<PsfswAnchorRow | null> {
-  const key = anchorKeyOf(objectId, filterId)
+  const key = anchorKeyOf(objectId, filterId, panel)
   const existing = anchors.get(key)
   if (existing) return existing
   const median = medianOf(candidates)
   if (median == null) return null
   try {
-    const row = await savePsfswAnchor(objectId, filterId, median, candidates.filter(v => v > 0).length)
+    const row = await savePsfswAnchor(objectId, filterId, panel, median, candidates.filter(v => v > 0).length)
     anchors.set(key, row)
     return row
   } catch {

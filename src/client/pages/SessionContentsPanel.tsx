@@ -3,7 +3,7 @@ import { getObjectSessions, createObjectSession, updateObjectSession, deleteObje
 import type { ApObjectSession, ApObject, ApExposure, ApFilter, ApSession, ApPlan } from '../types'
 import FilterBadge from '../components/FilterBadge'
 
-const emptyForm = { objectId: '', exposureId: '', filterId: '', frames: '1', planId: '' }
+const emptyForm = { objectId: '', exposureId: '', filterId: '', frames: '1', planId: '', panel: '' }
 
 const fmtDuration = (totalSeconds: number): string => {
   if (totalSeconds <= 0) return '0.0h'
@@ -65,6 +65,7 @@ export default function SessionContentsPanel({ session, onClose, onDurationChang
       filterId:   String(entry.filter),
       frames:     String(entry.frames),
       planId:     entry.plan_id ? String(entry.plan_id) : '',
+      panel:      entry.panel ?? '',
     })
     setConfirmingId(null)
     setError(null)
@@ -84,7 +85,11 @@ export default function SessionContentsPanel({ session, onClose, onDurationChang
     const value = e.target.value
     setForm(f => {
       const next = { ...f, [field]: value }
-      if (field === 'objectId') next.planId = autoSelectPlan(value)
+      if (field === 'objectId') {
+        next.planId = autoSelectPlan(value)
+        // A panel belongs to one object's grid.
+        next.panel = ''
+      }
       return next
     })
   }
@@ -120,6 +125,7 @@ export default function SessionContentsPanel({ session, onClose, onDurationChang
       exposure: Number(form.exposureId),
       filter:   Number(form.filterId),
       frames:   Number(form.frames),
+      panel:    form.panel || null,
     }
     try {
       if (editingId !== null) {
@@ -163,6 +169,12 @@ export default function SessionContentsPanel({ session, onClose, onDurationChang
   const planOptions = form.objectId
     ? activePlansFor(Number(form.objectId))
     : []
+  const selectedObject = form.objectId ? objects.find(o => o.id === Number(form.objectId)) : undefined
+  // An entry may carry a panel the grid no longer has (it was resized); keep it
+  // selectable so editing frames doesn't silently move the entry off it.
+  const panelOptions = selectedObject?.mosaic_panels
+    ? [...selectedObject.mosaic_panels, ...(form.panel && !selectedObject.mosaic_panels.includes(form.panel) ? [form.panel] : [])]
+    : []
 
   return (
     <div className="contents-panel">
@@ -193,6 +205,16 @@ export default function SessionContentsPanel({ session, onClose, onDurationChang
               {objects.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
             </select>
           </div>
+
+          {panelOptions.length > 0 && (
+            <div className="form-field">
+              <label htmlFor="cs-panel">Panel</label>
+              <select id="cs-panel" value={form.panel} onChange={set('panel')}>
+                <option value="">— none —</option>
+                {panelOptions.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+          )}
 
           <div className="form-field">
             <label htmlFor="cs-filter">Filter</label>
@@ -260,7 +282,10 @@ export default function SessionContentsPanel({ session, onClose, onDurationChang
                 const timeStr = `${(entrySeconds / 3600).toFixed(1)}h`
                 return (
                   <tr key={entry.id} className={editingId === entry.id ? 'row--editing' : ''}>
-                    <td className="cell-name">{entry.object_name}</td>
+                    <td className="cell-name">
+                      {entry.object_name}
+                      {entry.panel && <span className="panel-tag" title="Mosaic panel">{entry.panel}</span>}
+                    </td>
                     <td><FilterBadge name={entry.filter_name} /></td>
                     <td>{entry.exposure_duration}s</td>
                     <td>{entry.frames}</td>

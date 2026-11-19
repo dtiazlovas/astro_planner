@@ -3,16 +3,17 @@ import {
   createSession, recordImported, removeImported, relinkImported, cullImported, getPlans, setPlanSession,
   type ImportedRecord,
 } from '../api'
-import { parseFile, patternToRegex, matchObject, matchFilter, matchExposure, dateKey, toDatetimeLocal, type ParsedFile } from './filePattern'
+import { parseFile, patternToRegex, matchObjectPanel, matchFilter, matchExposure, dateKey, toDatetimeLocal, type ParsedFile, type ObjectMatch } from './filePattern'
+import type { FolderEntry, FileMove } from './imagesFolder'
 import type { ApObject, ApObjectSession, ApFilter, ApExposure, ApSession } from '../types'
 
 // ── Object file sync ─────────────────────────────────────────────────────────
 // Makes an object's DB stats reflect the files present in its folder. Disk files
-// are assigned to (observing date, filter, exposure) slots by the same filename
-// patterns import uses, and each session entry is recounted to the unique subs in
-// its slot. Matching ignores the extension and the `_`-separated suffixes
-// processing tools append, so original + derived copies count once. Only the
-// active rig's sessions are touched.
+// are assigned to (observing date, filter, exposure, mosaic panel) slots by the
+// same filename patterns import uses, and each session entry is recounted to the
+// unique subs in its slot. Matching ignores the extension and the `_`-separated
+// suffixes processing tools append, so original + derived copies count once.
+// Only the active rig's sessions are touched.
 
 const stem = (name: string) => name.replace(/\.[^.]+$/, '').toLowerCase()
 
@@ -42,6 +43,20 @@ const parseCandidates = (filename: string, regexes: RegExp[]): ParsedFile[] => {
   return out
 }
 
+/** The first parse whose target resolves to `obj`, with the panel it names. */
+const parseForObject = (filename: string, regexes: RegExp[], obj: ApObject, allObjects: ApObject[]): { p: ParsedFile; m: ObjectMatch } | null => {
+  for (const p of parseCandidates(filename, regexes)) {
+    const m = matchObjectPanel(p.target, allObjects)
+    if (m?.obj.id === obj.id) return { p, m }
+  }
+  return null
+}
+
+const sameDir = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((s, i) => s.toLowerCase() === b[i].toLowerCase())
+
+const folderSegments = (s: string) => s.split(/[\\/]/).map(p => p.trim()).filter(Boolean)
+
 export interface SyncChange {
   dateKey: string
   sessionId: number | null      // null → a session is created on apply
@@ -50,6 +65,7 @@ export interface SyncChange {
   filterName: string
   exposureId: number
   duration: number
+  panel: string | null          // mosaic panel; null for a plain object
   diskFiles: number             // unique subs on disk for this slot
   addFiles: string[]            // unregistered files → import records created
   missingFiles: string[]        // stale import records → removed
@@ -79,16 +95,21 @@ export interface SyncScanResult {
     time: number
     filterId: number
     filterName: string
+    panel: string | null
     recordName: string | null
     storedPsfsw: number | null
     storedFwhm: number | null
   }[]
+  // Mosaic subs sitting loose in their filter folder — where import put them
+  // before the panel folders existed — and the panel folder each belongs in.
+  // Originals only: a derived copy elsewhere in the tree is left where it is.
+  misplaced: FileMove[]
 }
 
 export async function scanObjectFiles(
   obj: ApObject,
   allObjects: ApObject[],
-  presentFileNames: string[],
+  presentEntries: FolderEntry[],
   allImported: ImportedRecord[],
   filters: ApFilter[],
   exposures: ApExposure[],
@@ -97,6 +118,7 @@ export async function scanObjectFiles(
   dayStartHour: number,
   equipment: number | null,
 ): Promise<SyncScanResult> {
+  const presentFileNames = presentEntries.map(e => e.name)
   // A culled record is not a claim that a file exists. Counting it would have
   // every scan report the same "missing" subs forever.
   const imported = allImported.filter(r => !r.culled)
@@ -129,25 +151,28 @@ export async function scanObjectFiles(
     }
   }
 
-  // Slot bookkeeping: one slot per (observing date, filter, exposure).
+  // Slot bookkeeping: one slot per (observing date, filter, exposure, panel).
   interface Slot {
     dateKey: string
     filterId: number
     filterName: string
     exposureId: number
     duration: number
+    panel: string | null
     disk: number
     addFiles: string[]
     missingFiles: string[]
     linkFiles: string[]
     earliest: Date | null
   }
+  const slotKey = (dk: string, filterId: number, exposureId: number, panel: string | null) =>
+    `${dk}|${filterId}|${exposureId}|${panel ?? ''}`
   const slots = new Map<string, Slot>()
-  const slotFor = (dk: string, filterId: number, filterName: string, exposureId: number, duration: number): Slot => {
-    const key = `${dk}|${filterId}|${exposureId}`
+  const slotFor = (dk: string, filterId: number, filterName: string, exposureId: number, duration: number, panel: string | null): Slot => {
+    const key = slotKey(dk, filterId, exposureId, panel)
     let s = slots.get(key)
     if (!s) {
-      s = { dateKey: dk, filterId, filterName, exposureId, duration, disk: 0, addFiles: [], missingFiles: [], linkFiles: [], earliest: null }
+      s = { dateKey: dk, filterId, filterName, exposureId, duration, panel, disk: 0, addFiles: [], missingFiles: [], linkFiles: [], earliest: null }
       slots.set(key, s)
     }
     return s
@@ -157,20 +182,30 @@ export async function scanObjectFiles(
   let unattributable = 0
   const seenBases = new Set<string>()
   const analyzableFiles: SyncScanResult['analyzableFiles'] = []
-  for (const fileName of presentFileNames) {
-    const p = parseCandidates(fileName, tolerantRegexes).find(c => matchObject(c.target, allObjects)?.id === obj.id)
+  const misplaced: FileMove[] = []
+  for (const entry of presentEntries) {
+    const fileName = entry.name
+    const hit = parseForObject(fileName, tolerantRegexes, obj, allObjects)
+    const p = hit?.p ?? null
+    const panel = hit?.m.panel ?? null
     const filt = p ? matchFilter(p.filter, filters) : null
     const exp = p ? matchExposure(p.duration, exposures) : null
     if (!p || !filt || !exp) { unattributable++; continue }
-    const base = baseStem(stem(fileName))
+    const fileStem = stem(fileName)
+    const base = baseStem(fileStem)
+    if (panel && fileStem === base) {
+      const filterDir = folderSegments(filt.folder ?? filt.name ?? p.filter)
+      if (filterDir.length && sameDir(entry.dir, filterDir))
+        misplaced.push({ name: fileName, from: entry.dir, to: [...filterDir, ...folderSegments(panel)] })
+    }
     if (seenBases.has(base)) continue // original + derived copy of the same sub
     seenBases.add(base)
-    const rec = findRecord(stem(fileName))
+    const rec = findRecord(fileStem)
     analyzableFiles.push({
-      name: fileName, time: p.datetime.getTime(), filterId: filt.id, filterName: filt.name ?? p.filter,
+      name: fileName, time: p.datetime.getTime(), filterId: filt.id, filterName: filt.name ?? p.filter, panel,
       recordName: rec?.filename ?? null, storedPsfsw: rec?.psfsw ?? null, storedFwhm: rec?.fwhm ?? null,
     })
-    const slot = slotFor(dateKey(p.datetime, dayStartHour), filt.id, filt.name ?? p.filter, exp.id, exp.duration)
+    const slot = slotFor(dateKey(p.datetime, dayStartHour), filt.id, filt.name ?? p.filter, exp.id, exp.duration, panel)
     slot.disk++
     if (slot.earliest === null || p.datetime < slot.earliest) slot.earliest = p.datetime
     // The record's own name, not the disk name — processing makes them differ.
@@ -183,15 +218,16 @@ export async function scanObjectFiles(
   let missingCount = 0
   const unadjustable: string[] = []
   for (const rec of imported) {
-    const p = parseCandidates(rec.filename, patternRegexes).find(c => matchObject(c.target, allObjects)?.id === obj.id)
-    if (!p) continue
+    const hit = parseForObject(rec.filename, patternRegexes, obj, allObjects)
+    if (!hit) continue
+    const { p } = hit
     recordedCount++
     if (isPresent(stem(rec.filename))) continue
     missingCount++
     const filt = matchFilter(p.filter, filters)
     const exp = matchExposure(p.duration, exposures)
     if (!filt || !exp) { unadjustable.push(rec.filename); continue }
-    slotFor(dateKey(p.datetime, dayStartHour), filt.id, filt.name ?? p.filter, exp.id, exp.duration).missingFiles.push(rec.filename)
+    slotFor(dateKey(p.datetime, dayStartHour), filt.id, filt.name ?? p.filter, exp.id, exp.duration, hit.m.panel).missingFiles.push(rec.filename)
   }
 
   // ── 3. Existing session entries of this object (active rig only) ──────────
@@ -205,8 +241,8 @@ export async function scanObjectFiles(
     const s = sessionById.get(r.session)!
     const dk = dateKey(new Date(s.start), dayStartHour)
     // Materialized even with zero disk files, so orphaned entries are recounted.
-    slotFor(dk, r.filter, r.filter_name ?? String(r.filter), r.exposure, r.exposure_duration)
-    const key = `${dk}|${r.filter}|${r.exposure}`
+    slotFor(dk, r.filter, r.filter_name ?? String(r.filter), r.exposure, r.exposure_duration, r.panel)
+    const key = slotKey(dk, r.filter, r.exposure, r.panel)
     entriesByKey.set(key, [...(entriesByKey.get(key) ?? []), r])
   }
 
@@ -246,6 +282,7 @@ export async function scanObjectFiles(
       filterName: slot.filterName,
       exposureId: slot.exposureId,
       duration: slot.duration,
+      panel: slot.panel,
       diskFiles: slot.disk,
       addFiles: slot.addFiles,
       missingFiles: slot.missingFiles,
@@ -256,7 +293,8 @@ export async function scanObjectFiles(
       earliestTime: slot.earliest,
     })
   }
-  changes.sort((a, b) => a.sessionName.localeCompare(b.sessionName) || a.filterName.localeCompare(b.filterName))
+  changes.sort((a, b) => a.sessionName.localeCompare(b.sessionName) || a.filterName.localeCompare(b.filterName)
+    || (a.panel ?? '').localeCompare(b.panel ?? '', undefined, { numeric: true }))
 
   return {
     presentCount: presentFileNames.length,
@@ -269,6 +307,7 @@ export async function scanObjectFiles(
     unadjustable,
     unattributable,
     analyzableFiles,
+    misplaced,
   }
 }
 
@@ -354,7 +393,7 @@ export async function applyObjectSync(
         if (c.entryIds.length > 0) {
           entryId = c.entryIds[0]
         } else if (sessionId != null) {
-          const created = await createObjectSession({ session: sessionId, object: obj.id, filter: c.filterId, exposure: c.exposureId, frames: c.newFrames })
+          const created = await createObjectSession({ session: sessionId, object: obj.id, filter: c.filterId, exposure: c.exposureId, frames: c.newFrames, panel: c.panel })
           entryId = created.id
           if (planId) { try { await setPlanSession({ session: created.id, planid: planId }) } catch {} }
         }

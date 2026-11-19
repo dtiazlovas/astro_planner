@@ -9,6 +9,10 @@ import {
 
 const router = Router()
 
+// Blank and non-string both mean "no panel".
+const panelParam = (v: unknown): string | null =>
+  typeof v === 'string' && v.trim() ? v.trim() : null
+
 router.get('/', async (req: Request, res: Response) => {
   const sessionId = Number(req.query.session)
   const objectId = Number(req.query.object)
@@ -21,7 +25,7 @@ router.get('/', async (req: Request, res: Response) => {
 })
 
 router.post('/', async (req: Request, res: Response) => {
-  const { object, session, frames, exposure, filter } = req.body as Record<string, unknown>
+  const { object, session, frames, exposure, filter, panel } = req.body as Record<string, unknown>
   if (!object || !session || !frames || !exposure || !filter) {
     res.status(400).json({ error: 'object, session, frames, exposure and filter are required' })
     return
@@ -33,6 +37,7 @@ router.post('/', async (req: Request, res: Response) => {
       frames:   Number(frames),
       exposure: Number(exposure),
       filter:   Number(filter),
+      panel:    panelParam(panel),
     }))
   } catch {
     res.status(500).json({ error: 'Internal server error' })
@@ -42,12 +47,13 @@ router.post('/', async (req: Request, res: Response) => {
 router.put('/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id)
   if (Number.isNaN(id)) { res.status(400).json({ error: 'Invalid id' }); return }
-  const { object, frames, exposure, filter } = req.body as Record<string, unknown>
+  const { object, frames, exposure, filter, panel } = req.body as Record<string, unknown>
   const data = {
     ...(object   !== undefined && { object:   Number(object) }),
     ...(frames   !== undefined && { frames:   Number(frames) }),
     ...(exposure !== undefined && { exposure: Number(exposure) }),
     ...(filter   !== undefined && { filter:   Number(filter) }),
+    ...(panel    !== undefined && { panel:    panelParam(panel) }),
   }
   try {
     const item = await updateApObjectSession(id, data)

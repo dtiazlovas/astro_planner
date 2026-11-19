@@ -1,11 +1,11 @@
 import { connectToDatabase } from '../db.js'
 import type { ApObjectSession, ApObjectSessionRow, CreateApObjectSessionDto } from '../models/ApObjectSession.js'
 
-type UpdateApObjectSessionDto = Partial<Pick<ApObjectSession, 'object' | 'frames' | 'exposure' | 'filter'>>
+type UpdateApObjectSessionDto = Partial<Pick<ApObjectSession, 'object' | 'frames' | 'exposure' | 'filter' | 'panel'>>
 
 const SELECT_JOINED = `
   SELECT
-    os.id, os.object, os.session, os.frames, os.exposure, os.filter,
+    os.id, os.object, os.session, os.frames, os.exposure, os.filter, os.panel,
     o.name     AS object_name,
     e.duration AS exposure_duration,
     f.name     AS filter_name,
@@ -31,9 +31,9 @@ export const getByObject = async (objectId: number): Promise<ApObjectSessionRow[
 export const createApObjectSession = async (data: CreateApObjectSessionDto): Promise<ApObjectSessionRow> => {
   const db = connectToDatabase()
   const { lastInsertRowid } = db.prepare(`
-    INSERT INTO ap_object_session (object, session, frames, exposure, filter)
-    VALUES (@object, @session, @frames, @exposure, @filter)
-  `).run(data)
+    INSERT INTO ap_object_session (object, session, frames, exposure, filter, panel)
+    VALUES (@object, @session, @frames, @exposure, @filter, @panel)
+  `).run({ ...data, panel: data.panel ?? null })
   return db.prepare(`${SELECT_JOINED} WHERE os.id = @id`).get({ id: Number(lastInsertRowid) }) as ApObjectSessionRow
 }
 
@@ -45,6 +45,7 @@ export const updateApObjectSession = async (id: number, data: UpdateApObjectSess
   if (data.frames   !== undefined) { setClauses.push('frames = @frames');     params.frames = data.frames }
   if (data.exposure !== undefined) { setClauses.push('exposure = @exposure'); params.exposure = data.exposure }
   if (data.filter   !== undefined) { setClauses.push('filter = @filter');     params.filter = data.filter }
+  if ('panel' in data)             { setClauses.push('panel = @panel');       params.panel = data.panel ?? null }
 
   const db = connectToDatabase()
   if (setClauses.length > 0) {

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { checkImported, recordImported, relinkImported, cullImported, getAllImported, removeImported, saveImportedAnalysis } from '../services/apImportedService.js'
+import { checkImported, recordImported, relinkImported, cullImported, getAllImported, removeImported, releaseImported, saveImportedAnalysis } from '../services/apImportedService.js'
 
 const router = Router()
 
@@ -39,6 +39,17 @@ router.post('/remove', async (req: Request, res: Response) => {
   if (!Array.isArray(names)) { res.status(400).json({ error: 'names must be an array' }); return }
   try {
     res.json({ removed: await removeImported(names) })
+  } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Reimport: drops the records and takes their frames off their entries.
+router.post('/release', async (req: Request, res: Response) => {
+  const { names } = req.body as { names?: string[] }
+  if (!Array.isArray(names) || names.some(n => typeof n !== 'string')) { res.status(400).json({ error: 'names must be an array of strings' }); return }
+  try {
+    res.json(await releaseImported(names))
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }

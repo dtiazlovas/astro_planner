@@ -132,6 +132,196 @@ function phaseName(age: number): string {
   return 'Waning crescent'
 }
 
+// ── Object positions ───────────────────────────────────────────────
+
+/** J2000 equatorial coordinates, both in degrees. */
+export interface SkyPosition { ra: number; dec: number }
+
+// "00h42m44.3s", "00:42:44", "+41°16′07″", "-05 23 28", "41d16m09s" → [sign, value]
+// in the leading unit. Separators are anything that isn't part of a number.
+function parseSexagesimal(s: string): number | null {
+  const t = s.trim()
+  const neg = /^[-−–]/.test(t)
+  const parts = t.replace(/^[-−–+]/, '').split(/[^\d.]+/).filter(Boolean).map(Number)
+  if (parts.length === 0 || parts.length > 3 || parts.some(p => !isFinite(p))) return null
+  const [a, b = 0, c = 0] = parts
+  if (b >= 60 || c >= 60) return null
+  const v = a + b / 60 + c / 3600
+  return neg ? -v : v
+}
+
+// A bare number is degrees. A string is hours when it is written the way RA
+// usually is — with an "h", colons, or space-separated fields — and degrees
+// otherwise ("10.68", "10°41′").
+function parseRa(v: unknown): number | null {
+  if (typeof v === 'number') return isFinite(v) && v >= 0 && v < 360 ? v : null
+  if (typeof v !== 'string' || !v.trim()) return null
+  const s = v.trim()
+  const hours = /h/i.test(s) || s.includes(':') || /\d\s+\d/.test(s)
+  const n = parseSexagesimal(s)
+  if (n === null || n < 0) return null
+  const deg = hours ? n * 15 : n
+  return deg < 360 ? deg : null
+}
+
+function parseDec(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? parseSexagesimal(v) : null
+  return n !== null && isFinite(n) && n >= -90 && n <= 90 ? n : null
+}
+
+/**
+ * Reads an object's free-form position field. Accepts `{"ra", "dec"}` (any key
+ * case) as degrees or sexagesimal strings; returns null for anything it can't
+ * read unambiguously, including the stored '{}' for "no position".
+ */
+export function parsePosition(json: string | null | undefined): SkyPosition | null {
+  if (!json || !json.trim()) return null
+  let o: unknown
+  try { o = JSON.parse(json) } catch { return null }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+  const keyed = new Map(Object.entries(o as Record<string, unknown>).map(([k, v]) => [k.toLowerCase(), v]))
+  const ra = parseRa(keyed.get('ra'))
+  const dec = parseDec(keyed.get('dec') ?? keyed.get('de'))
+  return ra !== null && dec !== null ? { ra, dec } : null
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** "00h42m44.3s" */
+export function formatRa(deg: number): string {
+  const tenths = Math.round((((deg % 360) + 360) % 360) / 15 * 36000) % (24 * 36000)
+  const h = Math.floor(tenths / 36000), m = Math.floor(tenths / 600) % 60, s = (tenths % 600) / 10
+  return `${pad2(h)}h${pad2(m)}m${s.toFixed(1).padStart(4, '0')}s`
+}
+
+/** "+41°16′07″" */
+export function formatDec(deg: number): string {
+  const secs = Math.round(Math.abs(deg) * 3600)
+  const d = Math.floor(secs / 3600), m = Math.floor(secs / 60) % 60, s = secs % 60
+  return `${deg < 0 ? '−' : '+'}${pad2(d)}°${pad2(m)}′${pad2(s)}″`
+}
+
+/** The stored form — readable in the text field and accepted by parsePosition. */
+export function formatPositionJson(p: SkyPosition): string {
+  return JSON.stringify({ ra: formatRa(p.ra), dec: formatDec(p.dec).replace('−', '-') })
+}
+
+// ── An object's coming night ───────────────────────────────────────
+
+/** Altitude the sky card measures "usable" time against. */
+export const USABLE_ALTITUDE = 30
+
+// Ecliptic → equatorial, degrees in and out.
+function toEquatorial(lonDeg: number, latDeg: number, d: number): SkyPosition {
+  const e = (23.439 - 0.0000004 * d) * RAD, l = lonDeg * RAD, b = latDeg * RAD
+  const ra = Math.atan2(Math.sin(l) * Math.cos(e) - Math.tan(b) * Math.sin(e), Math.cos(l)) / RAD
+  const dec = Math.asin(Math.sin(b) * Math.cos(e) + Math.cos(b) * Math.sin(e) * Math.sin(l)) / RAD
+  return { ra: norm360(ra), dec }
+}
+
+function altitudeOf(haDeg: number, decDeg: number, latDeg: number): number {
+  const s = Math.sin(latDeg * RAD) * Math.sin(decDeg * RAD)
+    + Math.cos(latDeg * RAD) * Math.cos(decDeg * RAD) * Math.cos(haDeg * RAD)
+  return Math.asin(Math.max(-1, Math.min(1, s))) / RAD
+}
+
+/** Great-circle separation in degrees (haversine — stable at small angles). */
+export function separationDeg(a: SkyPosition, b: SkyPosition): number {
+  const dDec = (b.dec - a.dec) * RAD, dRa = (b.ra - a.ra) * RAD
+  const h = Math.sin(dDec / 2) ** 2 + Math.cos(a.dec * RAD) * Math.cos(b.dec * RAD) * Math.sin(dRa / 2) ** 2
+  return 2 * Math.asin(Math.min(1, Math.sqrt(h))) / RAD
+}
+
+/**
+ * The evening on which the next (or current) astronomical night begins. The
+ * local clock stands in for solar time here — it can be an hour or so out, which
+ * only matters in the hour around dawn.
+ */
+export function upcomingNightEvening(latDeg: number, now: Date = new Date()): Date {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (now.getHours() >= 12) return today
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+  const dawnHour = astronomicalDarknessHours(yesterday, latDeg) / 2
+  const hoursPastMidnight = (now.getTime() - today.getTime()) / 3600_000
+  return hoursPastMidnight < dawnHour ? yesterday : today
+}
+
+export interface NightSky {
+  /** Evening the night begins on. */
+  evening: Date
+  darkHours: number
+  /** Object altitude at the start and end of darkness, and its peak within it. */
+  altStart: number
+  altEnd: number
+  altMax: number
+  /** Where in the night the peak falls, 0 (dusk) to 1 (dawn). */
+  altMaxAt: number
+  hoursAboveUsable: number
+  /** Moon at the middle of the night. */
+  moonSeparation: number
+  moonIllumination: number
+  moonUpHours: number
+  /** Samples across darkness, for the sparkline: [0..1 through the night, object alt, moon alt]. */
+  track: [number, number, number][]
+}
+
+/**
+ * How an object sits in astronomical darkness on the night beginning `evening`.
+ * Needs no longitude: darkness is a range of the Sun's hour angle, and every
+ * other body's hour angle is the Sun's plus the RA difference, so altitudes over
+ * the dark hours follow from latitude alone. Longitude would only turn them into
+ * clock times, which this deliberately doesn't report. Returns null when the Sun
+ * never reaches −18°.
+ *
+ * Precision is a degree or so — mean J2000 coordinates, low-order Sun and Moon
+ * series, the local clock standing in for solar time when placing the Moon —
+ * which is far finer than the "is it high, is the Moon near" question needs.
+ */
+export function nightSky(target: SkyPosition, latDeg: number, evening: Date): NightSky | null {
+  const darkHours = astronomicalDarknessHours(evening, latDeg)
+  if (darkHours <= 0) return null
+  const midnight = new Date(evening.getFullYear(), evening.getMonth(), evening.getDate() + 1).getTime()
+  const steps = Math.max(12, Math.round(darkHours * 12)) // every 5 minutes
+  const stepHours = darkHours / steps
+
+  const track: [number, number, number][] = []
+  let altMax = -90, altMaxAt = 0, above = 0, moonUp = 0
+  let moonSeparation = 0, moonIllumination = 0
+  for (let i = 0; i <= steps; i++) {
+    const offsetHours = -darkHours / 2 + i * stepHours
+    const d = daysSinceJ2000(new Date(midnight + offsetHours * 3600_000))
+    const { sunLon, moonLon, moonLat } = sunMoonPositions(d)
+    const sun = toEquatorial(sunLon, 0, d)
+    const moon = toEquatorial(moonLon, moonLat, d)
+    // Local sidereal time from the Sun: its hour angle is 180° at solar midnight.
+    const lst = 180 + offsetHours * 15 + sun.ra
+    const alt = altitudeOf(lst - target.ra, target.dec, latDeg)
+    const geoMoonAlt = altitudeOf(lst - moon.ra, moon.dec, latDeg)
+    const moonAlt = geoMoonAlt - 0.95 * Math.cos(geoMoonAlt * RAD) // lunar parallax
+
+    const f = i / steps
+    track.push([f, alt, moonAlt])
+    if (alt > altMax) { altMax = alt; altMaxAt = f }
+    // Trapezoid weights: each sample owns one step, the two ends half each.
+    const weight = (i === 0 || i === steps) ? stepHours / 2 : stepHours
+    if (alt >= USABLE_ALTITUDE) above += weight
+    if (moonAlt > 0) moonUp += weight
+    if (i === Math.round(steps / 2)) {
+      moonSeparation = separationDeg(target, moon)
+      const elong = norm360(moonLon - sunLon)
+      moonIllumination = (1 - Math.cos(moonLat * RAD) * Math.cos(elong * RAD)) / 2
+    }
+  }
+
+  return {
+    evening, darkHours,
+    altStart: track[0][1], altEnd: track[track.length - 1][1], altMax, altMaxAt,
+    hoursAboveUsable: above,
+    moonSeparation, moonIllumination, moonUpHours: moonUp,
+    track,
+  }
+}
+
 /** Moon phase at `date` (default: now), computed locally. */
 export function moonPhase(date: Date = new Date()): MoonPhase {
   const d = daysSinceJ2000(date)

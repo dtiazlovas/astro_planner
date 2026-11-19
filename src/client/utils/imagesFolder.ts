@@ -104,18 +104,109 @@ export interface CopyItem {
   files: File[]
   objectFolder: string
   filterName: string
+  /** Mosaic panel suffix — one more folder level inside the filter folder. */
+  panelFolder?: string | null
+  /** Reimported files: written over an existing copy at the destination
+      rather than skipped. */
+  replace?: Set<string>
 }
 
-export interface CopyStats { copied: number; skipped: number; failed: number }
+export interface CopyStats {
+  copied: number; skipped: number; failed: number
+  /** Reimported files whose new copy landed and was verified, by object folder
+      and the destination folder path under it. */
+  replaced: { objectFolder: string; dir: string[]; name: string }[]
+}
 
 // Folder settings may contain nested paths ("Galaxies/M31") — resolve each segment.
 const segments = (s: string) => s.split(/[\\/]/).map(p => p.trim()).filter(Boolean)
 
 async function getDestDir(root: FileSystemDirectoryHandle, item: CopyItem): Promise<FileSystemDirectoryHandle> {
   let dir = root
-  for (const part of [...segments(item.objectFolder), ...segments(item.filterName)])
+  for (const part of [...segments(item.objectFolder), ...segments(item.filterName), ...segments(item.panelFolder ?? '')])
     dir = await dir.getDirectoryHandle(part, { create: true })
   return dir
+}
+
+/** A file in an object folder and the folders it sits in, relative to that folder. */
+export interface FolderEntry { name: string; dir: string[] }
+
+// Like listObjectFolderFiles, but keeps where each file sits — what deciding
+// whether a mosaic sub is in its panel folder needs.
+export async function listObjectFolderEntries(root: FileSystemDirectoryHandle, objectFolder: string): Promise<FolderEntry[]> {
+  const base = await resolveObjectDir(root, objectFolder)
+  if (!base) return []
+  const out: FolderEntry[] = []
+  const scan = async (d: FileSystemDirectoryHandle, dir: string[]): Promise<void> => {
+    for await (const handle of d.values()) {
+      if (handle.kind === 'directory') await scan(handle as FileSystemDirectoryHandle, [...dir, handle.name])
+      else out.push({ name: handle.name, dir })
+    }
+  }
+  await scan(base, [])
+  return out
+}
+
+export interface FileMove { name: string; from: string[]; to: string[] }
+export interface MoveStats { moved: number; conflicts: number; failed: number }
+
+/**
+ * Moves files between folders of one object folder. Copy, read the copy back
+ * and compare sizes, and only then remove the original: a sub must never exist
+ * in neither place. A destination that already holds a file of that name is
+ * left alone along with the source (a conflict, for the user to look at) —
+ * nothing here overwrites or deletes a file it hasn't just verified a copy of.
+ */
+export async function moveObjectFolderFiles(
+  root: FileSystemDirectoryHandle,
+  objectFolder: string,
+  moves: FileMove[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<MoveStats> {
+  const stats: MoveStats = { moved: 0, conflicts: 0, failed: 0 }
+  const base = await resolveObjectDir(root, objectFolder)
+  if (!base) { stats.failed = moves.length; return stats }
+  const dirAt = async (path: string[], create: boolean): Promise<FileSystemDirectoryHandle> => {
+    let d = base
+    for (const part of path) d = await d.getDirectoryHandle(part, { create })
+    return d
+  }
+  let done = 0
+  for (const m of moves) {
+    try {
+      const fromDir = await dirAt(m.from, false)
+      const toDir = await dirAt(m.to, true)
+      const src = await (await fromDir.getFileHandle(m.name)).getFile()
+      let exists = true
+      try { await toDir.getFileHandle(m.name) } catch { exists = false }
+      if (exists) {
+        stats.conflicts++
+      } else {
+        const dest = await toDir.getFileHandle(m.name, { create: true })
+        const writable = await dest.createWritable()
+        try {
+          await writable.write(src)
+          await writable.close()
+        } catch (err) {
+          try { await writable.abort() } catch {}
+          try { await toDir.removeEntry(m.name) } catch {}
+          throw err
+        }
+        const copied = await dest.getFile()
+        if (copied.size !== src.size) {
+          // Keep the original; drop the bad copy so a re-run tries again.
+          try { await toDir.removeEntry(m.name) } catch {}
+          throw new Error(`Copy of ${m.name} is incomplete`)
+        }
+        await fromDir.removeEntry(m.name)
+        stats.moved++
+      }
+    } catch {
+      stats.failed++
+    }
+    onProgress?.(++done, moves.length)
+  }
+  return stats
 }
 
 // Lists all file names (recursively) inside objectFolder under the images
@@ -237,18 +328,36 @@ export async function copyFilesToObjectFolders(
   items: CopyItem[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<CopyStats> {
-  const stats: CopyStats = { copied: 0, skipped: 0, failed: 0 }
+  const stats: CopyStats = { copied: 0, skipped: 0, failed: 0, replaced: [] }
   const total = items.reduce((n, i) => n + i.files.length, 0)
   let done = 0
   for (const item of items) {
     let destDir: FileSystemDirectoryHandle | null = null
+    const destPath = [...segments(item.filterName), ...segments(item.panelFolder ?? '')]
     for (const file of item.files) {
       try {
         if (!destDir) destDir = await getDestDir(root, item)
+        const replacing = item.replace?.has(file.name) ?? false
         let exists = true
         try { await destDir.getFileHandle(file.name) } catch { exists = false }
-        if (exists) {
+        if (exists && !replacing) {
           stats.skipped++
+        } else if (exists) {
+          // Over an existing copy: the writable writes to a swap file and only
+          // replaces the original on close, so a failed write leaves the old
+          // copy intact rather than truncated — no removeEntry on this path.
+          const dest = await destDir.getFileHandle(file.name)
+          const writable = await dest.createWritable()
+          try {
+            await writable.write(file)
+            await writable.close()
+          } catch (err) {
+            try { await writable.abort() } catch {}
+            throw err
+          }
+          if ((await dest.getFile()).size !== file.size) throw new Error(`Copy of ${file.name} is incomplete`)
+          stats.copied++
+          stats.replaced.push({ objectFolder: item.objectFolder, dir: destPath, name: file.name })
         } else {
           const dest = await destDir.getFileHandle(file.name, { create: true })
           const writable = await dest.createWritable()
@@ -261,12 +370,55 @@ export async function copyFilesToObjectFolders(
             try { await destDir.removeEntry(file.name) } catch {}
             throw err
           }
+          if (replacing) {
+            if ((await dest.getFile()).size !== file.size) throw new Error(`Copy of ${file.name} is incomplete`)
+            stats.replaced.push({ objectFolder: item.objectFolder, dir: destPath, name: file.name })
+          }
           stats.copied++
         }
       } catch {
         stats.failed++
       }
       onProgress?.(++done, total)
+    }
+  }
+  return stats
+}
+
+/**
+ * After a reimport has landed a verified copy of each file, removes the earlier
+ * copies of those same files left elsewhere in the object folder — an import
+ * from before the mosaic panel folders, say. Exact names only: a processing
+ * tool's derived copy ("…_c.xisf") is the user's own work and is left alone.
+ * Only ever called with `replaced` from copyFilesToObjectFolders, so a file
+ * whose new copy didn't land keeps every copy it had.
+ */
+export async function removeSupersededCopies(
+  root: FileSystemDirectoryHandle,
+  replaced: CopyStats['replaced'],
+): Promise<DeleteStats> {
+  const stats: DeleteStats = { deleted: 0, failed: 0 }
+  const byObject = new Map<string, Map<string, string[]>>()
+  for (const r of replaced) {
+    const m = byObject.get(r.objectFolder) ?? new Map<string, string[]>()
+    m.set(r.name, r.dir)
+    byObject.set(r.objectFolder, m)
+  }
+  for (const [objectFolder, keep] of byObject) {
+    const base = await resolveObjectDir(root, objectFolder)
+    if (!base) continue
+    const lower = (p: string[]) => p.map(s => s.toLowerCase()).join('/')
+    for (const entry of await listObjectFolderEntries(root, objectFolder)) {
+      const keptAt = keep.get(entry.name)
+      if (!keptAt || lower(entry.dir) === lower(keptAt)) continue
+      try {
+        let d = base
+        for (const part of entry.dir) d = await d.getDirectoryHandle(part)
+        await d.removeEntry(entry.name)
+        stats.deleted++
+      } catch {
+        stats.failed++
+      }
     }
   }
   return stats

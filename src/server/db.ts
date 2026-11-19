@@ -105,10 +105,11 @@ function initSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS ap_psfsw_anchor (
       object INTEGER NOT NULL REFERENCES ap_object(id),
       filter INTEGER NOT NULL REFERENCES ap_filter(id),
+      panel  TEXT    NOT NULL DEFAULT '',
       anchor REAL    NOT NULL,
       subs   INTEGER NOT NULL,
       set_at TEXT    NOT NULL,
-      PRIMARY KEY (object, filter)
+      PRIMARY KEY (object, filter, panel)
     );
 
     CREATE TABLE IF NOT EXISTS ap_equipment (
@@ -170,6 +171,43 @@ function initSchema(database: Database.Database): void {
         AND (SELECT COUNT(*) FROM ap_object_session os WHERE os.session = ap_imported.session_id) = 1
     `)
   } catch {}
+  // Mosaics: a rows × cols grid, each cell named by the suffix the capture tool
+  // glues onto the target ("fossil2" → panel "2"). Panels are a JSON array of
+  // suffixes, row-major; NULL for a plain 1×1 object.
+  try { database.exec('ALTER TABLE ap_object ADD COLUMN mosaic_rows INTEGER NOT NULL DEFAULT 1') } catch {}
+  try { database.exec('ALTER TABLE ap_object ADD COLUMN mosaic_cols INTEGER NOT NULL DEFAULT 1') } catch {}
+  try { database.exec('ALTER TABLE ap_object ADD COLUMN mosaic_panels TEXT') } catch {}
+  // The panel suffix an entry was shot on; NULL for non-mosaic objects, and for
+  // mosaic subs whose name carried no recognised suffix.
+  try { database.exec('ALTER TABLE ap_object_session ADD COLUMN panel TEXT') } catch {}
+  // Each panel is its own star field, so its PSFSW needs its own frozen scale.
+  // The key grows a panel column ('' for non-mosaic pairs); SQLite can't alter a
+  // primary key, so the table is rebuilt once — every existing anchor is carried
+  // over unchanged, as panel '', inside one transaction.
+  try {
+    const cols = database.prepare('PRAGMA table_info(ap_psfsw_anchor)').all() as { name: string }[]
+    if (!cols.some(c => c.name === 'panel')) {
+      database.transaction(() => {
+        database.exec(`
+          CREATE TABLE ap_psfsw_anchor_new (
+            object INTEGER NOT NULL REFERENCES ap_object(id),
+            filter INTEGER NOT NULL REFERENCES ap_filter(id),
+            panel  TEXT    NOT NULL DEFAULT '',
+            anchor REAL    NOT NULL,
+            subs   INTEGER NOT NULL,
+            set_at TEXT    NOT NULL,
+            PRIMARY KEY (object, filter, panel)
+          );
+          INSERT INTO ap_psfsw_anchor_new (object, filter, panel, anchor, subs, set_at)
+            SELECT object, filter, '', anchor, subs, set_at FROM ap_psfsw_anchor;
+          DROP TABLE ap_psfsw_anchor;
+          ALTER TABLE ap_psfsw_anchor_new RENAME TO ap_psfsw_anchor;
+        `)
+      })()
+    }
+  } catch (err) {
+    console.error('ap_psfsw_anchor panel migration failed — anchors left as they were', err)
+  }
   for (const [name, folder] of [['Luminance','Lum'],['Red','R'],['Green','G'],['Blue','B'],['H-alpha','Ha'],['Oxygen','Oiii'],['Sulphur','Sii']]) {
     database.prepare('UPDATE ap_filter SET folder = @folder WHERE name = @name AND folder IS NULL').run({ folder, name })
   }

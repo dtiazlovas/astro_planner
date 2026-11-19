@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { getObjects, getObjectTypes, getObjectFilterStats, getObjectPlanProgress, getPlans, assignToActivePlan, createObject, updateObject, deleteObject, reorderObjects, getFilters, getExposures, getSessions, getImportedRecords, saveImportedAnalysis, getPsfswAnchors, savePsfswAnchor, type PsfswAnchorRow } from '../api'
 import type { ApObject, ApObjectType, ObjectFilterStat, PlanProgressItem } from '../types'
 import { fetchPatterns, fetchDayStartHour } from '../utils/filePattern'
-import { ensureImagesFolderAccess, listObjectFolderFiles, getObjectFolderFiles, deleteObjectFolderFiles } from '../utils/imagesFolder'
+import { ensureImagesFolderAccess, listObjectFolderEntries, getObjectFolderFiles, deleteObjectFolderFiles, moveObjectFolderFiles } from '../utils/imagesFolder'
+import MosaicEditor, { PLAIN_MOSAIC, mosaicProblem, type MosaicValue } from '../components/MosaicEditor'
 import { scanObjectFiles, applyObjectSync, cullSubset, type SyncScanResult } from '../utils/objectSync'
 import { groupRecords, ensureAnchor, toAnchorMap, medianOf, scaleBy, anchorKeyOf, type AnchorMap, type GroupedRecord } from '../utils/psfsw'
 import { analyzeFitsFiles } from '../utils/fitsAnalysis'
@@ -14,8 +15,17 @@ import { useEquipment } from '../context/EquipmentContext'
 import PlansPanel from './PlansPanel'
 import FilterBadge from '../components/FilterBadge'
 import BlinkViewer from '../components/BlinkViewer'
+import PositionField from '../components/PositionField'
+import ObjectSky from '../components/ObjectSky'
+import { fetchLatitude, parsePosition, upcomingNightEvening, DEFAULT_LATITUDE } from '../utils/astro'
 
 const emptyForm = { name: '', typeId: '', position_json: '', comment: '', aliases: '', active: true, folder: '' }
+
+/** One chart's worth of subs in the sync dialog: a filter, or a filter on one mosaic panel. */
+interface QualityGroupDef { key: string; filterId: number; panel: string | null; name: string }
+const qualityGroupKey = (filterId: number, panel: string | null) => `${filterId}|${panel ?? ''}`
+const comparePanels = (a: string | null, b: string | null) =>
+  (a ?? '').localeCompare(b ?? '', undefined, { numeric: true })
 
 const fmtDuration = (s: number): string => {
   if (s <= 0) return '—'
@@ -38,6 +48,7 @@ export default function ObjectsPage() {
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState(emptyForm)
+  const [mosaic, setMosaic] = useState<MosaicValue>(PLAIN_MOSAIC)
   const [submitting, setSubmitting] = useState(false)
   const [togglingId, setTogglingId] = useState<number | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
@@ -46,6 +57,8 @@ export default function ObjectsPage() {
   const [expandedStats, setExpandedStats] = useState<Map<number, ObjectFilterStat[]>>(new Map())
   // Object id → the filter its breakdown panel is narrowed to; absent shows all.
   const [focusedFilter, setFocusedFilter] = useState<Map<number, string>>(new Map())
+  // Object id → the mosaic panel its card is narrowed to; absent shows all panels.
+  const [selectedPanel, setSelectedPanel] = useState<Map<number, string>>(new Map())
   const [planProgress, setPlanProgress] = useState<Map<number, PlanProgressItem[]>>(new Map())
   const [loadingIds, setLoadingIds] = useState<Set<number>>(new Set())
   // Plans open as a dialog, so at most one object's plans are shown at a time.
@@ -62,18 +75,21 @@ export default function ObjectsPage() {
   const [syncApplying, setSyncApplying] = useState(false)
 
   // ── sub-quality analysis inside the sync dialog ──────────────
-  // Per filter: quality scales differ between filters, so each gets its own
-  // normalization and limit.
-  const [qualityFilterId, setQualityFilterId] = useState<number | null>(null)
+  // Per quality group — a filter, or for a mosaic a filter on one panel: quality
+  // scales differ between filters and between star fields, so each gets its own
+  // normalization and limit. Keyed by qualityGroupKey().
+  const [qualityFilterId, setQualityFilterId] = useState<string | null>(null)
   // Both are measured in one pass. PSFSW: higher is better; FWHM: lower.
   const [qualityMetric, setQualityMetric] = useState<'psfsw' | 'fwhm'>('psfsw')
-  // Per filter, not per pane, so switching away and back restores that filter's
+  // Per group, not per pane, so switching away and back restores that group's
   // own measurements and limit unchanged.
-  const [qualityResultsByFilter, setQualityResultsByFilter] = useState<Map<number, Map<string, FitsAnalysis>>>(new Map())
-  const [qualityThresholdByFilter, setQualityThresholdByFilter] = useState<Map<number, number>>(new Map())
+  const [qualityResultsByFilter, setQualityResultsByFilter] = useState<Map<string, Map<string, FitsAnalysis>>>(new Map())
+  const [qualityThresholdByFilter, setQualityThresholdByFilter] = useState<Map<string, number>>(new Map())
   // Measured in this dialog — one seeded from saved analysis alone hasn't been,
   // so its button still offers the cheap pass.
-  const [qualityMeasuredFilters, setQualityMeasuredFilters] = useState<Set<number>>(new Set())
+  const [qualityMeasuredFilters, setQualityMeasuredFilters] = useState<Set<string>>(new Set())
+  const [moving, setMoving] = useState<{ current: number; total: number } | null>(null)
+  const [moveMsg, setMoveMsg] = useState<string | null>(null)
   const [qualityPaneOpen, setQualityPaneOpen] = useState(false)
   const [qualityAnalyzing, setQualityAnalyzing] = useState(false)
   const [qualityProgress, setQualityProgress] = useState<{ current: number; total: number } | null>(null)
@@ -122,8 +138,13 @@ export default function ObjectsPage() {
     }
     load()
     // Rig-specific expanded state doesn't survive a rig change.
-    setExpandedIds(new Set()); setExpandedStats(new Map()); setFocusedFilter(new Map()); setPlansForId(null)
+    setExpandedIds(new Set()); setExpandedStats(new Map()); setFocusedFilter(new Map()); setSelectedPanel(new Map()); setPlansForId(null)
   }, [activeId])
+
+  // Observer latitude for the sky card; fetchLatitude falls back to the default itself.
+  const [latitude, setLatitude] = useState(DEFAULT_LATITUDE)
+  useEffect(() => { fetchLatitude().then(setLatitude) }, [])
+  const evening = upcomingNightEvening(latitude)
 
   // A failure here just leaves pairs on a local median until one is established.
   useEffect(() => {
@@ -136,7 +157,7 @@ export default function ObjectsPage() {
   const scanObject = async (obj: ApObject): Promise<SyncScanResult> => {
     const scanDir = await ensureImagesFolderAccess()
     if (!scanDir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
-    const present = await listObjectFolderFiles(scanDir, obj.folder!)
+    const present = await listObjectFolderEntries(scanDir, obj.folder!)
     const [filters, exposures, patterns, sessions, imported, dayStartHour] = await Promise.all([
       getFilters(), getExposures(), fetchPatterns(), getSessions(), getImportedRecords(), fetchDayStartHour(),
     ])
@@ -164,7 +185,7 @@ export default function ObjectsPage() {
 
   const handleSync = async (obj: ApObject, keepQuality = false) => {
     if (!obj.folder) return
-    setSyncingId(obj.id); setError(null)
+    setSyncingId(obj.id); setError(null); setMoveMsg(null)
     if (!keepQuality) {
       setQualityResultsByFilter(new Map()); setQualityThresholdByFilter(new Map())
       setQualityMeasuredFilters(new Set()); setQualityPaneOpen(false)
@@ -177,6 +198,36 @@ export default function ObjectsPage() {
       setError(err instanceof Error ? err.message : 'Sync scan failed')
     } finally {
       setSyncingId(null)
+    }
+  }
+
+  /**
+   * Moves mosaic subs that sit loose in their filter folder into the panel
+   * folder their name says they belong to. Only from this click, and each file
+   * is copied and checked before its original goes. Records are keyed by file
+   * name, so nothing in the database changes — the rescan just finds them in
+   * their new place.
+   */
+  const handleMoveIntoPanels = async () => {
+    const obj = syncPreview?.obj
+    const moves = syncPreview?.scan.misplaced ?? []
+    if (!obj?.folder || !moves.length) return
+    setError(null); setMoveMsg(null)
+    try {
+      const dir = await ensureImagesFolderAccess()
+      if (!dir) throw new Error('Images folder not accessible — choose it in Settings and grant access')
+      setMoving({ current: 0, total: moves.length })
+      const stats = await moveObjectFolderFiles(dir, obj.folder, moves, (current, total) => setMoving({ current, total }))
+      setMoveMsg([
+        `Moved ${stats.moved} sub${stats.moved !== 1 ? 's' : ''} into panel folders`,
+        stats.conflicts ? `${stats.conflicts} left in place — a file of that name is already in the panel folder` : null,
+        stats.failed ? `${stats.failed} failed and were left where they were` : null,
+      ].filter(Boolean).join(' · '))
+      setSyncPreview({ obj, scan: await scanObject(obj) })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Moving files failed')
+    } finally {
+      setMoving(null)
     }
   }
 
@@ -198,11 +249,16 @@ export default function ObjectsPage() {
   }
 
   // ── sub-quality analysis / culling ───────────────────────────
-  const analyzableFilters = [...new Map(
-    (syncPreview?.scan.analyzableFiles ?? []).map(f => [f.filterId, f.filterName])
-  ).entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
-  const activeQualityFilterId = qualityFilterId ?? analyzableFilters[0]?.id ?? null
-  const qualityFilterFiles = (syncPreview?.scan.analyzableFiles ?? []).filter(f => f.filterId === activeQualityFilterId)
+  // `id` is the group key: a filter, split per panel for a mosaic.
+  const analyzableFilters: (QualityGroupDef & { id: string })[] = [...new Map(
+    (syncPreview?.scan.analyzableFiles ?? []).map(f => {
+      const key = qualityGroupKey(f.filterId, f.panel)
+      return [key, { key, id: key, filterId: f.filterId, panel: f.panel, name: f.panel ? `${f.filterName} · ${f.panel}` : f.filterName }]
+    })
+  ).values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }) || comparePanels(a.panel, b.panel))
+  const groupDef = (key: string | null) => analyzableFilters.find(g => g.key === key) ?? null
+  const activeQualityFilterId = (qualityFilterId != null && groupDef(qualityFilterId) ? qualityFilterId : null) ?? analyzableFilters[0]?.id ?? null
+  const qualityFilterFiles = (syncPreview?.scan.analyzableFiles ?? []).filter(f => qualityGroupKey(f.filterId, f.panel) === activeQualityFilterId)
 
   const metricValue = (r: FitsAnalysis): number | null => qualityMetric === 'psfsw' ? r.snr : r.fwhm
   // Default limit keeps everything: min for PSFSW (cull below), max for FWHM (cull above).
@@ -219,13 +275,20 @@ export default function ObjectsPage() {
     if (activeQualityFilterId != null) setQualityThresholdByFilter(prev => new Map(prev).set(activeQualityFilterId, v))
   }
 
-  /** The frozen scale this object+filter's PSFSW is shown against, if set. */
-  const anchorRowFor = (filterId: number | null): PsfswAnchorRow | null => {
-    void anchorVersion // recompute when a scale is established
-    if (syncPreview == null || filterId == null) return null
-    return anchorsRef.current.get(anchorKeyOf(syncPreview.obj.id, filterId)) ?? null
+  /** The pair key a group's frozen scale is stored under. */
+  const anchorKeyForGroup = (groupKey: string): string | null => {
+    const g = groupDef(groupKey)
+    return syncPreview && g ? anchorKeyOf(syncPreview.obj.id, g.filterId, g.panel) : null
   }
-  const anchorFor = (filterId: number | null): number | null => anchorRowFor(filterId)?.anchor ?? null
+
+  /** The frozen scale this object+filter(+panel)'s PSFSW is shown against, if set. */
+  const anchorRowFor = (groupKey: string | null): PsfswAnchorRow | null => {
+    void anchorVersion // recompute when a scale is established
+    if (groupKey == null) return null
+    const key = anchorKeyForGroup(groupKey)
+    return key ? anchorsRef.current.get(key) ?? null : null
+  }
+  const anchorFor = (groupKey: string | null): number | null => anchorRowFor(groupKey)?.anchor ?? null
   const activeAnchor = anchorRowFor(activeQualityFilterId)
 
   /**
@@ -235,18 +298,20 @@ export default function ObjectsPage() {
    * prevent. The screen is rescaled by that ratio rather than refetched.
    */
   const handleRebaseline = async () => {
-    if (!syncPreview || activeQualityFilterId == null || !activeAnchor) return
+    const group = groupDef(activeQualityFilterId)
+    if (!syncPreview || activeQualityFilterId == null || !activeAnchor || !group) return
     const filterId = activeQualityFilterId
     const objectId = syncPreview.obj.id
+    const pairKey = anchorKeyOf(objectId, group.filterId, group.panel)
     setRebaselining(true); setError(null)
     try {
-      const values = (groupedRecordsRef.current.get(anchorKeyOf(objectId, filterId)) ?? [])
+      const values = (groupedRecordsRef.current.get(pairKey) ?? [])
         .map(r => r.psfsw).filter((v): v is number => v != null)
       const median = medianOf(values)
       if (median == null) throw new Error('No measured subs to set a scale from')
-      const row = await savePsfswAnchor(objectId, filterId, median, values.filter(v => v > 0).length, true)
+      const row = await savePsfswAnchor(objectId, group.filterId, group.panel, median, values.filter(v => v > 0).length, true)
       const ratio = activeAnchor.anchor / row.anchor
-      anchorsRef.current.set(anchorKeyOf(objectId, filterId), row)
+      anchorsRef.current.set(pairKey, row)
       setAnchorVersion(v => v + 1)
       setQualityResultsByFilter(prev => {
         const results = prev.get(filterId)
@@ -269,8 +334,8 @@ export default function ObjectsPage() {
   // Saved analysis on the same scale as a fresh run, so switching filters keeps
   // the chart populated without measuring. An unanchored pair falls back to its
   // own median — the one case where these aren't comparable with other screens.
-  const storedResultsFor = (filterId: number): Map<string, FitsAnalysis> => {
-    const files = (syncPreview?.scan.analyzableFiles ?? []).filter(f => f.filterId === filterId && f.storedPsfsw != null)
+  const storedResultsFor = (filterId: string): Map<string, FitsAnalysis> => {
+    const files = (syncPreview?.scan.analyzableFiles ?? []).filter(f => qualityGroupKey(f.filterId, f.panel) === filterId && f.storedPsfsw != null)
     const divisor = anchorFor(filterId) ?? medianOf(files.map(f => f.storedPsfsw!)) ?? 0
     return new Map(files.map(f => [f.name, {
       fileName: f.name,
@@ -305,7 +370,7 @@ export default function ObjectsPage() {
   )]
   const handDroppedHere = qualityFilterFiles.filter(f => droppedSubs.has(f.name)).length
 
-  const handleQualityFilterChange = (id: number) => {
+  const handleQualityFilterChange = (id: string) => {
     setQualityFilterId(id)
     setConfirmDeleteSubs(false)
     // The pane follows rather than collapsing: the arriving filter shows what
@@ -324,7 +389,7 @@ export default function ObjectsPage() {
     setQualityMetric(metric)
     // Every filter's limit resets, not just the one on screen: a PSFSW limit is
     // meaningless on an FWHM axis.
-    const next = new Map<number, number>()
+    const next = new Map<string, number>()
     for (const [id, results] of qualityResultsByFilter) {
       const t = defaultThreshold(results.values(), metric)
       if (t != null) next.set(id, t)
@@ -337,9 +402,11 @@ export default function ObjectsPage() {
   // only files without a saved analysis are measured (and then persisted).
   const handleAnalyzeQuality = async (force: boolean) => {
     if (!syncPreview?.obj.folder) return
-    if (!qualityFilterFiles.length || activeQualityFilterId == null) return
-    // Results are filed under the filter the run started on.
+    const group = groupDef(activeQualityFilterId)
+    if (!qualityFilterFiles.length || activeQualityFilterId == null || !group) return
+    // Results are filed under the group the run started on.
     const filterId = activeQualityFilterId
+    const pairKey = anchorKeyOf(syncPreview.obj.id, group.filterId, group.panel)
     setQualityAnalyzing(true); setError(null); setConfirmDeleteSubs(false)
     const ctrl = new AbortController()
     qualityAbortRef.current = ctrl
@@ -355,13 +422,13 @@ export default function ObjectsPage() {
       // Established before anything is drawn, from every record this pair has —
       // not just the subs still on disk — so this dialog and the import chart
       // divide by the same number. Only ever fills a gap.
-      const anchoredValues = (groupedRecordsRef.current.get(anchorKeyOf(syncPreview.obj.id, filterId)) ?? [])
+      const anchoredValues = (groupedRecordsRef.current.get(pairKey) ?? [])
         .map(r => r.psfsw).filter((v): v is number => v != null)
       const seedValues = anchoredValues.length
         ? anchoredValues
         : qualityFilterFiles.map(f => f.storedPsfsw).filter((v): v is number => v != null)
       if (seedValues.length) {
-        await ensureAnchor(anchorsRef.current, syncPreview.obj.id, filterId, seedValues)
+        await ensureAnchor(anchorsRef.current, syncPreview.obj.id, group.filterId, group.panel, seedValues)
         setAnchorVersion(v => v + 1)
       }
 
@@ -371,7 +438,7 @@ export default function ObjectsPage() {
         const all = [...stored, ...raw]
         if (!all.length) return
         // The frozen anchor, or this set's own median for a pair without one.
-        const divisor = anchorsRef.current.get(anchorKeyOf(syncPreview.obj.id, filterId))?.anchor
+        const divisor = anchorsRef.current.get(pairKey)?.anchor
           ?? medianOf(all.map(r => r.snr).filter((v): v is number => v != null))
           ?? 0
         const normed = divisor > 0
@@ -569,12 +636,13 @@ export default function ObjectsPage() {
   }
 
   const openAdd = () => {
-    setEditingId(null); setForm(emptyForm); setShowForm(true); setError(null)
+    setEditingId(null); setForm(emptyForm); setMosaic(PLAIN_MOSAIC); setShowForm(true); setError(null)
   }
 
   const openEdit = (obj: ApObject) => {
     setEditingId(obj.id)
     setForm({ name: obj.name, typeId: String(obj.type), position_json: obj.position_json === '{}' ? '' : obj.position_json, comment: obj.comment ?? '', aliases: obj.aliases ?? '', active: obj.active, folder: obj.folder ?? '' })
+    setMosaic({ rows: obj.mosaic_rows, cols: obj.mosaic_cols, panels: obj.mosaic_panels })
     setShowForm(true); setConfirmingId(null); setError(null)
   }
 
@@ -583,7 +651,13 @@ export default function ObjectsPage() {
   const handleSubmit = async (e: { preventDefault(): void }) => {
     e.preventDefault()
     setSubmitting(true); setError(null)
-    const payload = { name: form.name.trim(), type: Number(form.typeId), position_json: form.position_json.trim(), comment: form.comment.trim() || null, aliases: form.aliases.trim() || null, active: form.active, folder: form.folder.trim() || null }
+    const problem = mosaicProblem(mosaic)
+    if (problem) { setError(problem); setSubmitting(false); return }
+    const payload = {
+      name: form.name.trim(), type: Number(form.typeId), position_json: form.position_json.trim(),
+      comment: form.comment.trim() || null, aliases: form.aliases.trim() || null, active: form.active, folder: form.folder.trim() || null,
+      mosaic_rows: mosaic.rows, mosaic_cols: mosaic.cols, mosaic_panels: mosaic.panels?.map(p => p.trim()) ?? null,
+    }
     try {
       if (editingId !== null) {
         const updated = await updateObject(editingId, payload)
@@ -593,8 +667,11 @@ export default function ObjectsPage() {
         setObjects(prev => [...prev, created])
       }
       setForm(emptyForm); setEditingId(null); setShowForm(false)
-    } catch {
-      setError(editingId !== null ? 'Failed to update object' : 'Failed to create object')
+      // Panel renames move entries server-side; the card's numbers follow.
+      if (editingId !== null) refreshObjectStats(editingId).catch(() => {})
+    } catch (err) {
+      const base = editingId !== null ? 'Failed to update object' : 'Failed to create object'
+      setError(err instanceof Error && !/^\d{3} /.test(err.message) ? `${base} — ${err.message}` : base)
     } finally {
       setSubmitting(false)
     }
@@ -678,11 +755,90 @@ export default function ObjectsPage() {
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
   ) => setForm(f => ({ ...f, [field]: e.target.value }))
 
+  /** Narrows the card to one mosaic panel, or back to all of them. */
+  const togglePanel = (obj: ApObject, panel: string) => {
+    const selecting = selectedPanel.get(obj.id) !== panel
+    setSelectedPanel(prev => {
+      const m = new Map(prev)
+      if (selecting) m.set(obj.id, panel); else m.delete(obj.id)
+      return m
+    })
+    // With no plan there are no filter bars to narrow, so the panel's numbers
+    // come from the breakdown.
+    if (selecting && !(planProgress.get(obj.id)?.length) && obj.total_seconds > 0 && !expandedIds.has(obj.id)) {
+      setExpandedIds(prev => new Set(prev).add(obj.id))
+      loadFilterStats(obj)
+    }
+  }
+
+  /**
+   * The mosaic laid out as it is shot, one cell per panel. With a plan each cell
+   * fills towards it, every filter counted up to its per-panel target, and the
+   * panel furthest behind is outlined — evening out a mosaic is the point.
+   * Clicking a cell narrows the card's numbers to that panel.
+   */
+  const renderMosaicGrid = (obj: ApObject, progress: PlanProgressItem[] | undefined) => {
+    const panels = obj.mosaic_panels!
+    const selected = selectedPanel.get(obj.id) ?? null
+    const plan = progress && progress.length > 0 ? progress : null
+    const totalTarget = plan ? plan.reduce((n, p) => n + p.target_minutes, 0) : 0
+    const capturedOn = (p: PlanProgressItem, name: string) => (p.panels?.find(x => x.panel === name)?.captured_seconds ?? 0) / 60
+    const pcts = panels.map(name => plan && totalTarget > 0
+      ? Math.min(100, Math.round(plan.reduce((n, p) => n + Math.min(p.target_minutes, capturedOn(p, name)), 0) / totalTarget * 100))
+      : null)
+    const known = pcts.filter((v): v is number => v != null)
+    const lowest = known.length ? Math.min(...known) : 0, highest = known.length ? Math.max(...known) : 0
+    // Plan time that landed on no current panel: no suffix, or a suffix from
+    // before the grid was resized.
+    const current = new Set(panels)
+    const straySeconds = (plan ?? []).reduce((n, p) =>
+      n + (p.panels ?? []).filter(x => x.panel == null || !current.has(x.panel)).reduce((m, x) => m + x.captured_seconds, 0), 0)
+    return (
+      <div className="obj-card__mosaic">
+        <div className="obj-card__mosaic-grid" style={{ gridTemplateColumns: `repeat(${obj.mosaic_cols}, auto)` }}
+          role="group" aria-label={`Mosaic ${obj.mosaic_cols}×${obj.mosaic_rows} — click a panel to see its integration`}>
+          {panels.map((name, i) => {
+            const pct = pcts[i]
+            const behind = pct != null && highest - lowest >= 10 && pct === lowest
+            const tip = [
+              pct != null ? `Panel ${name}: ${pct}% of plan` : `Panel ${name}`,
+              ...(plan ?? []).map(p => `${p.filter_name ?? 'Filter'}: ${fmtMinsH(capturedOn(p, name))} / ${fmtMinsH(p.target_minutes)}`),
+              selected === name ? 'Click to show all panels' : 'Click to show this panel',
+            ].join('\n')
+            return (
+              <button key={i} type="button" title={tip} aria-pressed={selected === name}
+                onClick={() => togglePanel(obj, name)}
+                className={[
+                  'mosaic-cell',
+                  pct != null && pct >= 100 ? 'mosaic-cell--done' : '',
+                  behind ? 'mosaic-cell--behind' : '',
+                  selected === name ? 'mosaic-cell--selected' : '',
+                ].filter(Boolean).join(' ')}>
+                <span className="mosaic-cell__name">{name}</span>
+                {pct != null && <span className="mosaic-cell__fill" style={{ width: `${pct}%` }} />}
+              </button>
+            )
+          })}
+        </div>
+        {straySeconds > 0 && (
+          <span className="cell-muted obj-card__mosaic-stray"
+            title="Entries whose target carried no recognised panel suffix, or a suffix the grid no longer has. A sync re-reads the panel from each file name.">
+            +{fmtDuration(straySeconds).replace('~', '')} no panel
+          </span>
+        )}
+      </div>
+    )
+  }
+
   // Shared by the active and paused groups so the two lists cannot drift apart.
   const renderObject = (obj: ApObject) => {
     const progress = planProgress.get(obj.id)
+    // The panel the card is narrowed to; only meaningful on a current mosaic.
+    const panelSel = obj.mosaic_panels && selectedPanel.get(obj.id) && obj.mosaic_panels.includes(selectedPanel.get(obj.id)!)
+      ? selectedPanel.get(obj.id)! : null
     const typeName = typeMap.get(obj.type) ?? String(obj.type)
     const aliases = (obj.aliases ?? '').split(';').map(a => a.trim()).filter(Boolean)
+    const position = parsePosition(obj.position_json)
     const expanded = expandedIds.has(obj.id)
     return (
       <div
@@ -714,15 +870,18 @@ export default function ObjectsPage() {
                       </div>
                     </div>
 
-                    <button
-                      className={`state-chip ${obj.active ? 'state-chip--on' : 'state-chip--off'}`}
-                      onClick={() => handleToggleActive(obj)}
-                      disabled={togglingId === obj.id}
-                      title={obj.active ? 'Active — click to pause' : 'Paused — click to activate'}
-                    >
-                      <span className="state-chip__dot" />
-                      {obj.active ? 'Active' : 'Paused'}
-                    </button>
+                    <div className="obj-card__head-actions">
+                      {position && <ObjectSky position={position} latitude={latitude} evening={evening} />}
+                      <button
+                        className={`state-chip ${obj.active ? 'state-chip--on' : 'state-chip--off'}`}
+                        onClick={() => handleToggleActive(obj)}
+                        disabled={togglingId === obj.id}
+                        title={obj.active ? 'Active — click to pause' : 'Paused — click to activate'}
+                      >
+                        <span className="state-chip__dot" />
+                        {obj.active ? 'Active' : 'Paused'}
+                      </button>
+                    </div>
                   </div>
 
                   <button
@@ -740,13 +899,36 @@ export default function ObjectsPage() {
 
                   {progress && progress.length > 0 && (
                     <div className="obj-card__progress">
+                      {panelSel && (
+                        <div className="obj-card__panel-caption">
+                          <span>Panel <strong>{panelSel}</strong> · target per panel</span>
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={() => togglePanel(obj, panelSel)}>All panels</button>
+                        </div>
+                      )}
                       {progress.map(p => {
-                        const capturedMins = p.captured_seconds / 60
-                        const pct = p.target_minutes > 0 ? Math.min(100, Math.round(capturedMins / p.target_minutes * 100)) : 0
-                        const avgExp = p.total_frames > 0 ? Math.round(p.captured_seconds / p.total_frames) : null
-                        const tooltip = p.total_frames > 0
-                          ? `${p.total_frames} frame${p.total_frames !== 1 ? 's' : ''}${avgExp !== null ? ` × ${avgExp}s` : ''}`
-                          : undefined
+                        // One panel selected: its own time against the per-panel
+                        // target. Otherwise the whole object — and for a mosaic
+                        // each panel counts up to its target only, so a panel shot
+                        // twice over can't make up for one never started.
+                        const panels = obj.mosaic_panels
+                        const onPanel = panelSel ? p.panels?.find(x => x.panel === panelSel) : undefined
+                        const capturedSeconds = panelSel ? onPanel?.captured_seconds ?? 0 : p.captured_seconds
+                        const frames = panelSel ? onPanel?.total_frames ?? 0 : p.total_frames
+                        const capturedMins = capturedSeconds / 60
+                        const targetMins = panels && !panelSel ? p.target_minutes * panels.length : p.target_minutes
+                        const creditedMins = panels && !panelSel
+                          ? panels.reduce((n, name) => n + Math.min(p.target_minutes, (p.panels?.find(x => x.panel === name)?.captured_seconds ?? 0) / 60), 0)
+                          : capturedMins
+                        const pct = targetMins > 0 ? Math.min(100, Math.round(creditedMins / targetMins * 100)) : 0
+                        const avgExp = frames > 0 ? Math.round(capturedSeconds / frames) : null
+                        const frameText = frames > 0
+                          ? `${frames} frame${frames !== 1 ? 's' : ''}${avgExp !== null ? ` × ${avgExp}s` : ''}`
+                          : null
+                        const panelText = panels && !panelSel
+                          ? `${fmtMinsH(p.target_minutes)} per panel\n` + panels.map(name =>
+                              `${name}: ${fmtMinsH((p.panels?.find(x => x.panel === name)?.captured_seconds ?? 0) / 60)}`).join('\n')
+                          : null
+                        const tooltip = [frameText, panelText].filter(Boolean).join('\n') || undefined
                         const rowOpen = expanded && focusedFilter.get(obj.id) === (p.filter_name ?? '')
                         // Not `disabled` when there's nothing to show — a disabled
                         // button drops its tooltip, which carries the frame count.
@@ -767,7 +949,7 @@ export default function ObjectsPage() {
                             <div className="plan-progress-bar">
                               <div className="plan-progress-fill" style={{ width: `${pct}%` }} />
                             </div>
-                            <span className="cell-time">{fmtMinsH(capturedMins)} / {fmtMinsH(p.target_minutes)}</span>
+                            <span className="cell-time">{fmtMinsH(capturedMins)} / {fmtMinsH(targetMins)}</span>
                             <span className="plan-progress-pct">{pct}%</span>
                           </button>
                         )
@@ -775,6 +957,8 @@ export default function ObjectsPage() {
                     </div>
                   )}
 
+                  <div className="obj-card__footer">
+                  {obj.mosaic_panels && renderMosaicGrid(obj, progress)}
                   <div className="obj-card__actions">
                     <button className="btn-icon btn-contents" onClick={() => setPlansForId(obj.id)} title="Plans">☰</button>
                     {activePlanObjectIds.has(obj.id) && (
@@ -799,6 +983,7 @@ export default function ObjectsPage() {
                     <button className="btn-icon btn-edit" onClick={() => openEdit(obj)} title="Edit">✎</button>
                     <button className="btn-icon btn-danger" onClick={() => setConfirmingId(obj.id)} title="Delete">✕</button>
                   </div>
+                  </div>
                 </div>
 
                 {expanded && (() => {
@@ -806,23 +991,33 @@ export default function ObjectsPage() {
                   // matched by name — both sides come from the filters table.
                   const focus = focusedFilter.get(obj.id)
                   const all = expandedStats.get(obj.id) ?? []
-                  const shown = focus == null ? all : all.filter(s => (s.filter_name ?? '') === focus)
+                  // Narrowed to a mosaic panel: each filter's time on that panel.
+                  const panelSecondsOf = (s: ObjectFilterStat) => s.panels?.find(x => x.panel === panelSel)?.total_seconds ?? 0
+                  const shown = (focus == null ? all : all.filter(s => (s.filter_name ?? '') === focus))
+                    .filter(s => !panelSel || panelSecondsOf(s) > 0)
+                  const heading = [focus ?? 'by filter', panelSel ? `panel ${panelSel}` : null].filter(Boolean).join(' · ')
                   return (
                   <div className="filter-stats-panel">
-                    <span className="filter-stats-panel__title">{obj.name} — {focus ? focus : 'by filter'}</span>
+                    <span className="filter-stats-panel__title">{obj.name} — {heading}</span>
                     {loadingIds.has(obj.id) ? (
                       <span className="cell-muted">Loading…</span>
                     ) : shown.length === 0 ? (
-                      <span className="cell-muted">{focus ? 'Nothing captured with this filter yet' : 'No data'}</span>
+                      <span className="cell-muted">{panelSel ? 'Nothing captured on this panel yet' : focus ? 'Nothing captured with this filter yet' : 'No data'}</span>
                     ) : (
                       <div className="filter-stats-list">
                         {shown.map((s, i) => (
                           <div key={i} className="filter-stat-item">
                             <FilterBadge name={s.filter_name} />
-                            <span className="cell-time">{fmtDuration(Number(s.total_seconds))}</span>
-                            {(s.exposures?.length ?? 0) > 0 && (
+                            <span className="cell-time">{fmtDuration(panelSel ? panelSecondsOf(s) : Number(s.total_seconds))}</span>
+                            {!panelSel && (s.exposures?.length ?? 0) > 0 && (
                               <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
                                 {s.exposures!.map(e => `${e.frames} × ${e.duration}s`).join(' · ')}
+                              </span>
+                            )}
+                            {obj.mosaic_panels && !panelSel && (s.panels?.length ?? 0) > 0 && (
+                              <span className="cell-muted" style={{ fontSize: '0.8rem' }}>
+                                {[...s.panels!].sort((a, b) => comparePanels(a.panel, b.panel))
+                                  .map(x => `${x.panel ?? 'no panel'}: ${fmtDuration(x.total_seconds)}`).join(' · ')}
                               </span>
                             )}
                           </div>
@@ -910,8 +1105,10 @@ export default function ObjectsPage() {
                   </select>
                 </div>
                 <div className="form-field form-field--full">
-                  <label htmlFor="obj-position">Position (JSON, optional)</label>
-                  <input id="obj-position" value={form.position_json} onChange={set('position_json')} placeholder='{"ra": "00h42m44s", "dec": "+41°16′09″"}' />
+                  <label htmlFor="obj-position">Position (optional)</label>
+                  <PositionField id="obj-position" value={form.position_json}
+                    onChange={v => setForm(f => ({ ...f, position_json: v }))}
+                    objectName={form.name} aliases={form.aliases} />
                 </div>
                 <div className="form-field">
                   <label htmlFor="obj-aliases">Aliases</label>
@@ -926,6 +1123,11 @@ export default function ObjectsPage() {
                 <div className="form-field form-field--full">
                   <label htmlFor="obj-folder">Folder</label>
                   <input id="obj-folder" value={form.folder} onChange={set('folder')} placeholder="e.g. M31" spellCheck={false} />
+                </div>
+                <div className="form-field form-field--full">
+                  <label>Mosaic</label>
+                  <MosaicEditor value={mosaic} onChange={setMosaic} objectName={form.name} idPrefix="obj-mosaic"
+                    hasCapturedTime={editingId !== null && (objects.find(o => o.id === editingId)?.total_seconds ?? 0) > 0} />
                 </div>
                 <div className="form-field form-field--full">
                   <label htmlFor="obj-comment">Comment</label>
@@ -952,6 +1154,7 @@ export default function ObjectsPage() {
               <PlansPanel
                 objectId={obj.id}
                 objectName={obj.name}
+                mosaicPanels={obj.mosaic_panels?.length}
                 onClose={() => setPlansForId(null)}
                 onActivePlanChange={has => setActivePlanObjectIds(prev => {
                   const s = new Set(prev)
@@ -995,16 +1198,19 @@ export default function ObjectsPage() {
                     <div style={{ overflowX: 'auto', marginBottom: '0.75rem' }}>
                       <table className="data-table">
                         <thead>
-                          <tr><th>Session</th><th>Filter</th><th>Exposure</th><th>On disk</th><th>Frames</th><th></th></tr>
+                          <tr><th>Session</th><th>Filter</th>{syncPreview.obj.mosaic_panels && <th>Panel</th>}<th>Exposure</th><th>On disk</th><th>Frames</th><th></th></tr>
                         </thead>
                         <tbody>
                           {syncPreview.scan.changes.map(c => (
-                            <tr key={`${c.dateKey}|${c.filterId}|${c.exposureId}`}>
+                            <tr key={`${c.dateKey}|${c.filterId}|${c.exposureId}|${c.panel ?? ''}`}>
                               <td>
                                 {c.sessionName}
                                 {c.sessionId === null && <span className="type-badge" style={{ marginLeft: '0.4rem' }}>new session</span>}
                               </td>
                               <td><span className="type-badge">{c.filterName}</span></td>
+                              {syncPreview.obj.mosaic_panels && (
+                                <td>{c.panel ? <span className="panel-tag" style={{ marginLeft: 0 }}>{c.panel}</span> : <span className="cell-muted">none</span>}</td>
+                              )}
                               <td>{c.duration}s</td>
                               <td>{c.diskFiles}</td>
                               <td>
@@ -1040,6 +1246,26 @@ export default function ObjectsPage() {
                 )}
               </>
             )}
+            {/* ── Mosaic subs not yet in their panel folders ── */}
+            {(syncPreview.scan.misplaced.length > 0 || moveMsg) && (
+              <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                {syncPreview.scan.misplaced.length > 0 && (
+                  <>
+                    <span className="cell-muted" style={{ fontSize: '0.85rem' }}>
+                      {syncPreview.scan.misplaced.length} mosaic sub{syncPreview.scan.misplaced.length !== 1 ? 's sit' : ' sits'} directly
+                      in a filter folder rather than in {syncPreview.scan.misplaced.length !== 1 ? 'their' : 'its'} panel folder.
+                    </span>
+                    <button className="btn btn-secondary" onClick={handleMoveIntoPanels}
+                      disabled={moving !== null || syncApplying || syncingId !== null || qualityAnalyzing || qualityDeleting}
+                      title="Each file is copied into <filter>/<panel>/, the copy is checked, and only then is the original removed. Nothing is overwritten.">
+                      {moving ? `Moving… ${moving.current}/${moving.total}` : `Move ${syncPreview.scan.misplaced.length} into panel folders`}
+                    </button>
+                  </>
+                )}
+                {moveMsg && <span style={{ color: '#4ade80', fontSize: '0.85rem' }}>{moveMsg}</span>}
+              </div>
+            )}
+
             {/* ── Sub quality ── */}
             {syncPreview.scan.analyzableFiles.length > 0 && (
               <div style={{ marginTop: '0.75rem', borderTop: '1px solid #2a2a35', paddingTop: '0.75rem' }}>
@@ -1047,12 +1273,12 @@ export default function ObjectsPage() {
                   <select
                     className="select-dark"
                     value={activeQualityFilterId ?? ''}
-                    onChange={e => handleQualityFilterChange(Number(e.target.value))}
+                    onChange={e => handleQualityFilterChange(e.target.value)}
                     disabled={qualityAnalyzing || qualityDeleting}
                   >
                     {analyzableFilters.map(f => (
                       <option key={f.id} value={f.id}>
-                        {f.name} ({syncPreview.scan.analyzableFiles.filter(a => a.filterId === f.id).length})
+                        {f.name} ({syncPreview.scan.analyzableFiles.filter(a => qualityGroupKey(a.filterId, a.panel) === f.id).length})
                       </option>
                     ))}
                   </select>
